@@ -44,6 +44,14 @@ if ($LASTEXITCODE -eq 0) {
   $failures.Add("streaming health failed")
 }
 
+& docker compose exec -T sidekiq sh -lc "ps aux | grep '[s]idekiq' >/dev/null"
+if ($LASTEXITCODE -eq 0) {
+  Write-Host "Sidekiq: OK" -ForegroundColor Green
+} else {
+  Write-Host "Sidekiq: FAIL" -ForegroundColor Red
+  $failures.Add("Sidekiq worker is not running")
+}
+
 $domainLine = if (Test-Path ".env.production") {
   Get-Content ".env.production" | Where-Object { $_ -match "^LOCAL_DOMAIN=" } | Select-Object -Last 1
 } else { $null }
