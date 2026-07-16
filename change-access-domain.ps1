@@ -147,7 +147,9 @@ function Assert-IdentityAndStreaming {
 }
 
 function Get-PendingSidekiqCount {
-  $script = "local n=0; for _,k in ipairs(redis.call('keys','queue:*')) do n=n+redis.call('llen',k) end; n=n+redis.call('zcard','retry')+redis.call('zcard','schedule'); return n"
+  # Count executable queues and retries only. Mastodon's recurring scheduler metadata
+  # lives in Sidekiq's schedule set and is expected to be non-empty during normal operation.
+  $script = "local n=0; for _,k in ipairs(redis.call('keys','queue:*')) do n=n+redis.call('llen',k) end; n=n+redis.call('zcard','retry'); return n"
   $result = & docker compose exec -T redis redis-cli --raw EVAL $script 0 2>$null
   if ($LASTEXITCODE -ne 0) { return -1 }
   $parsed = 0
@@ -256,7 +258,7 @@ switch ($Phase) {
 
     $pendingJobs = Get-PendingSidekiqCount
     if ($pendingJobs -gt 0 -and -not $DiscardPendingJobs) {
-      throw "Found $pendingJobs pending/retry/scheduled Sidekiq job(s). Wait for the queues to drain, or rerun with -DiscardPendingJobs to accept dropping them when Redis is flushed."
+      throw "Found $pendingJobs queued/retry Sidekiq job(s). Wait for the queues to drain, or rerun with -DiscardPendingJobs to accept dropping them when Redis is flushed."
     }
 
     Write-Host "Checking the new public route before the formal switch..." -ForegroundColor Cyan
@@ -270,7 +272,7 @@ switch ($Phase) {
     $pendingAfterStop = Get-PendingSidekiqCount
     if ($pendingAfterStop -gt 0 -and -not $DiscardPendingJobs) {
       Start-AppServices
-      throw "Found $pendingAfterStop queued job(s) after the backup window. Services were restarted; wait for them to drain or explicitly use -DiscardPendingJobs."
+      throw "Found $pendingAfterStop queued/retry job(s) after the backup window. Services were restarted; wait for them to drain or explicitly use -DiscardPendingJobs."
     }
 
     $oldWebDomain = $currentWebDomain
