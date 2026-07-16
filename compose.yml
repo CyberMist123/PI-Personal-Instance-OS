@@ -6,8 +6,6 @@ services:
     restart: unless-stopped
     shm_size: 256mb
     stop_grace_period: 1m
-    env_file:
-      - .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-mastodon_production}
       POSTGRES_USER: ${POSTGRES_USER:-mastodon}
