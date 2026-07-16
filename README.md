@@ -36,8 +36,9 @@ Sidekiq / PostgreSQL / Redis / 本地媒体
 
 默认关闭公开注册并启用 limited federation。主站不套 Cloudflare Access，以保证 iOS OAuth、API 和 streaming 正常。
 
-## 部署入口
+## 部署与接手入口
 
+- [AI 接手说明：定义、接口、架构和当前流程](AI_HANDOFF.md)
 - [系统是怎么搭的](docs/ARCHITECTURE.md)
 - [需求与停止线](docs/MVP_SCOPE.md)
 - [Windows 一次部署](docs/DEPLOYMENT.md)
@@ -57,7 +58,15 @@ D:\AI\PI-Personal-Instance-OS
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-之后只需要：
+首次部署和手机验收完成后，双击：
+
+```text
+安装开机自启.bat
+```
+
+它会安装计划任务 `PI-OS-Autostart`：Windows 用户登录后，必要时启动 Docker Desktop，再恢复 PI OS。日志写入 `logs\autostart.log`。移除时双击 `卸载开机自启.bat`，不会删除容器或数据。
+
+日常运维只有：
 
 ```powershell
 .\start.ps1
@@ -78,6 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 .pi-os-initialized
 data/
 backups/
+logs/
 Cloudflare token / credentials
 ```
 
