@@ -102,16 +102,21 @@ if (-not (Test-Path -LiteralPath ".env.production")) {
   Copy-Item -LiteralPath ".env.production.example" -Destination ".env.production"
 }
 
+$initialized = Test-Path -LiteralPath ".pi-os-initialized"
+$existingDomain = Get-EnvValue -Path ".env.production" -Key "LOCAL_DOMAIN"
+
 if ([string]::IsNullOrWhiteSpace($Domain)) {
-  $Domain = Read-Host "Final Mastodon domain, without https://"
+  if ($initialized -and -not [string]::IsNullOrWhiteSpace($existingDomain)) {
+    $Domain = $existingDomain
+  } else {
+    $Domain = Read-Host "Final Mastodon domain, without https://"
+  }
 }
 $Domain = $Domain.Trim().ToLowerInvariant()
 if ($Domain -match "://" -or $Domain -match "/" -or $Domain -notmatch "^[a-z0-9.-]+\.[a-z]{2,}$") {
   throw "Invalid domain: $Domain. Enter only a hostname such as pi.example.com."
 }
 
-$initialized = Test-Path -LiteralPath ".pi-os-initialized"
-$existingDomain = Get-EnvValue -Path ".env.production" -Key "LOCAL_DOMAIN"
 if ($initialized -and $ResetSecrets) {
   throw "PI OS is already initialized. Resetting encryption secrets can destroy access to stored data. Restore from backup instead."
 }
@@ -132,8 +137,13 @@ if ($AdminEmail -notmatch "^[^@\s]+@[^@\s]+\.[^@\s]+$") {
   throw "Invalid email address: $AdminEmail"
 }
 
+$existingTunnelToken = Get-EnvValue -Path ".env" -Key "CLOUDFLARE_TUNNEL_TOKEN"
 if ($null -eq $TunnelToken) {
-  $TunnelToken = Read-Host "Cloudflare Tunnel token (press Enter to configure later)"
+  if (-not [string]::IsNullOrWhiteSpace($existingTunnelToken) -and $existingTunnelToken -ne "MISSING") {
+    $TunnelToken = $existingTunnelToken
+  } else {
+    $TunnelToken = Read-Host "Cloudflare Tunnel token (press Enter to configure later)"
+  }
 }
 $TunnelToken = $TunnelToken.Trim()
 
@@ -176,8 +186,32 @@ foreach ($spec in $secretSpecs) {
   }
 }
 
-Write-Host "Pulling pinned container images..." -ForegroundColor Cyan
-Invoke-Docker -Arguments @("compose", "pull")
+New-Item -ItemType Directory -Force -Path ".\data\media", ".\backups" | Out-Null
+
+Write-Host "Validating Docker Compose configuration..." -ForegroundColor Cyan
+& docker compose config --quiet
+if ($LASTEXITCODE -ne 0) {
+  throw "Docker Compose configuration is invalid."
+}
+
+Write-Host "Pulling container images..." -ForegroundColor Cyan
+Invoke-Docker -Arguments @("compose", "--profile", "tunnel", "pull")
+
+Write-Host "Starting PostgreSQL and Redis..." -ForegroundColor Cyan
+Invoke-Docker -Arguments @("compose", "up", "-d", "db", "redis")
+
+$dbReady = $false
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+  & docker compose exec -T db pg_isready -U mastodon -d mastodon_production *> $null
+  if ($LASTEXITCODE -eq 0) {
+    $dbReady = $true
+    break
+  }
+  Start-Sleep -Seconds 2
+}
+if (-not $dbReady) {
+  throw "PostgreSQL did not become ready within 60 seconds."
+}
 
 $vapidPrivate = Get-EnvValue -Path ".env.production" -Key "VAPID_PRIVATE_KEY"
 $vapidPublic = Get-EnvValue -Path ".env.production" -Key "VAPID_PUBLIC_KEY"
@@ -201,27 +235,11 @@ if ($ResetSecrets -or [string]::IsNullOrWhiteSpace($vapidPrivate) -or [string]::
   }
 }
 
-Write-Host "Starting PostgreSQL and Redis..." -ForegroundColor Cyan
-Invoke-Docker -Arguments @("compose", "up", "-d", "db", "redis")
-
-$dbReady = $false
-for ($attempt = 1; $attempt -le 30; $attempt++) {
-  & docker compose exec -T db pg_isready -U mastodon -d mastodon_production *> $null
-  if ($LASTEXITCODE -eq 0) {
-    $dbReady = $true
-    break
-  }
-  Start-Sleep -Seconds 2
-}
-if (-not $dbReady) {
-  throw "PostgreSQL did not become ready within 60 seconds."
-}
-
 Write-Host "Preparing Mastodon database..." -ForegroundColor Cyan
-Invoke-Docker -Arguments @("compose", "run", "--rm", "web", "bundle", "exec", "rails", "db:prepare")
+Invoke-Docker -Arguments @("compose", "run", "--rm", "--no-deps", "web", "bundle", "exec", "rails", "db:prepare")
 
 Write-Host "Creating owner account..." -ForegroundColor Cyan
-$accountOutput = & docker compose run --rm web bin/tootctl accounts create $AdminUsername --email $AdminEmail --confirmed --role Owner 2>&1
+$accountOutput = & docker compose run --rm --no-deps web bin/tootctl accounts create $AdminUsername --email $AdminEmail --confirmed --role Owner 2>&1
 $accountExit = $LASTEXITCODE
 $accountText = $accountOutput -join "`n"
 if ($accountExit -ne 0 -and $accountText -notmatch "already exists|has already been taken") {
@@ -232,11 +250,11 @@ if ($accountExit -eq 0) {
   Write-Host "Save the generated owner password now." -ForegroundColor Yellow
 } else {
   Write-Warning "Owner account already exists; keeping it and continuing."
-  Invoke-Docker -Arguments @("compose", "run", "--rm", "web", "bin/tootctl", "accounts", "modify", $AdminUsername, "--role", "Owner", "--enable")
+  Invoke-Docker -Arguments @("compose", "run", "--rm", "--no-deps", "web", "bin/tootctl", "accounts", "modify", $AdminUsername, "--role", "Owner", "--enable")
 }
 
 Write-Host "Closing public registrations..." -ForegroundColor Cyan
-Invoke-Docker -Arguments @("compose", "run", "--rm", "web", "bin/tootctl", "settings", "registrations", "close")
+Invoke-Docker -Arguments @("compose", "run", "--rm", "--no-deps", "web", "bin/tootctl", "settings", "registrations", "close")
 
 if ([string]::IsNullOrWhiteSpace($TunnelToken)) {
   Write-Host "Starting local stack without Cloudflare Tunnel..." -ForegroundColor Cyan
