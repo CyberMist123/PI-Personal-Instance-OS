@@ -59,22 +59,20 @@ function Set-EnvValue {
   Write-Utf8NoBom -Path $Path -Lines $lines
 }
 
-function New-RandomBytes {
-  param([int]$Count)
+function New-RandomHex {
+  param([int]$Count = 32)
   $bytes = New-Object byte[] $Count
   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
   try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
-  return ,$bytes
-}
-
-function New-RandomHex {
-  param([int]$Count = 32)
-  return -join ((New-RandomBytes -Count $Count) | ForEach-Object { $_.ToString("x2") })
+  return -join ($bytes | ForEach-Object { $_.ToString("x2") })
 }
 
 function New-RandomBase64 {
   param([int]$Count = 32)
-  return [Convert]::ToBase64String((New-RandomBytes -Count $Count))
+  $bytes = New-Object byte[] $Count
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  return [Convert]::ToBase64String($bytes)
 }
 
 function Invoke-Docker {
@@ -110,6 +108,15 @@ if ([string]::IsNullOrWhiteSpace($Domain)) {
 $Domain = $Domain.Trim().ToLowerInvariant()
 if ($Domain -match "://" -or $Domain -match "/" -or $Domain -notmatch "^[a-z0-9.-]+\.[a-z]{2,}$") {
   throw "Invalid domain: $Domain. Enter only a hostname such as pi.example.com."
+}
+
+$initialized = Test-Path -LiteralPath ".pi-os-initialized"
+$existingDomain = Get-EnvValue -Path ".env.production" -Key "LOCAL_DOMAIN"
+if ($initialized -and $ResetSecrets) {
+  throw "PI OS is already initialized. Resetting encryption secrets can destroy access to stored data. Restore from backup instead."
+}
+if ($initialized -and -not [string]::IsNullOrWhiteSpace($existingDomain) -and $existingDomain -ne $Domain) {
+  throw "PI OS is already initialized as $existingDomain. LOCAL_DOMAIN cannot be changed safely to $Domain."
 }
 
 $AdminUsername = $AdminUsername.Trim().ToLowerInvariant()
