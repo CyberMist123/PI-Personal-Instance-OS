@@ -2,138 +2,230 @@
 
 ## 一句话
 
-PI OS 不是重新开发社交平台，而是把原版 Mastodon 当作稳定的“朋友圈内核”，再用 Docker 管理依赖、Nginx 统一入口、Cloudflare Tunnel 让手机从外网安全访问。
+PI OS 不是重新开发社交平台内核，而是把 Mastodon v4.6.3 当作稳定的私人时间线后端，用 Docker 管理依赖、Nginx 统一入口、Cloudflare Tunnel 供手机浏览器访问，并把永久内部身份与可替换公网门牌分离。
+
+当前网页是 Mastodon Web。独立 CMX 前端尚未加入；以后作为同源网页层接入，不改变数据库和核心容器职责。
+
+## 域名分层
+
+```env
+LOCAL_DOMAIN=pi.invalid
+WEB_DOMAIN=pi.ler428.xyz
+STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+ALTERNATE_DOMAINS=
+```
+
+- `LOCAL_DOMAIN`：永久内部身份锚点，只是字符串，不做 DNS 访问。
+- `WEB_DOMAIN`：当前公网网页入口，可以通过专用脚本替换。
+- `STREAMING_API_BASE_URL`：当前 WebSocket 入口，必须与 `WEB_DOMAIN` 同步。
+- `ALTERNATE_DOMAINS`：切换期间接受额外 Host，不负责完整 origin 迁移。
+
+使用可变 `WEB_DOMAIN` 后，实例永久保持无公共联邦。历史 status/relationship ActivityPub URI 可以保留旧门牌，不做全库替换。
 
 ## 请求如何流动
 
 ```text
-iOS Mastodon App
-        │ HTTPS / OAuth / API / WebSocket
+手机浏览器
+        │ HTTPS / Session / REST / WebSocket
+        ▼
+当前 WEB_DOMAIN
         ▼
 Cloudflare Edge
-        │ 已加密 Tunnel，不开放家庭路由器端口
+        │ 加密 Tunnel；家庭路由器不开放端口
         ▼
 cloudflared 容器
         │ HTTP: nginx:80
         ▼
 Nginx 容器
-   ├─ 普通网页、OAuth、REST API ──→ Mastodon Web :3000
+   ├─ 网页、登录、REST、媒体上传 ──→ Mastodon Web :3000
    └─ /api/v1/streaming ─────────→ Mastodon Streaming :4000
 ```
 
-Nginx 必须存在，因为 Mastodon 的普通网页/API 与实时 streaming 是两个独立进程。Cloudflare 只连接 Nginx，Nginx 再按路径分流。
+Nginx 必须存在，因为普通网页/API 与实时 streaming 是两个独立进程。Cloudflare 只连接 Nginx，Nginx 再按路径分流。
 
-## 各容器做什么
+## 各组件职责
 
 ### `web`
 
-Mastodon 的 Rails Web 服务：
+Mastodon Rails Web 服务：
 
-- 登录与 OAuth。
-- 时间线和动态 API。
-- 账号、设置、后台管理。
-- 页面和静态资源。
-- 图片上传请求的接收。
+- 密码/TOTP登录与网页 Session；
+- 时间线、动态和标准 REST API；
+- 账号、设置和后台管理；
+- 页面与静态资源；
+- 图片上传请求；
+- 根据启动时读取的 `WEB_DOMAIN` 生成 URL、CSP、WebAuthn origin 和网页元数据。
+
+域名切换后必须 recreate。
 
 ### `streaming`
 
-Mastodon 的 Node.js streaming 服务：
+Mastodon Node.js streaming 服务：
 
-- 实时时间线更新。
-- 通知和 WebSocket/SSE 类长连接。
-- 避免手机每次都靠轮询刷新。
+- 实时时间线和通知；
+- WebSocket/SSE 长连接；
+- 避免网页依赖轮询。
+
+切换脚本统一 recreate，以保持运维状态一致。
 
 ### `sidekiq`
 
 后台任务执行器：
 
-- 图片处理与缩略图。
-- 通知、邮件和异步任务。
-- 未来 Bot 或联邦任务也会经过后台队列。
+- 图片处理与缩略图；
+- Web Push、邮件和异步任务；
+- 使用 Rails 启动配置生成部分 URL。
 
-没有 Sidekiq 时，网页可能能开，但发图、通知等功能会出现延迟或卡死。
+域名切换后必须 recreate。切换前未完成任务需要排空或明确接受在 `FLUSHDB` 时丢弃。
 
 ### `db`
 
-PostgreSQL，保存真正的结构化世界：
+PostgreSQL 保存长期结构化事实：
 
-- 账号。
-- 动态正文。
-- 点赞、评论、关系和设置。
-- 媒体元数据。
+- 账号、动态、关系和设置；
+- 媒体元数据；
+- 历史 `statuses.uri` 等可能含创建时的旧 `WEB_DOMAIN`。
 
-数据库使用 Docker named volume，避免 PostgreSQL 直接跑在 Windows NTFS bind mount 上带来的性能和权限问题。
+数据库使用 Docker named volume，避免 PostgreSQL 直接运行在 Windows NTFS bind mount 上。
+
+域名切换不迁移数据库主键、正文或媒体记录，也不执行全库 URL 替换。
 
 ### `redis`
 
-保存缓存、队列状态和实时服务需要的短期数据。它不是主要历史档案，真正需要长期恢复的核心仍是 PostgreSQL、媒体和密钥。
+保存缓存、Sidekiq 队列和短期状态。它不是长期事实来源。
+
+正式切换 `WEB_DOMAIN` 时执行 `FLUSHDB`，清除旧 origin 派生缓存和队列；恢复旧 PostgreSQL 快照时也要清 Redis。
 
 ### `nginx`
 
-唯一的内部 Web 入口：
+唯一内部 Web 入口：
 
-- 把普通请求转给 `web:3000`。
-- 把 streaming 路径转给 `streaming:4000`。
-- 保留公网 HTTPS、真实客户端 IP 和 WebSocket 所需的请求头。
-- 将本机调试入口限制在 `127.0.0.1:8080`。
+- 普通请求转给 `web:3000`；
+- streaming 路径转给 `streaming:4000`；
+- 保留公网 HTTPS、真实客户端 IP 和 WebSocket 头；
+- 本机调试入口限制在 `127.0.0.1:8080`；
+- 配置不写死公网域名，因此换门牌通常无需 reload。
 
 ### `cloudflared`
 
 从家中电脑主动连接 Cloudflare：
 
-- 家庭路由器不需要端口映射。
-- 家庭公网 IP 不直接暴露。
-- 公网 HTTPS 由 Cloudflare 处理。
-- Tunnel token 只保存在本机 `.env`。
+- 家庭路由器无需端口映射；
+- 家庭公网 IP 不直接暴露；
+- 公网 HTTPS 由 Cloudflare 处理；
+- Tunnel token 只在本机 `.env`；
+- dashboard-managed route 决定哪些公网域名进入同一 `nginx:80`。
+
+### CMX（计划中，未实现）
+
+CMX 是未来的移动网页体验层，不是新的数据后端。
+
+必须：
+
+- 与 Mastodon 同源；
+- 使用 Session/CSRF 或页面派发 token；
+- REST 使用相对路径；
+- streaming 与媒体从当前 origin/后端元数据获得；
+- 不硬编码 `WEB_DOMAIN`；
+- 不注册长期绑定某门牌的 OAuth application。
+
+### AI / MCP（计划中，未实现）
+
+AI 可作为正式居民账号，或通过窄权限 MCP 工具行动：
+
+- 独立身份、独立 Token、独立发布历史；
+- 只暴露发布、媒体、回复、时间线和可见性动作；
+- 不直连 PostgreSQL，不使用 Owner Token；
+- 默认不读取全站或自动回应所有动态。
+
+## 内容权限模型
+
+Mastodon 底层可见性为基础，CMX 以后映射为更自然的产品语义：
+
+```text
+仅自己
+指定圈子
+实例居民可见
+明确公开
+```
+
+“公开”是否允许匿名互联网查看必须由 CMX/实例策略明确决定，不因 AI 选择某个底层值而默认泄露内容。
 
 ## 数据分层
 
 ```text
-Docker named volume
-├─ pi-os_postgres_data   数据库
-└─ pi-os_redis_data      Redis 持久化
+Docker named volumes
+├─ pi-os_postgres_data   PostgreSQL
+└─ pi-os_redis_data      Redis
 
-项目目录 D:\AI\PI-Personal-Instance-OS
-├─ data\media            上传的图片和视频
+D:\AI\PI-Personal-Instance-OS
+├─ data\media            上传图片和视频
 ├─ backups               数据库导出、媒体归档和密钥快照
-├─ .env                  Docker / Tunnel 密钥
-└─ .env.production       Mastodon 身份与加密密钥
+├─ logs                   自动启动日志
+├─ .env                   Docker / Tunnel 密钥
+└─ .env.production        身份、门牌和 Mastodon 加密密钥
 ```
 
-GitHub 只保存“如何建造世界”，不保存这个世界的真实内容。
+GitHub 只保存“如何建造世界”，不保存真实内容。
 
-## 为什么不 fork Mastodon
+## 域名切换拓扑
 
-当前需求是稳定使用，不是开发新的社交网络内核。直接使用官方容器意味着：
+### Prepare
 
-- 不需要维护 Ruby、Node 和前端源码构建链。
-- 安全更新可以通过更换镜像版本完成。
-- 自己的 Bot 和未来主题可以放在外层，不污染核心。
-- 部署失败时，问题范围只剩配置、网络和存储。
+```text
+旧 WEB_DOMAIN 仍是主 origin
+新域名加入 Cloudflare + ALTERNATE_DOMAINS
+→ 只验证 Tunnel、HostAuthorization、HTML/API 基础 GET
+```
+
+这时 URL、CSP、Cookie、WebAuthn 和主 WSS 仍属于旧 origin，不能当作完整切换成功。
+
+### Switch
+
+```text
+备份
+→ 停 web/streaming/sidekiq
+→ WEB_DOMAIN / STREAMING_API_BASE_URL 切到新门牌
+→ 旧门牌进入 ALTERNATE_DOMAINS
+→ Redis FLUSHDB
+→ recreate web/streaming/sidekiq
+→ 新 origin 完整登录、旧数据、发文、发图、streaming smoke
+```
+
+### Release
+
+```text
+清空 ALTERNATE_DOMAINS
+→ recreate 应用进程
+→ 删除旧 Cloudflare route
+```
 
 ## 私密边界
 
-Mastodon 配置为：
+配置为：
 
-- 关闭公开注册。
-- `LIMITED_FEDERATION_MODE=true`，只允许明确批准的外部实例。
-- `DISALLOW_UNAUTHENTICATED_API_ACCESS=true`，未登录者不能通过普通 API 查看动态。
-- AI/Bot 将来只使用独立账号和 API Token，不直接读取 PostgreSQL。
+- 关闭公开注册；
+- `LIMITED_FEDERATION_MODE=true`；
+- `AUTHORIZED_FETCH=true`；
+- `DISALLOW_UNAUTHENTICATED_API_ACCESS=true`；
+- 不加入公开联邦；
+- AI/Bot 只使用独立账号和最小权限接口。
 
-这提高了控制权，但不是端到端加密。Cloudflare、服务器系统和拥有管理员权限的人仍处在信任边界内。
+这提高控制权，但不是端到端加密。Cloudflare、服务器系统和 Owner 管理权限仍在信任边界内。
 
 ## 故障影响
 
 - 家中断网：手机暂时无法访问，数据仍在本机。
-- Cloudflare Tunnel 断开：公网入口失效，本机数据不受影响。
-- Web 容器挂掉：登录和 API 不可用。
-- Streaming 挂掉：网页可能能用，但实时更新异常。
-- Sidekiq 挂掉：图片处理和异步通知积压。
-- PostgreSQL 丢失：动态和账号主体丢失，必须从备份恢复。
-- `.env.production` 加密密钥丢失：部分加密数据可能无法恢复，因此它与数据库同等重要。
+- Tunnel/当前域名失效：公网门牌不可达，数据库与媒体不受影响。
+- Web 挂掉：登录、网页和 REST 不可用。
+- Streaming 挂掉：网页可用但实时更新异常。
+- Sidekiq 挂掉：图片处理和异步任务积压。
+- PostgreSQL 丢失：账号和动态主体丢失，必须恢复备份。
+- `.env.production` 密钥丢失：部分加密数据和通知能力可能不可恢复。
+- 域名切换后旧 Session/Push/Service Worker/passkey 不可继承，需要在新 origin 重建。
 
 ## 当前停止线
 
-Beta 只验证：启动、手机 OAuth、文字/图片发布、时间线、通知、重启恢复和一次备份。
+基础 Beta 只验证：启动、手机网页登录、文字/图片发布、旧数据读取、时间线、streaming、重启恢复、备份和自动启动。
 
-Bot、AI 接入、主题、独立朋友圈前端和更复杂权限都属于后续独立增量。
+独立 CMX、AI居民、MCP、内容权限中文语义和公开博客出口属于后续独立增量。
