@@ -30,7 +30,7 @@ if ($LASTEXITCODE -eq 0) {
   $failures.Add("Mastodon web health failed")
 }
 
-& docker compose exec -T streaming sh -lc "wget -qO- http://localhost:4000/api/v1/streaming/health | grep -q OK"
+& docker compose exec -T streaming sh -lc "curl -fsS http://localhost:4000/api/v1/streaming/health | grep -q OK"
 if ($LASTEXITCODE -eq 0) {
   Write-Host "Streaming: OK" -ForegroundColor Green
 } else {
