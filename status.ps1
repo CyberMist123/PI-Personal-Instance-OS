@@ -6,6 +6,12 @@ Set-Location -LiteralPath $PSScriptRoot
 
 $failures = New-Object System.Collections.Generic.List[string]
 
+& docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Docker Desktop: FAIL" -ForegroundColor Red
+  exit 1
+}
+
 Write-Host "=== Containers ===" -ForegroundColor Cyan
 & docker compose --profile tunnel ps
 if ($LASTEXITCODE -ne 0) {
@@ -47,21 +53,40 @@ $tokenLine = if (Test-Path ".env") {
 } else { $null }
 $token = if ($tokenLine) { $tokenLine -replace "^CLOUDFLARE_TUNNEL_TOKEN=", "" } else { "" }
 
-if (-not [string]::IsNullOrWhiteSpace($token) -and -not [string]::IsNullOrWhiteSpace($domain)) {
-  Write-Host "`n=== Public health ===" -ForegroundColor Cyan
+if (-not [string]::IsNullOrWhiteSpace($token) -and $token -ne "MISSING" -and -not [string]::IsNullOrWhiteSpace($domain)) {
+  Write-Host "`n=== Public path ===" -ForegroundColor Cyan
+
   try {
     $public = Invoke-WebRequest -UseBasicParsing -Uri "https://$domain/_pi/health" -TimeoutSec 15
     if ($public.StatusCode -ne 200) { throw "HTTP $($public.StatusCode)" }
-    Write-Host "Cloudflare domain: OK" -ForegroundColor Green
+    Write-Host "Tunnel and Nginx: OK" -ForegroundColor Green
   } catch {
-    Write-Host "Cloudflare domain: FAIL - $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Tunnel and Nginx: FAIL - $($_.Exception.Message)" -ForegroundColor Red
     $failures.Add("public Cloudflare health failed")
+  }
+
+  try {
+    $instance = Invoke-WebRequest -UseBasicParsing -Uri "https://$domain/api/v2/instance" -TimeoutSec 15
+    if ($instance.StatusCode -ne 200) { throw "HTTP $($instance.StatusCode)" }
+    Write-Host "Public Mastodon API discovery: OK" -ForegroundColor Green
+  } catch {
+    Write-Host "Public Mastodon API discovery: FAIL - $($_.Exception.Message)" -ForegroundColor Red
+    $failures.Add("public Mastodon API discovery failed")
+  }
+
+  try {
+    $streamPublic = Invoke-WebRequest -UseBasicParsing -Uri "https://$domain/api/v1/streaming/health" -TimeoutSec 15
+    if ($streamPublic.StatusCode -ne 200) { throw "HTTP $($streamPublic.StatusCode)" }
+    Write-Host "Public streaming route: OK" -ForegroundColor Green
+  } catch {
+    Write-Host "Public streaming route: FAIL - $($_.Exception.Message)" -ForegroundColor Red
+    $failures.Add("public streaming route failed")
   }
 }
 
 Write-Host "`n=== Git safety ===" -ForegroundColor Cyan
 if (Get-Command git -ErrorAction SilentlyContinue) {
-  $trackedSensitive = @(& git ls-files -- .env .env.production data backups .cloudflared 2>$null)
+  $trackedSensitive = @(& git ls-files -- .env .env.production .pi-os-initialized data backups .cloudflared 2>$null)
   if ($trackedSensitive.Count -eq 0) {
     Write-Host "Runtime secrets/data tracked by Git: none" -ForegroundColor Green
   } else {
