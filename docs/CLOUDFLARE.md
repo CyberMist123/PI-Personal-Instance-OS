@@ -43,13 +43,17 @@ URL: nginx:80
 - 不要直接填 `web:3000`；Nginx 负责把 `/api/v1/streaming` 转发到 streaming 容器。
 - Cloudflare 负责公网 HTTPS，Docker 内部保持 HTTP。
 
-## Access 设置
+## 主域名不要额外加的东西
 
-主 Mastodon hostname 不配置 Cloudflare Access policy。
+为了让 Mastodon iOS 客户端正常完成实例发现、OAuth、API、媒体上传和 streaming：
 
-额外的 Access 登录页可能阻断 Mastodon iOS 客户端的 OAuth、API、WebSocket/streaming 和未来 Bot token。
+- 不配置 Cloudflare Access application/policy。
+- 不启用 Under Attack Mode。
+- 不给 `/oauth/*`、`/api/*`、`/auth/*` 添加 Managed Challenge、JS Challenge 或 CAPTCHA。
+- 不创建“Cache Everything”规则；动态 API 和登录页面保持默认不缓存。
+- WebSockets 保持可用，不对 streaming 路径做重写。
 
-以后出现管理面板时，使用另一个子域名并单独套 Access，不要套在主实例上。
+可以继续使用 Cloudflare 默认的 TLS、DNS 代理和常规 DDoS 防护。以后若出现管理面板，使用另一个子域名并单独套 Access，不要套在主 Mastodon hostname 上。
 
 ## 验证
 
@@ -57,19 +61,13 @@ URL: nginx:80
 .\status.ps1
 ```
 
-通过后访问：
+配置 token 后，脚本会检查：
 
-```text
-https://你的最终域名/_pi/health
-```
+- `https://你的域名/_pi/health`
+- `https://你的域名/api/v2/instance`
+- `https://你的域名/api/v1/streaming/health`
 
-应返回：
-
-```text
-PI OS OK
-```
-
-随后用 iOS Mastodon 客户端输入同一域名登录。
+三条都通过后，再用 iOS Mastodon 客户端输入同一域名登录。
 
 ## 常见故障，只查失败点
 
@@ -95,6 +93,10 @@ docker compose --profile tunnel logs --tail 100 cloudflared nginx
 docker compose exec -T streaming curl -fsS http://localhost:4000/api/v1/streaming/health
 ```
 
-### iOS 客户端跳到额外登录页
+### iOS 客户端跳到额外登录页或验证页
 
-删除主 hostname 上的 Cloudflare Access application/policy。只保留 Tunnel。
+删除主 hostname 上的 Cloudflare Access、Challenge 或 CAPTCHA 规则，只保留 Tunnel。
+
+### 网页可以登录，但 App 找不到实例
+
+确认 `/api/v2/instance` 没有被缓存、重写或挑战；再运行 `status.ps1` 看 Public Mastodon API discovery 项。
