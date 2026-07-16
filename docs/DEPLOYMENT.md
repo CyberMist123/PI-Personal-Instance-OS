@@ -12,7 +12,7 @@
 - Docker Desktop，启用 WSL2 backend。
 - Git。
 - 一个已经托管在 Cloudflare 的最终域名。
-- 电脑关闭自动睡眠；Docker Desktop 设置为登录后自动启动。
+- 电脑关闭自动睡眠。
 - 建议至少给 Docker Desktop 4 GB 内存，并预留 20 GB 以上可用磁盘空间。
 
 `LOCAL_DOMAIN` 是账号身份的一部分。真正开始使用后不要更换域名。
@@ -26,7 +26,7 @@ git clone https://github.com/CyberMist123/PI-Personal-Instance-OS.git "D:\AI\PI-
 Set-Location "D:\AI\PI-Personal-Instance-OS"
 ```
 
-路径已使用纯英文、无空格，避免 Docker Desktop、WSL2 和 PowerShell 的路径兼容问题。
+路径使用纯英文、无空格，避免 Docker Desktop、WSL2 和 PowerShell 的路径兼容问题。
 
 ## 2. 一次初始化
 
@@ -91,9 +91,54 @@ http://nginx:80
 
 全部服务使用 `restart: unless-stopped`。Docker Desktop 恢复后，容器会自动恢复。
 
-注意：Docker Desktop 通常需要 Windows 用户登录后才启动；闲置电脑在无人登录的状态下重启，不等于服务已经恢复。
+## 6. 一键安装开机登录后自动启动
 
-## 6. 唯一一次最终检查
+先完成首次初始化和手机验收，再双击：
+
+```text
+安装开机自启.bat
+```
+
+也可以在 PowerShell 运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1
+```
+
+脚本会请求一次管理员权限，创建计划任务：
+
+```text
+PI-OS-Autostart
+```
+
+每次当前 Windows 用户登录后：
+
+1. 隐藏运行 `autostart-run.ps1`。
+2. 找不到 Docker daemon 时启动 Docker Desktop。
+3. 最多等待 Docker 5 分钟。
+4. 运行 `start.ps1`。
+5. 等待本地健康检查通过。
+6. 写日志到 `logs\autostart.log`。
+
+安装完成后会立即触发一次任务。项目目录以后若移动，需要重新运行安装脚本，让计划任务记录新路径。
+
+移除自动启动：
+
+```text
+卸载开机自启.bat
+```
+
+或：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\remove-autostart.ps1
+```
+
+卸载只删除计划任务，不停止实例，也不删除容器、数据库和媒体。
+
+注意：这是“Windows 用户登录后自动启动”。Docker Desktop 是用户会话程序，因此不保证电脑开机但无人登录时服务已经上线。
+
+## 7. 唯一一次最终检查
 
 ```powershell
 .\status.ps1
@@ -104,7 +149,7 @@ http://nginx:80
 - 容器状态。
 - Nginx 本地健康。
 - Mastodon Web 健康。
-- Streaming 健康。
+- Streaming 和 Sidekiq 健康。
 - 已配置 Tunnel 时检查公网入口、Mastodon API discovery 和公网 streaming 路由。
 - 检查 Git 是否误追踪 `.env`、数据库、媒体、初始化标记或备份。
 
@@ -116,7 +161,7 @@ http://nginx:80
 2. 发布一条文字和一张图片。
 3. 刷新时间线并查看通知。
 
-## 7. 邮件边界
+## 8. 邮件边界
 
 第一版 Owner 账号由 CLI 直接确认，因此可以没有 SMTP。
 
@@ -129,7 +174,7 @@ http://nginx:80
 
 没有 SMTP 时，不要把唯一 Owner 密码弄丢。也可以通过本机 `tootctl accounts modify --reset-password` 恢复，但这要求仍能进入服务器。
 
-## 8. 本地文件边界
+## 9. 本地文件边界
 
 永远不要提交：
 
@@ -138,12 +183,17 @@ http://nginx:80
 - `.pi-os-initialized`
 - `data/`
 - `backups/`
+- `logs/`
 - Cloudflare token 或 credentials JSON
 
 部署代码可以公开，实际世界和钥匙只留在本机。
 
-## 9. 停止线
+## 10. 给下一位 AI
 
-完成手机登录、发图、时间线、通知、重启恢复后立即停止。
+先读根目录 [AI_HANDOFF.md](../AI_HANDOFF.md)。那里集中写了术语、接口、架构、首次部署、开机流程、发图流程、备份流程和修改边界，不需要重新扫描整个仓库。
+
+## 11. 停止线
+
+完成手机登录、发图、时间线、通知、重启恢复和自动启动后立即停止。
 
 当前不做：主题、Bot、AI 接入、Cyberlink、520、全文搜索、S3、公共联邦或前端重写。
