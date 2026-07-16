@@ -104,6 +104,13 @@ function Recreate-AppServices {
   }
 }
 
+function Start-AppServices {
+  & docker compose up -d web streaming sidekiq
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Application services could not be restarted automatically. Run .\start.ps1."
+  }
+}
+
 function Assert-PublicEndpoint {
   param(
     [Parameter(Mandatory)][string]$Domain,
@@ -116,16 +123,6 @@ function Assert-PublicEndpoint {
     return $response
   } catch {
     throw "$uri is not ready: $($_.Exception.Message)"
-  }
-}
-
-function Assert-LocalHostAccepted {
-  param([Parameter(Mandatory)][string]$Domain)
-  try {
-    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8080/_pi/health" -Headers @{ Host = $Domain } -TimeoutSec 10
-    if ($response.StatusCode -ne 200) { throw "HTTP $($response.StatusCode)" }
-  } catch {
-    throw "Local Nginx/Host preflight failed for $Domain: $($_.Exception.Message)"
   }
 }
 
@@ -213,23 +210,30 @@ switch ($Phase) {
 
     Write-Host "Checking the new Cloudflare route before changing Mastodon..." -ForegroundColor Cyan
     Assert-PublicEndpoint -Domain $NewDomain -Path "/_pi/health" | Out-Null
-
     Invoke-Backup
 
     $newAlternates = @($currentAlternates + $NewDomain | Select-Object -Unique)
-    Set-EnvValuesAtomic -Path $EnvPath -Values @{
-      "LOCAL_DOMAIN" = $IdentityDomain
-      "ALTERNATE_DOMAINS" = ($newAlternates -join ",")
+    try {
+      Set-EnvValuesAtomic -Path $EnvPath -Values @{
+        "LOCAL_DOMAIN" = $IdentityDomain
+        "ALTERNATE_DOMAINS" = ($newAlternates -join ",")
+      }
+      Recreate-AppServices
+      $instance = Get-PublicInstance -Domain $NewDomain
+      if ($instance.domain -ne $IdentityDomain) {
+        throw "Prepare preflight returned unexpected instance domain $($instance.domain)."
+      }
+    } catch {
+      Write-Warning "Prepare failed. Restoring the previous ALTERNATE_DOMAINS value."
+      Set-EnvValuesAtomic -Path $EnvPath -Values @{
+        "LOCAL_DOMAIN" = $IdentityDomain
+        "ALTERNATE_DOMAINS" = "$currentAlternateValue"
+      }
+      & docker compose up -d --force-recreate web streaming sidekiq
+      throw
     }
 
-    Recreate-AppServices
-    Assert-LocalHostAccepted -Domain $NewDomain
-    $instance = Get-PublicInstance -Domain $NewDomain
-    if ($instance.domain -ne $IdentityDomain) {
-      throw "Prepare preflight returned unexpected instance domain $($instance.domain)."
-    }
-
-    Write-Host "" 
+    Write-Host ""
     Write-Host "Prepare phase passed." -ForegroundColor Green
     Write-Host "The new Host/TLS/basic GET path works, but the active WEB_DOMAIN is still $currentWebDomain." -ForegroundColor Yellow
     Write-Host "Streaming, canonical URLs, cookies, WebAuthn and Service Worker still belong to the old origin during this phase."
@@ -262,6 +266,12 @@ switch ($Phase) {
     Write-Host "Stopping application writers..." -ForegroundColor Cyan
     & docker compose stop web streaming sidekiq
     if ($LASTEXITCODE -ne 0) { throw "Could not stop application services." }
+
+    $pendingAfterStop = Get-PendingSidekiqCount
+    if ($pendingAfterStop -gt 0 -and -not $DiscardPendingJobs) {
+      Start-AppServices
+      throw "Found $pendingAfterStop queued job(s) after the backup window. Services were restarted; wait for them to drain or explicitly use -DiscardPendingJobs."
+    }
 
     $oldWebDomain = $currentWebDomain
     try {
@@ -316,11 +326,21 @@ switch ($Phase) {
 
     Invoke-Backup
     $released = $currentAlternates -join ","
-    Set-EnvValuesAtomic -Path $EnvPath -Values @{
-      "LOCAL_DOMAIN" = $IdentityDomain
-      "ALTERNATE_DOMAINS" = ""
+    try {
+      Set-EnvValuesAtomic -Path $EnvPath -Values @{
+        "LOCAL_DOMAIN" = $IdentityDomain
+        "ALTERNATE_DOMAINS" = ""
+      }
+      Recreate-AppServices
+    } catch {
+      Write-Warning "Release failed. Restoring the previous ALTERNATE_DOMAINS value."
+      Set-EnvValuesAtomic -Path $EnvPath -Values @{
+        "LOCAL_DOMAIN" = $IdentityDomain
+        "ALTERNATE_DOMAINS" = "$currentAlternateValue"
+      }
+      & docker compose up -d --force-recreate web streaming sidekiq
+      throw
     }
-    Recreate-AppServices
 
     Write-Host "Old alternate domain(s) released: $released" -ForegroundColor Green
     Write-Host "Delete their Cloudflare Public Hostname routes after confirming no browser/tab still depends on them." -ForegroundColor Yellow
