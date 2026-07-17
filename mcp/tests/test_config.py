@@ -1,9 +1,23 @@
 from pathlib import Path
 
+import pytest
+
 from cmx_mcp.config import InstanceSettings, Paths
 
 
-def test_loads_web_domain_from_env_production(tmp_path: Path, monkeypatch) -> None:
+def _paths(home: Path) -> Paths:
+    return Paths(
+        home=home,
+        runtime=home / "runtime",
+        database=home / "runtime" / "cmx.sqlite3",
+        secrets=home / "runtime" / "secrets",
+        logs=home / "runtime" / "logs",
+    )
+
+
+def test_loads_web_domain_from_env_production_and_defaults_to_https(
+    tmp_path: Path, monkeypatch
+) -> None:
     home = tmp_path / "mcp"
     home.mkdir()
     (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
@@ -11,14 +25,29 @@ def test_loads_web_domain_from_env_production(tmp_path: Path, monkeypatch) -> No
     monkeypatch.delenv("WEB_DOMAIN", raising=False)
     monkeypatch.delenv("CMX_MASTODON_BASE_URL", raising=False)
 
-    paths = Paths(
-        home=home,
-        runtime=home / "runtime",
-        database=home / "runtime" / "cmx.sqlite3",
-        secrets=home / "runtime" / "secrets",
-        logs=home / "runtime" / "logs",
-    )
-    settings = InstanceSettings.load(paths)
+    settings = InstanceSettings.load(_paths(home))
 
     assert settings.host_header == "pi.example.test"
     assert settings.public_base_url == "https://pi.example.test"
+    assert settings.base_url == "https://pi.example.test"
+
+
+def test_allows_explicit_loopback_http(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "mcp"
+    home.mkdir()
+    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    monkeypatch.setenv("CMX_MASTODON_BASE_URL", "http://127.0.0.1:8080")
+
+    settings = InstanceSettings.load(_paths(home))
+
+    assert settings.base_url == "http://127.0.0.1:8080"
+
+
+def test_rejects_unrelated_https_host(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "mcp"
+    home.mkdir()
+    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    monkeypatch.setenv("CMX_MASTODON_BASE_URL", "https://evil.example")
+
+    with pytest.raises(RuntimeError, match="must match"):
+        InstanceSettings.load(_paths(home))
