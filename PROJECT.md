@@ -10,52 +10,51 @@
 
 **PI OS（π / Personal Instance OS）** 是部署在个人 Windows 电脑上的私人生活时间线。
 
-它用于保存和浏览：
+当前用途：
 
 - 日记、碎碎念和生活时间轴；
 - 书、电影、音乐与收藏；
 - 图片、视频和朋友圈式动态；
-- 以后由 AI 以正式居民身份发布的博客、日记和状态。
+- 后续由 AI 以正式居民身份发布博客、日记和状态。
 
 PI OS 与 AI OS 平行存在。动态可以无人回复；AI 不默认分析全部生活，也不是全局监控器。
 
-## 2. 已确认的产品要求
+## 2. 当前产品状态
 
-### 当前 MVP
+### 已完成的基础网页 MVP
 
-- 手机浏览器通过 HTTPS 访问网页，不使用 Mastodon App。
-- 当前底座使用 Mastodon v4.6.3 官方容器，不 fork 上游。
-- Owner 可以登录、发文字、上传图片、浏览时间线和通知。
-- 数据在重启后保留，并可备份与恢复。
-- 关闭公开注册和公开联邦。
-- 家庭路由器不开放入站端口；公网入口使用 Cloudflare Named Tunnel。
+- 手机浏览器通过 HTTPS 访问，不使用 Mastodon App；
+- Mastodon v4.6.3 官方容器作为当前网页和后端；
+- Owner 可以登录、发布文字、上传图片、浏览时间线并跨设备同步；
+- 公开注册关闭，实例不加入公开联邦；
+- PostgreSQL、Redis、媒体与密钥保存在本机；
+- Cloudflare Named Tunnel 提供公网入口，家庭路由器不开放入站端口；
+- 完整备份已成功生成；
+- Windows 重启并登录后，Docker Desktop 与 PI OS 自动启动链路已验证，网页与旧内容恢复正常。
 
 ### CMX 网页
 
-CMX 是计划中的同源移动网页体验层。当前仓库尚未包含独立 CMX 服务，首次运行仍由 Mastodon Web 提供网页；加入 CMX 时必须满足：
+独立 CMX 前端尚未实现。未来加入时必须：
 
-- 与 Mastodon 后端同源部署；
-- REST 使用相对路径，如 `/api/v1/...`；
-- 使用网页登录 Session 和当前 CSRF token，或使用页面派发的当前用户 token；
-- 不注册长期绑定某个公网域名的 OAuth application；
-- streaming、媒体和跳转地址从当前 origin 或后端元数据获得，不在源码中写死域名；
-- Service Worker、Web Push 和浏览器缓存按当前 origin 独立管理。
+- 与 Mastodon 同源部署；
+- REST 使用 `/api/v1/...` 等相对路径；
+- 使用网页登录 Session/CSRF，或页面派发的当前用户 token；
+- streaming、媒体和跳转地址从当前 origin 或后端元数据获得；
+- 不在源码中写死公网域名；
+- 不注册长期绑定某个公网域名的 OAuth application。
 
 ### AI / Bot / MCP
 
-这是**已确认的后续需求，尚未实现**：
+这是已确认的后续需求，尚未实现：
 
-- AI 可以作为独立正式用户，拥有头像、主页和发布历史；
-- AI 可通过独立最小权限 Token，或通过窄权限 MCP 工具登录和发布；
-- MCP 只暴露读时间线、发布、上传媒体、回复和设置可见性等业务动作，不暴露 PostgreSQL 或 Owner 管理权限；
-- AI 可发布博客、日记或状态，并选择仅自己、指定圈子、实例居民或明确公开的可见范围；
-- AI 默认不读取全站，不因每条动态自动触发分析或回复。
-
-当前基础隐私配置**没有匿名互联网公开出口**。“明确公开”是后续 CMX 功能：必须单独设计只读博客/公开页面与显式发布权限，不能把 Mastodon 底层 `public` 可见性直接等同于匿名公开。
+- AI 可作为独立正式用户，拥有头像、主页和发布历史；
+- 使用独立最小权限 Token，或窄权限 MCP 工具；
+- MCP 只暴露读时间线、发布、上传媒体、回复和设置可见性等业务动作；
+- 不直连 PostgreSQL，不使用 Owner Token；
+- AI 可发布仅自己、指定圈子、实例居民或明确公开的内容；
+- 当前基础隐私配置没有匿名互联网公开博客出口，未来必须单独设计只读公开页面和显式权限。
 
 ## 3. 域名模型
-
-PI OS 把永久内部身份和可替换公网门牌拆开：
 
 ```env
 LOCAL_DOMAIN=pi.invalid
@@ -64,33 +63,24 @@ STREAMING_API_BASE_URL=wss://pi.ler428.xyz
 ALTERNATE_DOMAINS=
 ```
 
-### 不变量
+不变量：
 
-- `LOCAL_DOMAIN` 永远是 `pi.invalid`，不得修改。
-- PostgreSQL、媒体、密码和加密密钥不随公网域名变化。
-- 不允许把 `pi.invalid` 当作可访问 URL。
-- 使用可变 `WEB_DOMAIN` 后，实例永久保持无公开联邦；历史 `statuses.uri` 等 ActivityPub 标识可能保留创建时的旧门牌。
+- `LOCAL_DOMAIN` 永远固定为 `pi.invalid`；
+- `pi.invalid` 不能被当作可访问 URL；
+- PostgreSQL、媒体、密码和加密密钥不随公网域名变化；
+- 使用可变 `WEB_DOMAIN` 后，实例永久不加入公开联邦；
+- 不对 `statuses.uri` 等历史字段执行全库字符串替换。
 
-### 可变项
+可变项：
 
-- `WEB_DOMAIN` 是手机当前访问网页的公网门牌，可以按年更换。
-- `STREAMING_API_BASE_URL` 必须与当前 `WEB_DOMAIN` 同步。
-- `ALTERNATE_DOMAINS` 只用于切换期接受额外 Host 和 WebFinger 兼容；它不负责 URL 生成、CSP、WebAuthn、OAuth、Cookie、Service Worker 或 streaming 主地址。
-
-### 换域名后允许失效
-
-- 旧书签和旧域名绝对链接；
-- 旧 origin 的 Cookie、Session、CSRF token、localStorage、IndexedDB 和 Service Worker；
-- 旧 Web Push 订阅；
-- 绑定旧 RP ID/origin 的 WebAuthn/passkey；
-- 写死旧 callback 的 OAuth application。
-
-首版不得把 WebAuthn/passkey 作为 Owner 唯一登录或二次验证方式。
+- `WEB_DOMAIN` 是当前公网门牌，可通过专用脚本替换；
+- `STREAMING_API_BASE_URL` 必须与 `WEB_DOMAIN` 同步；
+- `ALTERNATE_DOMAINS` 只用于切换期接受额外 Host，不负责 Cookie、CSP、WebAuthn、OAuth、Service Worker 或主 streaming URL 的迁移。
 
 ## 4. 当前部署架构
 
 ```text
-手机浏览器
+手机 / PC 浏览器
     │ HTTPS
     ▼
 当前 WEB_DOMAIN
@@ -98,8 +88,8 @@ ALTERNATE_DOMAINS=
 Cloudflare Named Tunnel
     ▼
 cloudflared → nginx:80
-                 ├─ 普通网页 / Session / REST / 上传 → web:3000
-                 └─ /api/v1/streaming            → streaming:4000
+                 ├─ Web / Session / REST / Media → web:3000
+                 └─ /api/v1/streaming           → streaming:4000
 
 sidekiq     图片处理、通知和异步任务
 PostgreSQL  账号、动态、关系、设置和媒体元数据
@@ -107,67 +97,66 @@ Redis       缓存、Sidekiq 队列和短期状态
 data/media  图片和视频文件
 ```
 
-所有服务由 `compose.yml` 管理。Cloudflare Public Hostname 必须指向 `http://nginx:80`，主网页域名不能套 Cloudflare Access。
+Cloudflare Public Hostname 必须指向 `http://nginx:80`，主网页域名不能套 Cloudflare Access。
 
-### 已验证运行事实
+## 5. Windows 启动模型
 
-2026-07-17，用户明确确认：
-
-- 首次本地实例已在目标 Windows 电脑运行；
-- 手机和 PC 均可通过当前公网门牌访问并登录；
-- 发文字正常；
-- 上传并显示图片正常；
-- 手机与 PC 之间的时间线/内容同步正常；
-- 无痕窗口确认公开注册关闭；
-- `status.ps1` 完整通过：`LOCAL_DOMAIN=pi.invalid`、当前 `WEB_DOMAIN`、streaming、公网入口、Web、Sidekiq、Nginx、容器健康和 Git 敏感文件检查均为 OK。
-
-已经实际跑通的核心内容链路为：
+当前采用双层启动，二者共同使用：
 
 ```text
-手机 / PC → 当前 WEB_DOMAIN → Cloudflare Tunnel → Nginx
-          → Mastodon Session / REST / Media / Timeline sync
-          → PostgreSQL / Redis / Sidekiq / Streaming
+Windows 用户登录
+→ Docker Desktop 静默启动，拉起 WSL2 / Docker Linux engine
+→ PI-OS-Autostart 计划任务等待 Docker 就绪
+→ 调用 start.ps1，明确启动 tunnel profile 与全部 PI OS 服务
+→ 检查本机健康接口并写入 logs/autostart.log
 ```
 
-首次 `backup.ps1` 已成功完成 PostgreSQL dump 与读取验证，并恢复所有应用容器；但 Windows PowerShell 5.1 把 Docker Compose 临时容器 lifecycle stderr 误判为 `NativeCommandError`，导致脚本在媒体归档和成功标记前中止。仓库已修复该兼容问题，并增加失败快照自动清理；本机仍需 `git pull` 后重新执行备份，才能把首次完整备份标记为已验证。
+补充边界：
 
-## 5. 精确接口与配置
+- Compose 中所有服务都有 `restart: unless-stopped`，作为容器级恢复兜底；
+- `start.ps1` 必须保留，它是手动启动、计划任务启动、故障恢复和运维流程的统一入口；
+- `install-autostart.ps1`、`autostart-run.ps1`、`test-autostart.ps1` 和相关 bat 均为有效运维文件，不是临时规划稿；
+- Docker Desktop 自启不能替代 `start.ps1`，计划任务也不能在 Docker engine 未就绪时直接启动容器。
 
-### 公网 HTTP
+## 6. 精确接口与运维入口
 
-- `https://<WEB_DOMAIN>/_pi/health`：Tunnel 与 Nginx 健康检查。
-- `https://<WEB_DOMAIN>/api/v2/instance`：实例元数据；`domain` 应为 `pi.invalid`。
-- `https://<WEB_DOMAIN>/api/v1/...`：标准 Mastodon REST API。
+### 公网接口
+
+- `https://<WEB_DOMAIN>/_pi/health`：Tunnel 与 Nginx 健康检查；
+- `https://<WEB_DOMAIN>/api/v2/instance`：实例元数据，`domain` 应为 `pi.invalid`；
+- `https://<WEB_DOMAIN>/api/v1/...`：标准 Mastodon REST API；
 - `wss://<WEB_DOMAIN>/api/v1/streaming...`：实时更新。
-- 其余登录、Session、媒体和网页均为标准 Mastodon 路径。
 
-### 本地与 Docker
+### 本地接口
 
-- `http://127.0.0.1:8080`：仅本机可访问的 Nginx 入口。
+- `http://127.0.0.1:8080`：仅本机可访问的 Nginx 入口；
 - `web:3000`、`streaming:4000`、`db:5432`、`redis:6379`：Docker 内部服务。
-
-### 关键环境变量
-
-- `LOCAL_DOMAIN=pi.invalid`：永久身份锚点。
-- `WEB_DOMAIN=<当前公网门牌>`：可替换访问域名。
-- `STREAMING_API_BASE_URL=wss://<当前公网门牌>`：必须与 `WEB_DOMAIN` 同步。
-- `ALTERNATE_DOMAINS=<短期旧/新门牌>`：切换期 Host 兼容。
-- `LIMITED_FEDERATION_MODE=true`。
-- `AUTHORIZED_FETCH=true`。
-- `DISALLOW_UNAUTHENTICATED_API_ACCESS=true`。
 
 ### 运维脚本
 
-- `setup.ps1 -AccessDomain <domain>`：首次初始化；固定 `LOCAL_DOMAIN=pi.invalid`。
-- `change-access-domain.ps1 -Phase Prepare -NewDomain <domain>`：加入过渡 Host并做基础预检。
-- `change-access-domain.ps1 -Phase Switch -NewDomain <domain>`：正式切换 `WEB_DOMAIN`、清缓存、重建应用进程。
-- `change-access-domain.ps1 -Phase Release`：移除旧 `ALTERNATE_DOMAINS`。
-- `start.ps1` / `stop.ps1`：启动和停止，不删除数据。
-- `status.ps1`：检查容器、本地链路、身份域名、当前公网门牌、streaming 和 Git 安全。
-- `backup.ps1`：暂停应用后导出并验证 PostgreSQL 和媒体，再恢复运行；失败时清理不完整快照，Mastodon 版本记录失败不阻塞核心备份。
-- `install-autostart.ps1` / `安装开机自启.bat`：安装 Windows 登录后自动启动。
+- `setup.ps1 -AccessDomain <domain>`：首次初始化；
+- `start.ps1` / `stop.ps1`：启动和停止，不删除数据；
+- `status.ps1`：检查容器、本地/公网链路、身份、streaming 和 Git 安全；
+- `backup.ps1`：导出并验证 PostgreSQL 与媒体，并恢复原运行状态；
+- `install-autostart.ps1` / `安装开机自启.bat`：安装登录后计划任务；
+- `test-autostart.ps1`：带可见进度验收自动启动链路；
+- `change-access-domain.ps1`：Prepare / Switch / Release 更换公网门牌。
 
-## 6. 数据所有权与恢复
+从任意 PowerShell 目录运行状态检查时，必须使用绝对路径：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "D:\AI\PI-Personal-Instance-OS\status.ps1"
+```
+
+或者先进入项目目录：
+
+```powershell
+Set-Location "D:\AI\PI-Personal-Instance-OS"
+.\status.ps1
+```
+
+## 7. 数据所有权与恢复
 
 ```text
 Docker named volumes
@@ -184,76 +173,57 @@ D:\AI\PI-Personal-Instance-OS
 
 核心恢复集：PostgreSQL dump、媒体归档、`.env`、`.env.production` 和兼容版本的 `compose.yml`。
 
-Redis 不是长期事实来源。恢复旧 PostgreSQL 快照后必须清 Redis，避免旧缓存和 Sidekiq 队列引用不存在的数据。
+Redis 不是长期事实来源。恢复旧 PostgreSQL 快照后必须清 Redis。
 
-绝对禁止 `docker compose down -v`。绝不提交密钥、运行数据、日志或备份。
+绝对禁止 `docker compose down -v`。不得提交密钥、运行数据、日志或备份。
 
-## 7. 运行流程
+## 8. 已验证运行事实
 
-### 首次部署
+2026-07-17，用户明确确认：
 
-```text
-Cloudflare 添加当前 WEB_DOMAIN → http://nginx:80
-→ clone 到 D:\AI\PI-Personal-Instance-OS
-→ setup.ps1 -AccessDomain <domain>
-→ 保存只显示一次的 Owner 密码
-→ status.ps1
-→ 手机浏览器登录、发文字和图片、检查时间线与实时更新
-→ backup.ps1
-→ 安装开机自启
-```
+- 首次初始化成功；
+- 手机和 PC 均可通过当前公网门牌访问并登录；
+- 文字发布正常；
+- 图片上传、处理和显示正常；
+- 手机与 PC 时间线/内容同步正常；
+- 无痕窗口确认公开注册关闭；
+- `status.ps1` 曾完整通过：身份域名、当前门牌、streaming、容器、本地/公网 health、Sidekiq、Nginx 和 Git safety 均为 OK；
+- `backup.ps1` 最终显示 `Backup completed`，首次完整备份成功；
+- Windows 重启后网页恢复，旧内容存在，Docker Desktop 静默自启与 PI OS 自定义启动链路可用。
 
-截至 2026-07-17，首次初始化、状态检查、隐私检查、手机/PC 网页访问、Owner 登录、文字发布、图片上传显示和跨设备同步已经完成；当前只剩修复版首次完整备份和自动启动/重启恢复验收。
+重启后在 `C:\Windows\system32` 使用相对路径 `-File .\status.ps1` 失败，只说明调用目录错误，不代表 PI OS 失败。文档已统一要求绝对路径或先进入项目目录。
 
-### 更换公网门牌
+## 9. 功能与进度表
 
-```text
-Cloudflare 先添加新域名
-→ Prepare：备份、把新域名加入 ALTERNATE_DOMAINS、基础 Host/TLS/GET 预检
-→ Switch：再次备份、切换 WEB_DOMAIN、同步 streaming URL、FLUSHDB、重建 web/streaming/sidekiq
-→ 在新域名完整登录/旧数据/发文/发图/streaming smoke
-→ 临时阻断旧域名，确认新页面不暗中依赖旧 origin
-→ 过渡期结束后 Release，并删除旧 Cloudflare route
-```
-
-不对 `statuses.uri` 等历史字段执行全库字符串替换。
-
-## 8. 功能与进度表
-
-状态含义：`已实现/未验证` 表示代码已经写入但对应真实行为尚未完成验收；`已验证` 必须有命令输出、日志或明确人工确认。
-
-| 项目 | 状态 | 当前事实 / 验收证据 |
+| 项目 | 状态 | 验收证据 |
 |---|---|---|
-| Docker/Mastodon 核心内容栈 | 已验证 | 实例实际运行，登录、REST 写入、媒体处理/显示和跨设备同步正常 |
-| 首次本地初始化 | 已验证 | 2026-07-17 用户确认实例已在目标 Windows 电脑运行 |
-| `status.ps1` 全链路检查 | 已验证 | Permanent identity、Web entrance、streaming、所有容器、本地/公网 health、Sidekiq 和 Git safety 全部通过 |
-| 手机与 PC 公网网页链路 | 已验证 | 手机、PC 均已打通当前实例 |
-| Owner 登录与文字发布 | 已验证 | 用户确认网页登录和发文字正常 |
-| 图片上传与显示 | 已验证 | 用户确认发图正常；真实图片可在时间线显示 |
-| 时间线/跨设备同步 | 已验证 | 用户确认手机与 PC 同步正常，且 public streaming route health 通过 |
-| 固定 `LOCAL_DOMAIN=pi.invalid` | 已验证 | `status.ps1` 输出 `Permanent identity: pi.invalid (OK)` |
-| 当前 `WEB_DOMAIN` / streaming | 已验证 | `status.ps1` 输出当前门牌和 `wss://pi.ler428.xyz (OK)`；真实年度切换演练仍未执行 |
-| 关闭公开注册 | 已验证 | 用户确认无痕窗口注册关闭 |
-| 首次完整备份 | 待重跑 | 首次尝试的 DB dump 已验证，但 PowerShell stderr 兼容错误导致完整快照未完成；仓库修复已提交 |
-| 恢复流程 | 已实现/未验证 | 恢复时清 Redis；真实 restore 演练不阻塞当前收官 |
-| Windows 登录后自动启动 | 已实现/未验证 | 计划任务脚本已存在；尚未记录重启验证 |
-| 手机 Mastodon 网页日常 MVP | 已验证 | 登录、浏览、发文字、发图和跨设备同步均已人工确认 |
-| 独立 CMX 前端 | 计划中 | 本仓库尚无 CMX 服务；必须同源 Session、相对 API |
-| 内容可见性中文语义 | 计划中 | 仅自己 / 指定圈子 / 居民可见 / 明确公开 |
-| 匿名公开博客出口 | 计划中 | 当前隐私配置没有匿名公开页面；未来需独立只读 CMX/blog route 与显式权限 |
-| AI 正式居民账号 | 计划中 | 独立账号、独立最小 Token，不直连数据库 |
-| AI MCP 发布接口 | 计划中 | 只暴露窄业务动作，权限与账号隔离 |
-| 公共联邦 | 永不实施 | 与可变 `WEB_DOMAIN` 的历史 URI 策略冲突 |
+| Docker/Mastodon 核心内容栈 | 已验证 | 实例运行，登录、REST、媒体和跨设备同步正常 |
+| 首次本地初始化 | 已验证 | 目标 Windows 电脑真实运行 |
+| `status.ps1` 全链路检查 | 已验证 | 身份、门牌、streaming、容器、本地/公网 health 与 Git safety 通过 |
+| 手机与 PC 公网网页链路 | 已验证 | 两端均可访问和登录 |
+| 文字、图片与时间线同步 | 已验证 | 用户真实发布与跨设备确认 |
+| 关闭公开注册 | 已验证 | 无痕窗口确认 |
+| 首次完整备份 | 已验证 | 脚本输出 `Backup completed` |
+| Windows 重启恢复 | 已验证 | 重启登录后网页和旧内容恢复 |
+| Docker Desktop + PI-OS-Autostart | 已验证 | 双层启动后实例恢复可用 |
+| 恢复流程 | 已实现/未验证 | 真实 restore 演练以后独立执行 |
+| 可替换 `WEB_DOMAIN` | 已实现/未验证 | 脚本和边界已完成，真实年度切换以后演练 |
+| 手机 Mastodon 网页日常 MVP | 已验证 | 基础部署阶段完成 |
+| 独立 CMX 前端 | 计划中 | 下一产品阶段 |
+| AI 正式居民 / MCP | 计划中 | 独立账号与窄权限接口 |
+| 匿名公开博客出口 | 计划中 | 需独立只读页面和显式许可 |
+| 公共联邦 | 永不实施 | 与可变门牌和私人实例边界冲突 |
 
-## 9. 当前下一步
+## 10. 当前下一步
 
-1. 本机运行 `git pull --ff-only` 获取 `backup.ps1` 的 Windows PowerShell 兼容修复。
-2. 重新运行一次 `backup.ps1`，必须看到 `Backup completed: ...`；确认最新快照包含 database dump、媒体归档、env、compose、manifest 和版本信息（版本记录失败只允许 warning，不应中止备份）。
-3. 安装 `PI-OS-Autostart` 后再重启 Windows。
-4. 登录 Windows 后确认旧文字/图片仍存在，手机与 PC 均可重新访问和同步。
-5. 重启后再运行一次 `status.ps1`。全部通过后关闭基础部署 Issue；真实 restore 与年度换域名演练保留为独立运维测试，不阻塞当前日常 MVP 收官。
+基础部署阶段已经收官。下一阶段开始前先单独定义 CMX 前端 MVP，不在基础运维 Issue 中继续扩范围。
 
-## 10. Agent 更新契约
+不阻塞当前收官的独立运维演练：
+
+- 真实 restore；
+- 年度更换 `WEB_DOMAIN`。
+
+## 11. Agent 更新契约
 
 事实优先级：
 
@@ -263,11 +233,10 @@ Cloudflare 先添加新域名
 4. 详细文档；
 5. Issue 与历史讨论。
 
-任何任务只要改变需求、边界、架构、接口名、数据所有权、运行流程或进度状态，就必须执行 `skills/project-doc-sync/SKILL.md`：
+任何任务只要改变需求、边界、架构、接口、数据所有权、运行流程或进度，就必须执行 `skills/project-doc-sync/SKILL.md`：
 
-- 先更新本文件中的当前事实和进度表；
-- 再更新受影响的 `docs/MVP_SCOPE.md`、`docs/ARCHITECTURE.md`、部署/恢复文档；
-- 更新当前 Issue 的剩余步骤；
+- 先更新本文件；
+- 再更新受影响的详细文档和当前 Issue；
 - 删除或替换陈旧描述，不并存两套架构；
 - 明确区分“计划中”“已实现/未验证”“已验证”；
-- 没有真实输出时不得声称部署成功。
+- 没有真实输出时不得声称验证成功。
