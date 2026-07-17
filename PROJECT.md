@@ -111,13 +111,23 @@ data/media  图片和视频文件
 
 ### 已验证运行事实
 
-2026-07-17，用户明确确认首次本地实例已经在目标 Windows 电脑运行，手机和 PC 均已通过当前公网门牌打通网页访问链路。这一确认能够证明以下链路实际可用：
+2026-07-17，用户明确确认：
+
+- 首次本地实例已在目标 Windows 电脑运行；
+- 手机和 PC 均可通过当前公网门牌访问并登录；
+- 发文字正常；
+- 上传并显示图片正常；
+- 手机与 PC 之间的时间线/内容同步正常。
+
+已经实际跑通的核心内容链路为：
 
 ```text
-手机 / PC → 当前 WEB_DOMAIN → Cloudflare Tunnel → Nginx → Mastodon Web
+手机 / PC → 当前 WEB_DOMAIN → Cloudflare Tunnel → Nginx
+          → Mastodon Session / REST / Media / Timeline sync
+          → PostgreSQL / Redis / Sidekiq / Streaming
 ```
 
-该确认**不自动证明**发文、发图、缩略图、streaming、备份、恢复或开机自动启动已经通过；这些仍按各自验收项记录。
+上述人工确认可以证明日常浏览、文字发布、图片上传显示和跨设备同步可用，但**不自动证明** `status.ps1` 的全部接口检查、备份、恢复或 Windows 重启后自动启动已经通过；这些仍按各自验收项记录。
 
 ## 5. 精确接口与配置
 
@@ -191,7 +201,7 @@ Cloudflare 添加当前 WEB_DOMAIN → http://nginx:80
 → 安装开机自启
 ```
 
-截至 2026-07-17，首次初始化及手机/PC 网页访问链路已经完成；完整人工 smoke、备份和自动启动按进度表继续验收。
+截至 2026-07-17，首次初始化、手机/PC 网页访问、Owner 登录、文字发布、图片上传显示和跨设备同步已经完成；当前只剩接口状态记录、首次备份和自动启动/重启恢复验收。
 
 ### 更换公网门牌
 
@@ -212,15 +222,18 @@ Cloudflare 先添加新域名
 
 | 项目 | 状态 | 当前事实 / 验收证据 |
 |---|---|---|
-| Docker/Mastodon 基础栈 | 已实现/未验证 | Compose、Nginx、Web、Streaming、Sidekiq、PostgreSQL、Redis、cloudflared 已配置；完整服务 smoke 尚未记录 |
+| Docker/Mastodon 核心内容栈 | 已验证 | 2026-07-17 实例实际运行，登录、REST 写入、媒体处理/显示和跨设备同步正常 |
 | 首次本地初始化 | 已验证 | 2026-07-17 用户确认实例已在目标 Windows 电脑运行 |
-| 手机与 PC 公网网页链路 | 已验证 | 2026-07-17 用户明确确认手机、PC 均已打通当前实例 |
+| 手机与 PC 公网网页链路 | 已验证 | 手机、PC 均已打通当前实例 |
+| Owner 登录与文字发布 | 已验证 | 用户确认网页登录和发文字正常 |
+| 图片上传与显示 | 已验证 | 用户确认发图正常；真实图片可在时间线显示 |
+| 时间线/跨设备同步 | 已验证 | 用户确认手机与 PC 同步正常；独立 streaming health 输出仍待 `status.ps1` 记录 |
 | 固定 `LOCAL_DOMAIN=pi.invalid` | 已实现/未验证 | env 模板与 `setup.ps1` 固定写入；仍需记录 `/api/v2/instance` 验证结果 |
 | 可替换 `WEB_DOMAIN` | 已实现/未验证 | setup、status 与切换脚本已按双域名模型设计；尚未执行真实换域名演练 |
-| Owner 创建与关闭注册 | 已实现/未验证 | `--confirmed --approve --role Owner`；已生成并保存 Owner 密码，登录和注册关闭状态仍需人工确认 |
+| 关闭公开注册 | 已实现/未验证 | setup 已执行注册关闭命令；仍需无痕窗口人工确认 |
 | 备份与恢复 | 已实现/未验证 | PostgreSQL/媒体校验备份；恢复时清 Redis；尚未记录首次真实备份结果 |
 | Windows 登录后自动启动 | 已实现/未验证 | 计划任务脚本已存在；尚未记录重启验证 |
-| 手机 Mastodon 网页完整 MVP | 待完整验收 | 网页访问链路已验证；登录、发文、发图、时间线、streaming 和重启恢复仍需逐项确认 |
+| 手机 Mastodon 网页日常 MVP | 已验证 | 登录、浏览、发文字、发图和跨设备同步均已人工确认；运维收尾不计入日常内容功能 |
 | 独立 CMX 前端 | 计划中 | 本仓库尚无 CMX 服务；必须同源 Session、相对 API |
 | 内容可见性中文语义 | 计划中 | 仅自己 / 指定圈子 / 居民可见 / 明确公开 |
 | 匿名公开博客出口 | 计划中 | 当前隐私配置没有匿名公开页面；未来需独立只读 CMX/blog route 与显式权限 |
@@ -230,11 +243,11 @@ Cloudflare 先添加新域名
 
 ## 9. 当前下一步
 
-1. 运行一次 `status.ps1` 并保留结果，确认 Web、streaming、Sidekiq、公网入口及 Git 安全检查。
-2. 确认 `LOCAL_DOMAIN=pi.invalid`，并检查 `/api/v2/instance` 的 `domain` 与 streaming URL。
-3. 在手机浏览器完成登录、发文字、上传图片、缩略图、时间线和实时更新的人工 smoke。
-4. 运行一次 `backup.ps1`，再安装并验证 `PI-OS-Autostart`。
-5. 完成重启恢复后关闭基础部署 Issue，CMX 与 AI/MCP 作为后续独立增量。
+1. 运行一次 `status.ps1` 并保留结果，确认 Web、streaming、Sidekiq、公网入口、`LOCAL_DOMAIN=pi.invalid` 与 Git 安全检查。
+2. 用无痕窗口确认公开注册关闭；无需测试 Mastodon App、OAuth、联邦或 WebAuthn。
+3. 运行一次 `backup.ps1`，确认新备份目录内 PostgreSQL dump、媒体归档和环境文件副本存在且脚本验证通过。
+4. 安装 `PI-OS-Autostart`，重启 Windows 并登录；确认旧文字/图片仍存在，手机与 PC 均可重新访问和同步。
+5. 重启后再运行一次 `status.ps1`。全部通过后关闭基础部署 Issue；真实 restore 与年度换域名演练保留为独立运维测试，不阻塞当前日常 MVP 收官。
 
 ## 10. Agent 更新契约
 
