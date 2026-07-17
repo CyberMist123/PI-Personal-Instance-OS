@@ -7,7 +7,7 @@ on:
       - ".github/workflows/cmx-mcp-tests.yml"
   push:
     branches:
-      - feature/cmx-mcp-sqlite-mvp
+      - main
     paths:
       - "mcp/**"
       - ".github/workflows/cmx-mcp-tests.yml"
