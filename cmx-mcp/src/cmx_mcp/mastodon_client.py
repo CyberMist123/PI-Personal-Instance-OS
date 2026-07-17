@@ -13,13 +13,21 @@ class MastodonApiError(RuntimeError):
 
 
 class MastodonClient:
-    def __init__(self, *, base_url: str, access_token: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        host_header: str,
+        access_token: str,
+        timeout_seconds: float,
+    ) -> None:
         self._client = httpx.Client(
             base_url=base_url,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
                 "User-Agent": "cmx-mcp/0.0.1",
+                "Host": host_header,
             },
             timeout=timeout_seconds,
             follow_redirects=False,
