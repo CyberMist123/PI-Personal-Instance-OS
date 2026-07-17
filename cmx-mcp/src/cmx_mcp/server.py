@@ -42,6 +42,7 @@ def client() -> MastodonClient:
         current = settings()
         _client = MastodonClient(
             base_url=current.base_url,
+            host_header=current.host_header,
             access_token=current.access_token,
             timeout_seconds=current.timeout_seconds,
         )
@@ -124,12 +125,12 @@ def cmx_status(
 
     if action == "get":
         current.require("status.read")
-        _require_id(status_id)
-        result = compact_status(client().get_status(status_id))
+        target = _require_id(status_id)
+        result = compact_status(client().get_status(target))
     elif action == "context":
         current.require("status.read")
-        _require_id(status_id)
-        raw = client().status_context(status_id)
+        target = _require_id(status_id)
+        raw = client().status_context(target)
         result = {
             "ancestors": [compact_status(item) for item in raw.get("ancestors", [])],
             "descendants": [compact_status(item) for item in raw.get("descendants", [])],
@@ -138,12 +139,11 @@ def cmx_status(
         current.require("status.write")
         if not text or not text.strip():
             raise ValueError("text is required")
-        if action == "reply":
-            _require_id(status_id)
+        reply_target = _require_id(status_id) if action == "reply" else None
         raw = client().create_status(
             text=text.strip(),
             visibility=visibility or current.default_visibility,
-            in_reply_to_id=status_id if action == "reply" else None,
+            in_reply_to_id=reply_target,
             media_ids=media_ids or [],
             spoiler_text=spoiler_text,
             sensitive=sensitive,
@@ -154,16 +154,16 @@ def cmx_status(
         result = _status_write_confirmation(raw)
     elif action == "delete":
         current.require("status.write")
-        _require_id(status_id)
-        raw = client().delete_status(status_id)
-        result = {"ok": True, "status_id": str(raw.get("id") or status_id), "deleted": True}
+        target = _require_id(status_id)
+        raw = client().delete_status(target)
+        result = {"ok": True, "status_id": str(raw.get("id") or target), "deleted": True}
     else:
         current.require("status.interact")
-        _require_id(status_id)
-        raw = client().status_action(status_id, action)
+        target = _require_id(status_id)
+        raw = client().status_action(target, action)
         result = {
             "ok": True,
-            "status_id": str(raw.get("id") or status_id),
+            "status_id": str(raw.get("id") or target),
             "action": action,
         }
 
@@ -223,9 +223,9 @@ def cmx_notifications(
         }
     elif action == "dismiss":
         current.require("notifications.write")
-        _require_id(notification_id)
-        client().dismiss_notification(notification_id)
-        result = {"ok": True, "notification_id": notification_id, "dismissed": True}
+        target = _require_id(notification_id)
+        client().dismiss_notification(target)
+        result = {"ok": True, "notification_id": target, "dismissed": True}
     else:
         current.require("notifications.write")
         client().clear_notifications()
@@ -298,14 +298,13 @@ def cmx_relationships(
         target_id = None
     else:
         current.require("relationships.write")
-        _require_id(account_id)
-        raw = client().account_action(account_id, action)
+        target_id = _require_id(account_id)
+        raw = client().account_action(target_id, action)
         result = {
             "ok": True,
-            "account_id": str(raw.get("id") or account_id),
+            "account_id": str(raw.get("id") or target_id),
             "action": action,
         }
-        target_id = account_id
 
     audit("relationships", action, target_id=target_id)
     return result
@@ -340,31 +339,32 @@ def cmx_lists(
         raw = client().create_list(title=title.strip())
         result = {"ok": True, "id": str(raw.get("id", "")), "title": raw.get("title", title)}
     elif action == "delete":
-        _require_id(list_id)
-        client().delete_list(list_id)
-        result = {"ok": True, "list_id": list_id, "deleted": True}
+        target = _require_id(list_id)
+        client().delete_list(target)
+        result = {"ok": True, "list_id": target, "deleted": True}
     elif action == "accounts":
-        _require_id(list_id)
-        raw = client().list_accounts(list_id, limit=current.clamp_limit(limit))
+        target = _require_id(list_id)
+        raw = client().list_accounts(target, limit=current.clamp_limit(limit))
         result = {"items": [compact_account(item) for item in raw]}
     elif action in {"add", "remove"}:
-        _require_id(list_id)
+        target = _require_id(list_id)
         if not account_ids:
             raise ValueError("account_ids is required")
         client().update_list_accounts(
-            list_id=list_id,
+            list_id=target,
             account_ids=account_ids,
             remove=action == "remove",
         )
-        result = {"ok": True, "list_id": list_id, "action": action, "count": len(account_ids)}
+        result = {"ok": True, "list_id": target, "action": action, "count": len(account_ids)}
     else:
-        _require_id(list_id)
+        target = _require_id(list_id)
+        page_limit = current.clamp_limit(limit)
         raw = client().list_timeline(
-            list_id,
-            limit=current.clamp_limit(limit),
+            target,
+            limit=page_limit,
             max_id=cursor,
         )
-        next_cursor = str(raw[-1].get("id")) if len(raw) == current.clamp_limit(limit) and raw else None
+        next_cursor = str(raw[-1].get("id")) if len(raw) == page_limit and raw else None
         result = compact_status_page(raw, next_cursor=next_cursor)
 
     audit("lists", action, target_id=list_id)
@@ -400,9 +400,10 @@ def cmx_profile(
     return result
 
 
-def _require_id(value: str | None) -> None:
+def _require_id(value: str | None) -> str:
     if not value or not value.strip():
         raise ValueError("A target id is required")
+    return value.strip()
 
 
 def _status_write_confirmation(raw: dict) -> dict:
@@ -421,9 +422,10 @@ def main() -> None:
     # printing secrets or exposing a half-configured tool server.
     current = settings()
     logger.info(
-        "starting transport=stdio profile=%s base_url=%s",
+        "starting transport=stdio profile=%s base_url=%s host=%s",
         current.profile.value,
         current.base_url,
+        current.host_header,
     )
     mcp.run(transport="stdio")
 
