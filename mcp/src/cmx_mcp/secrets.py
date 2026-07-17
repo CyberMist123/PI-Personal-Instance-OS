@@ -11,6 +11,35 @@ class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
 
+_crypt32 = ctypes.WinDLL("Crypt32.dll")
+_kernel32 = ctypes.WinDLL("Kernel32.dll")
+
+_crypt32.CryptProtectData.argtypes = [
+    ctypes.POINTER(DATA_BLOB),
+    wintypes.LPCWSTR,
+    ctypes.POINTER(DATA_BLOB),
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(DATA_BLOB),
+]
+_crypt32.CryptProtectData.restype = wintypes.BOOL
+
+_crypt32.CryptUnprotectData.argtypes = [
+    ctypes.POINTER(DATA_BLOB),
+    ctypes.POINTER(wintypes.LPWSTR),
+    ctypes.POINTER(DATA_BLOB),
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(DATA_BLOB),
+]
+_crypt32.CryptUnprotectData.restype = wintypes.BOOL
+
+_kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+_kernel32.LocalFree.restype = wintypes.HLOCAL
+
+
 def _blob(data: bytes) -> tuple[DATA_BLOB, ctypes.Array]:
     buffer = ctypes.create_string_buffer(data)
     return (
@@ -24,7 +53,7 @@ def protect_for_current_user(secret: str) -> bytes:
         raise ValueError("secret cannot be empty")
     in_blob, in_buffer = _blob(secret.encode("utf-8"))
     out_blob = DATA_BLOB()
-    ok = ctypes.windll.crypt32.CryptProtectData(
+    ok = _crypt32.CryptProtectData(
         ctypes.byref(in_blob),
         "CMX MCP token",
         None,
@@ -39,13 +68,13 @@ def protect_for_current_user(secret: str) -> bytes:
     try:
         return ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
-        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+        _kernel32.LocalFree(ctypes.cast(out_blob.pbData, wintypes.HLOCAL))
 
 
 def unprotect_for_current_user(payload: bytes) -> str:
     in_blob, in_buffer = _blob(payload)
     out_blob = DATA_BLOB()
-    ok = ctypes.windll.crypt32.CryptUnprotectData(
+    ok = _crypt32.CryptUnprotectData(
         ctypes.byref(in_blob),
         None,
         None,
@@ -60,7 +89,7 @@ def unprotect_for_current_user(payload: bytes) -> str:
     try:
         return ctypes.string_at(out_blob.pbData, out_blob.cbData).decode("utf-8")
     finally:
-        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+        _kernel32.LocalFree(ctypes.cast(out_blob.pbData, wintypes.HLOCAL))
 
 
 def write_secret(path: Path, secret: str) -> None:
