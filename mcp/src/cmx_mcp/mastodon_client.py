@@ -8,6 +8,7 @@ from typing import Any, BinaryIO, Iterable
 import httpx
 
 _LINK_RE = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,14 +23,19 @@ class MastodonApiError(RuntimeError):
 
 class MastodonClient:
     def __init__(self, *, base_url: str, host_header: str, token: str, timeout: float):
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "cmx-mcp/0.2.0",
+        }
+        # A custom Host header is only needed for an explicitly configured
+        # loopback reverse proxy. Public HTTPS uses the URL's native host.
+        if httpx.URL(base_url).host in _LOOPBACK:
+            headers["Host"] = host_header
+
         self._client = httpx.Client(
             base_url=base_url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "User-Agent": "cmx-mcp/0.1.0",
-                "Host": host_header,
-            },
+            headers=headers,
             timeout=timeout,
             follow_redirects=False,
             trust_env=False,
@@ -141,11 +147,26 @@ class MastodonClient:
                 f"Mastodon API unexpectedly redirected ({response.status_code})"
             )
         if response.status_code >= 400:
+            detail = _safe_error_detail(response)
+            suffix = f": {detail}" if detail else ""
             raise MastodonApiError(
                 f"Mastodon API {method} {path} returned "
-                f"{response.status_code} {response.reason_phrase}"
+                f"{response.status_code} {response.reason_phrase}{suffix}"
             )
         return response
+
+
+def _safe_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            value = payload.get("error_description") or payload.get("error")
+            if value:
+                return str(value)[:300]
+    except (ValueError, json.JSONDecodeError):
+        pass
+    text = response.text.strip().replace("\r", " ").replace("\n", " ")
+    return text[:300]
 
 
 def _next_cursor(response: httpx.Response) -> str | None:
