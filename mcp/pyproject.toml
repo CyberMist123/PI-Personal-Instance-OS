@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmx-mcp"
+version = "0.1.0"
+description = "Token-efficient local STDIO MCP for a small private CMX/Mastodon instance"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "mcp>=1,<2",
+  "httpx>=0.27,<1",
+]
+
+[project.scripts]
+cmx-mcp = "cmx_mcp.server:main"
+cmx-admin = "cmx_mcp.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
