@@ -117,7 +117,9 @@ data/media  图片和视频文件
 - 手机和 PC 均可通过当前公网门牌访问并登录；
 - 发文字正常；
 - 上传并显示图片正常；
-- 手机与 PC 之间的时间线/内容同步正常。
+- 手机与 PC 之间的时间线/内容同步正常；
+- 无痕窗口确认公开注册关闭；
+- `status.ps1` 完整通过：`LOCAL_DOMAIN=pi.invalid`、当前 `WEB_DOMAIN`、streaming、公网入口、Web、Sidekiq、Nginx、容器健康和 Git 敏感文件检查均为 OK。
 
 已经实际跑通的核心内容链路为：
 
@@ -127,7 +129,7 @@ data/media  图片和视频文件
           → PostgreSQL / Redis / Sidekiq / Streaming
 ```
 
-上述人工确认可以证明日常浏览、文字发布、图片上传显示和跨设备同步可用，但**不自动证明** `status.ps1` 的全部接口检查、备份、恢复或 Windows 重启后自动启动已经通过；这些仍按各自验收项记录。
+首次 `backup.ps1` 已成功完成 PostgreSQL dump 与读取验证，并恢复所有应用容器；但 Windows PowerShell 5.1 把 Docker Compose 临时容器 lifecycle stderr 误判为 `NativeCommandError`，导致脚本在媒体归档和成功标记前中止。仓库已修复该兼容问题，并增加失败快照自动清理；本机仍需 `git pull` 后重新执行备份，才能把首次完整备份标记为已验证。
 
 ## 5. 精确接口与配置
 
@@ -162,7 +164,7 @@ data/media  图片和视频文件
 - `change-access-domain.ps1 -Phase Release`：移除旧 `ALTERNATE_DOMAINS`。
 - `start.ps1` / `stop.ps1`：启动和停止，不删除数据。
 - `status.ps1`：检查容器、本地链路、身份域名、当前公网门牌、streaming 和 Git 安全。
-- `backup.ps1`：暂停应用后导出并验证 PostgreSQL 和媒体，再恢复运行。
+- `backup.ps1`：暂停应用后导出并验证 PostgreSQL 和媒体，再恢复运行；失败时清理不完整快照，Mastodon 版本记录失败不阻塞核心备份。
 - `install-autostart.ps1` / `安装开机自启.bat`：安装 Windows 登录后自动启动。
 
 ## 6. 数据所有权与恢复
@@ -201,7 +203,7 @@ Cloudflare 添加当前 WEB_DOMAIN → http://nginx:80
 → 安装开机自启
 ```
 
-截至 2026-07-17，首次初始化、手机/PC 网页访问、Owner 登录、文字发布、图片上传显示和跨设备同步已经完成；当前只剩接口状态记录、首次备份和自动启动/重启恢复验收。
+截至 2026-07-17，首次初始化、状态检查、隐私检查、手机/PC 网页访问、Owner 登录、文字发布、图片上传显示和跨设备同步已经完成；当前只剩修复版首次完整备份和自动启动/重启恢复验收。
 
 ### 更换公网门牌
 
@@ -222,18 +224,20 @@ Cloudflare 先添加新域名
 
 | 项目 | 状态 | 当前事实 / 验收证据 |
 |---|---|---|
-| Docker/Mastodon 核心内容栈 | 已验证 | 2026-07-17 实例实际运行，登录、REST 写入、媒体处理/显示和跨设备同步正常 |
+| Docker/Mastodon 核心内容栈 | 已验证 | 实例实际运行，登录、REST 写入、媒体处理/显示和跨设备同步正常 |
 | 首次本地初始化 | 已验证 | 2026-07-17 用户确认实例已在目标 Windows 电脑运行 |
+| `status.ps1` 全链路检查 | 已验证 | Permanent identity、Web entrance、streaming、所有容器、本地/公网 health、Sidekiq 和 Git safety 全部通过 |
 | 手机与 PC 公网网页链路 | 已验证 | 手机、PC 均已打通当前实例 |
 | Owner 登录与文字发布 | 已验证 | 用户确认网页登录和发文字正常 |
 | 图片上传与显示 | 已验证 | 用户确认发图正常；真实图片可在时间线显示 |
-| 时间线/跨设备同步 | 已验证 | 用户确认手机与 PC 同步正常；独立 streaming health 输出仍待 `status.ps1` 记录 |
-| 固定 `LOCAL_DOMAIN=pi.invalid` | 已实现/未验证 | env 模板与 `setup.ps1` 固定写入；仍需记录 `/api/v2/instance` 验证结果 |
-| 可替换 `WEB_DOMAIN` | 已实现/未验证 | setup、status 与切换脚本已按双域名模型设计；尚未执行真实换域名演练 |
-| 关闭公开注册 | 已实现/未验证 | setup 已执行注册关闭命令；仍需无痕窗口人工确认 |
-| 备份与恢复 | 已实现/未验证 | PostgreSQL/媒体校验备份；恢复时清 Redis；尚未记录首次真实备份结果 |
+| 时间线/跨设备同步 | 已验证 | 用户确认手机与 PC 同步正常，且 public streaming route health 通过 |
+| 固定 `LOCAL_DOMAIN=pi.invalid` | 已验证 | `status.ps1` 输出 `Permanent identity: pi.invalid (OK)` |
+| 当前 `WEB_DOMAIN` / streaming | 已验证 | `status.ps1` 输出当前门牌和 `wss://pi.ler428.xyz (OK)`；真实年度切换演练仍未执行 |
+| 关闭公开注册 | 已验证 | 用户确认无痕窗口注册关闭 |
+| 首次完整备份 | 待重跑 | 首次尝试的 DB dump 已验证，但 PowerShell stderr 兼容错误导致完整快照未完成；仓库修复已提交 |
+| 恢复流程 | 已实现/未验证 | 恢复时清 Redis；真实 restore 演练不阻塞当前收官 |
 | Windows 登录后自动启动 | 已实现/未验证 | 计划任务脚本已存在；尚未记录重启验证 |
-| 手机 Mastodon 网页日常 MVP | 已验证 | 登录、浏览、发文字、发图和跨设备同步均已人工确认；运维收尾不计入日常内容功能 |
+| 手机 Mastodon 网页日常 MVP | 已验证 | 登录、浏览、发文字、发图和跨设备同步均已人工确认 |
 | 独立 CMX 前端 | 计划中 | 本仓库尚无 CMX 服务；必须同源 Session、相对 API |
 | 内容可见性中文语义 | 计划中 | 仅自己 / 指定圈子 / 居民可见 / 明确公开 |
 | 匿名公开博客出口 | 计划中 | 当前隐私配置没有匿名公开页面；未来需独立只读 CMX/blog route 与显式权限 |
@@ -243,10 +247,10 @@ Cloudflare 先添加新域名
 
 ## 9. 当前下一步
 
-1. 运行一次 `status.ps1` 并保留结果，确认 Web、streaming、Sidekiq、公网入口、`LOCAL_DOMAIN=pi.invalid` 与 Git 安全检查。
-2. 用无痕窗口确认公开注册关闭；无需测试 Mastodon App、OAuth、联邦或 WebAuthn。
-3. 运行一次 `backup.ps1`，确认新备份目录内 PostgreSQL dump、媒体归档和环境文件副本存在且脚本验证通过。
-4. 安装 `PI-OS-Autostart`，重启 Windows 并登录；确认旧文字/图片仍存在，手机与 PC 均可重新访问和同步。
+1. 本机运行 `git pull --ff-only` 获取 `backup.ps1` 的 Windows PowerShell 兼容修复。
+2. 重新运行一次 `backup.ps1`，必须看到 `Backup completed: ...`；确认最新快照包含 database dump、媒体归档、env、compose、manifest 和版本信息（版本记录失败只允许 warning，不应中止备份）。
+3. 安装 `PI-OS-Autostart` 后再重启 Windows。
+4. 登录 Windows 后确认旧文字/图片仍存在，手机与 PC 均可重新访问和同步。
 5. 重启后再运行一次 `status.ps1`。全部通过后关闭基础部署 Issue；真实 restore 与年度换域名演练保留为独立运维测试，不阻塞当前日常 MVP 收官。
 
 ## 10. Agent 更新契约
