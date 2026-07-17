@@ -37,10 +37,46 @@ function Find-DockerCli {
   return $null
 }
 
+function Invoke-NativeProcess {
+  param(
+    [Parameter(Mandatory)][string]$FilePath,
+    [Parameter(Mandatory)][string[]]$ArgumentList
+  )
+
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $process = Start-Process `
+      -FilePath $FilePath `
+      -ArgumentList $ArgumentList `
+      -WorkingDirectory $PSScriptRoot `
+      -NoNewWindow `
+      -Wait `
+      -PassThru `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath
+
+    $stdout = if (Test-Path -LiteralPath $stdoutPath) { @(Get-Content -LiteralPath $stdoutPath) } else { @() }
+    $stderr = if (Test-Path -LiteralPath $stderrPath) { @(Get-Content -LiteralPath $stderrPath) } else { @() }
+
+    return [pscustomobject]@{
+      ExitCode = $process.ExitCode
+      StdOut   = $stdout
+      StdErr   = $stderr
+    }
+  } finally {
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Test-DockerDaemon {
   param([Parameter(Mandatory)][string]$DockerExe)
-  & $DockerExe info *> $null
-  return ($LASTEXITCODE -eq 0)
+  try {
+    $result = Invoke-NativeProcess -FilePath $DockerExe -ArgumentList @("info")
+    return ($result.ExitCode -eq 0)
+  } catch {
+    return $false
+  }
 }
 
 try {
@@ -76,6 +112,8 @@ try {
     if (-not (Get-Process -Name "Docker Desktop" -ErrorAction SilentlyContinue)) {
       Write-Log "Starting Docker Desktop."
       Start-Process -FilePath $desktopExe -WindowStyle Hidden | Out-Null
+    } else {
+      Write-Log "Docker Desktop process exists; waiting for the Linux engine."
     }
 
     $dockerReady = $false
@@ -93,8 +131,7 @@ try {
   }
 
   Write-Log "Docker is ready; starting PI OS."
-  $startOutput = & (Join-Path $PSScriptRoot "start.ps1") 2>&1
-  foreach ($line in $startOutput) { Write-Log "$line" }
+  & (Join-Path $PSScriptRoot "start.ps1")
 
   $healthy = $false
   for ($attempt = 1; $attempt -le 60; $attempt++) {
