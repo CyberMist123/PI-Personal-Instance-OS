@@ -166,11 +166,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
             return _approval_error("This authorization request expired or was already used")
         bot = database.get_bot(pending.bot_id)
         requested_scope_text = html.escape(" ".join(pending.scopes))
-        permission_text = (
-            "cmx:read：读取该居民有权查看的身份、时间线、动态和本地搜索索引。"
-            if SOCIAL_SCOPE not in pending.scopes
-            else "cmx:read：读取内容；cmx:social：未来社交写操作的授权基础。本 Phase 0 远程端仍不会暴露写工具。"
-        )
+        consent_title, permission_text = _consent_copy(pending.scopes, bot)
         body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -179,7 +175,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
 main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-radius:18px}}
 .muted{{color:#9ca3af}}button{{border:0;border-radius:10px;padding:12px 20px;margin-right:10px}}
 .allow{{background:#22c55e;color:#052e16}}.deny{{background:#374151;color:#fff}}</style></head>
-<body><main><h1>允许只读 MCP 连接？</h1>
+<body><main><h1>{consent_title}</h1>
 <p><strong>{html.escape(pending.client_name)}</strong> 请求连接 AI 居民
 <strong>{html.escape(bot.display_name or bot.bot_id)}</strong>。</p>
 <p><strong>Requested scopes:</strong> {requested_scope_text}</p>
@@ -387,6 +383,20 @@ def _approval_error(message: str) -> HTMLResponse:
         status_code=400,
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _consent_copy(scopes: list[str] | tuple[str, ...], bot: Any) -> tuple[str, str]:
+    has_social = SOCIAL_SCOPE in scopes
+    has_notifications = bot.remote_profile == "social_plus" and bot.remote_notifications
+    title = "允许 CMX 社交 MCP 连接？" if has_social else "允许只读 CMX MCP 连接？"
+    body = (
+        "该客户端可以读取该居民有权查看的 CMX 内容。不能发帖、回复、编辑、点赞、收藏或投票。"
+        if not has_social
+        else "该客户端可以读取内容，并代表该居民：发帖和回复、在安全边界内编辑纯文本、点赞、取消点赞、收藏、取消收藏和参与投票。"
+    )
+    if has_notifications:
+        body += "另可只读查看通知；不会执行清除、标记已读或其他通知写操作。"
+    return title, body
 
 
 def main() -> None:

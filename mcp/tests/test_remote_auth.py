@@ -8,6 +8,7 @@ from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
 from mcp.shared.auth import OAuthClientInformationFull
 
 from cmx_mcp.remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
+from cmx_mcp.remote import _consent_copy
 
 
 def _client() -> OAuthClientInformationFull:
@@ -160,3 +161,16 @@ def test_resource_and_redirect_boundaries(tmp_path):
             await provider.register_client(unsafe)
 
     asyncio.run(scenario())
+
+
+def test_consent_copy_matches_requested_scope_and_profile():
+    reader = type("Bot", (), {"remote_profile": "reader", "remote_notifications": False})()
+    title, body = _consent_copy([READ_SCOPE], reader)
+    assert "只读" in title
+    assert "不能发帖" in body
+    social = type("Bot", (), {"remote_profile": "social_plus", "remote_notifications": True})()
+    title, body = _consent_copy([READ_SCOPE, SOCIAL_SCOPE], social)
+    assert "社交" in title
+    assert "发帖" in body
+    assert "只读查看通知" in body
+    assert "Phase 0" not in body

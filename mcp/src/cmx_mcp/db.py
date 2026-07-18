@@ -353,6 +353,12 @@ class Database:
                 ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
+    def invalidate_status(self, bot_id: str, status_id: str) -> None:
+        """Remove a status and its search row after current-token revalidation fails."""
+        with self.connect() as db:
+            db.execute("DELETE FROM status_fts WHERE bot_id=? AND status_id=?", (bot_id, status_id))
+            db.execute("DELETE FROM status_cache WHERE bot_id=? AND status_id=?", (bot_id, status_id))
+
     def audit(
         self,
         *,

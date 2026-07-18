@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import secrets
 import time
 from typing import Any, Literal
@@ -12,7 +13,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from .compact import compact_account, compact_media, compact_status, compact_v2_status
 from .config import InstanceSettings, Paths
 from .db import Database
-from .mastodon_client import MastodonClient
+from .mastodon_client import MastodonApiError, MastodonClient
 from .secrets import read_secret
 from .security import open_safe_image
 from .scope import READ_SCOPE, SOCIAL_SCOPE, require_request_scope
@@ -433,8 +434,11 @@ def _build_remote_server(
             used += size
         all_items = bounded
         ancestor_count = min(len(ancestors), len(all_items))
-        return {"status": compact, "ancestors": all_items[:ancestor_count], "descendants": all_items[ancestor_count:],
-                "truncated": truncated, "reason": "thread_safety_limit" if truncated else None}
+        result = {"status": compact, "ancestors": all_items[:ancestor_count], "descendants": all_items[ancestor_count:]}
+        if truncated:
+            result["truncated"] = True
+            result["reason"] = "thread_safety_limit"
+        return result
 
     @mcp.tool()
     def cmx_search(query: str, limit: int = 5, ctx: Context = None) -> dict:
@@ -443,8 +447,25 @@ def _build_remote_server(
         query = query.strip()
         if not query:
             raise ValueError("query is required")
-        items = runtime.db.search_statuses(runtime.bot.bot_id, query, _limit(limit, 20))
-        return {"items": [compact_v2_status(item) for item in items], "scope": "cache",
+        requested = _limit(limit, 20)
+        candidates = runtime.db.search_statuses(runtime.bot.bot_id, query, min(requested * 3, 60))
+        items: list[dict] = []
+        for cached in candidates:
+            status_id = str(cached.get("id") or "")
+            if not status_id:
+                continue
+            try:
+                raw = runtime.client.get_status(status_id)
+            except MastodonApiError as exc:
+                if _visibility_failure(exc):
+                    runtime.db.invalidate_status(runtime.bot.bot_id, status_id)
+                continue
+            refreshed = compact_status(raw)
+            runtime.db.cache_statuses(runtime.bot.bot_id, [refreshed])
+            items.append(compact_v2_status(raw))
+            if len(items) >= requested:
+                break
+        return {"items": items, "scope": "cache",
                 "coverage": "statuses previously read by this resident MCP"}
 
     if profile in {"social", "social_plus"}:
@@ -535,17 +556,37 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
             raise PermissionError("only the current resident may edit its own status")
         if target.get("media_attachments") or target.get("poll") or target.get("spoiler_text") or target.get("sensitive"):
             raise ValueError("complex statuses must be edited in the web or local client")
-        key = _operation_key(runtime.bot.bot_id, "edit", request_id, status_id)
-        raw = runtime.client.edit_status(_id(status_id), text=text, idempotency_key=key)
-        return {"id": str(raw.get("id") or status_id)}
+        key = _operation_key(
+            runtime.bot.bot_id, "edit", request_id, status_id,
+            str(target.get("edited_at") or target.get("created_at") or ""),
+            str(target.get("content") or ""),
+        )
+        claim = runtime.db.claim_dedup(bot_id=runtime.bot.bot_id, operation="edit", request_id=key)
+        if not claim["claimed"]:
+            if claim["state"] == "succeeded":
+                return {"id": claim["response"]["id"], "deduplicated": True}
+            raise RuntimeError("edit request is already in progress")
+        try:
+            # Mastodon PUT edit is guarded by the freshly-read target version;
+            # its endpoint is not treated as supporting POST-style idempotency headers.
+            raw = runtime.client.edit_status(_id(status_id), text=text)
+            result = {"id": str(raw.get("id") or status_id)}
+            runtime.db.finish_dedup(bot_id=runtime.bot.bot_id, operation="edit", request_id=key, response=result)
+            return result
+        except Exception:
+            runtime.db.finish_dedup(bot_id=runtime.bot.bot_id, operation="edit", request_id=key, error_code="external_error")
+            raise
     target = runtime.client.get_status(_id(status_id)) if action == "reply" else None
     if action == "reply":
         target_visibility = (target or {}).get("visibility")
         visibility = "direct" if target_visibility == "direct" else "private"
-        mentions = [str(item.get("acct") or "") for item in (target or {}).get("mentions") or []]
+        target_author = str(((target or {}).get("account") or {}).get("acct") or "")
+        mentions = [target_author, *[str(item.get("acct") or "") for item in (target or {}).get("mentions") or []]]
         me_acct = str((runtime.client.verify_credentials()).get("acct") or "")
-        mentions = [item for item in dict.fromkeys(mentions) if item and item != me_acct]
-        prefix = " ".join(f"@{item}" for item in mentions)
+        mentions = [item for item in dict.fromkeys(_normalize_acct(item) for item in mentions) if item and item != _normalize_acct(me_acct)]
+        if not mentions:
+            raise ValueError("direct reply has no valid recipient")
+        prefix = " ".join(f"@{item}" for item in mentions if f"@{item}" not in text)
         text = f"{prefix} {text}".strip()
     else:
         visibility = {"residents": "private", "direct": "direct", "public_explicit": "public"}.get(audience)
@@ -563,8 +604,10 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
             return {"id": claim["response"]["id"], "deduplicated": True}
         raise RuntimeError("request is already in progress")
     try:
+        inherited_cw = str((target or {}).get("spoiler_text") or "") if action == "reply" else ""
         raw = runtime.client.publish(text=text, visibility=visibility, reply_to_id=status_id,
-                                     media_ids=[], poll=validated_poll, idempotency_key=key)
+                                     media_ids=[], poll=validated_poll, spoiler_text=inherited_cw or None,
+                                     idempotency_key=key)
         result = {"id": str(raw.get("id") or "")}
         runtime.db.finish_dedup(bot_id=runtime.bot.bot_id, operation=action, request_id=key, response=result)
         runtime.db.cache_statuses(runtime.bot.bot_id, [compact_status(raw)])
@@ -580,6 +623,10 @@ def _operation_key(bot_id: str, operation: str, request_id: str | None, *parts: 
     request = request_id.strip() if request_id and request_id.strip() else f"best-effort:{secrets.token_urlsafe(16)}"
     payload = {"bot_id": bot_id, "operation": operation, "request_id": request, "parts": parts}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _normalize_acct(value: str) -> str:
+    return value.strip().lstrip("@").lower()
 
 
 def _validate_poll(poll: dict) -> dict:
@@ -607,6 +654,10 @@ def _validate_poll_choices(choices: list[int] | None, poll: dict) -> list[int]:
     if not poll.get("multiple") and len(values) != 1:
         raise ValueError("single-choice polls require exactly one choice")
     return values
+
+
+def _visibility_failure(error: MastodonApiError) -> bool:
+    return bool(re.search(r"returned (?:403|404)\b", str(error)))
 
 
 def _trim_context_chars(

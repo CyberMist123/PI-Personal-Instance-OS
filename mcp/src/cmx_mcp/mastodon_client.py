@@ -94,12 +94,15 @@ class MastodonClient:
         reply_to_id: str | None,
         media_ids: Iterable[str],
         poll: dict[str, Any] | None = None,
+        spoiler_text: str | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         fields: list[tuple[str, str]] = [
             ("status", text),
             ("visibility", visibility),
         ]
+        if spoiler_text:
+            fields.append(("spoiler_text", spoiler_text))
         if reply_to_id:
             fields.append(("in_reply_to_id", reply_to_id))
         for media_id in media_ids:
@@ -117,12 +120,10 @@ class MastodonClient:
             headers={"Idempotency-Key": idempotency_key},
         )
 
-    def edit_status(
-        self, status_id: str, *, text: str, idempotency_key: str,
-    ) -> dict[str, Any]:
+    def edit_status(self, status_id: str, *, text: str) -> dict[str, Any]:
         return self._json(
             "PUT", f"/api/v1/statuses/{status_id}",
-            data={"status": text}, headers={"Idempotency-Key": idempotency_key},
+            data={"status": text},
         )
 
     def react(self, status_id: str, action: str) -> dict[str, Any]:

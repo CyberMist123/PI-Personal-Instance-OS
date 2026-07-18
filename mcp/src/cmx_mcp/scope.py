@@ -12,12 +12,14 @@ def require_request_scope(context: Any, required: str) -> None:
     """Enforce authorization from the current MCP request, never process state."""
     request_context = getattr(context, "request_context", None)
     if request_context is None:
-        return
+        raise PermissionError("insufficient_scope")
     request = getattr(request_context, "request", None) if request_context else None
+    if request is None:
+        raise PermissionError("insufficient_scope")
     state = getattr(request, "state", None)
     scopes = getattr(state, "cmx_scopes", None) if state is not None else None
     if scopes is None:
-        raw_scope = getattr(request, "scope", {}).get("state", {}) if request else {}
+        raw_scope = getattr(request, "scope", {}).get("state", {})
         scopes = raw_scope.get("cmx_scopes") if isinstance(raw_scope, dict) else None
     if required not in set(_normalize(scopes or [])):
         raise PermissionError("insufficient_scope")
