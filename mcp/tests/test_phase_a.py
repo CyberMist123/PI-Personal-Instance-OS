@@ -321,6 +321,40 @@ def test_direct_reply_keeps_target_author_mentions_and_inherits_cw():
     assert runtime.client.published["text"] == "@author@example.test @helper@example.test hello"
 
 
+def test_private_reply_to_self_does_not_require_direct_recipients():
+    runtime = _runtime()
+
+    class DB:
+        def claim_dedup(self, **_): return {"claimed": True, "state": "pending"}
+        def finish_dedup(self, **_): pass
+        def cache_statuses(self, *_): pass
+
+    class Client:
+        published = None
+
+        def get_status(self, _):
+            return {
+                "id": "target",
+                "visibility": "private",
+                "spoiler_text": "",
+                "account": {"acct": "self@example.test"},
+                "mentions": [],
+            }
+
+        def verify_credentials(self):
+            return {"id": "me", "acct": "self@example.test"}
+
+        def publish(self, **kwargs):
+            self.published = kwargs
+            return {"id": "new", "created_at": "now"}
+
+    runtime.db, runtime.client = DB(), Client()
+    result = _remote_post(runtime, lambda _ctx: None, "reply", "hello", "target", "residents", None, "req-2", None)
+    assert result["id"] == "new"
+    assert runtime.client.published["visibility"] == "private"
+    assert runtime.client.published["text"] == "hello"
+
+
 def test_edit_rejects_complex_status_before_put():
     runtime = _runtime()
     class Client:

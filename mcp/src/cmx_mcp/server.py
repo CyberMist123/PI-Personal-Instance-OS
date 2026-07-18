@@ -586,14 +586,15 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
     if action == "reply":
         target_visibility = (target or {}).get("visibility")
         visibility = "direct" if target_visibility == "direct" else "private"
-        target_author = str(((target or {}).get("account") or {}).get("acct") or "")
-        mentions = [target_author, *[str(item.get("acct") or "") for item in (target or {}).get("mentions") or []]]
-        me_acct = str((runtime.client.verify_credentials()).get("acct") or "")
-        mentions = [item for item in dict.fromkeys(_normalize_acct(item) for item in mentions) if item and item != _normalize_acct(me_acct)]
-        if not mentions:
-            raise ValueError("direct reply has no valid recipient")
-        prefix = " ".join(f"@{item}" for item in mentions if f"@{item}" not in text)
-        text = f"{prefix} {text}".strip()
+        if visibility == "direct":
+            target_author = str(((target or {}).get("account") or {}).get("acct") or "")
+            mentions = [target_author, *[str(item.get("acct") or "") for item in (target or {}).get("mentions") or []]]
+            me_acct = str((runtime.client.verify_credentials()).get("acct") or "")
+            mentions = [item for item in dict.fromkeys(_normalize_acct(item) for item in mentions) if item and item != _normalize_acct(me_acct)]
+            if not mentions:
+                raise ValueError("direct reply has no valid recipient")
+            prefix = " ".join(f"@{item}" for item in mentions if f"@{item}" not in text)
+            text = f"{prefix} {text}".strip()
     else:
         visibility = {"residents": "private", "direct": "direct", "public_explicit": "public"}.get(audience)
         if visibility is None or (audience == "public_explicit" and not runtime.bot.allow_public):
