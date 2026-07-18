@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, BinaryIO, Iterable
+from urllib.parse import urlencode
 
 import httpx
 
@@ -119,8 +120,11 @@ class MastodonClient:
             return self._json(
                 "POST",
                 "/api/v1/statuses",
-                data=fields,
-                headers={"Idempotency-Key": idempotency_key},
+                content=_urlencoded_form(fields),
+                headers={
+                    "Idempotency-Key": idempotency_key,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
             )
         except MastodonApiError as exc:
             raise _content_limit_if_confirmed(exc) from exc
@@ -148,7 +152,12 @@ class MastodonClient:
         return self._json("POST", f"/api/v1/statuses/{status_id}/{action}")
 
     def vote_poll(self, poll_id: str, choices: list[int]) -> dict[str, Any]:
-        return self._json("POST", f"/api/v1/polls/{poll_id}/votes", data=[("choices[]", str(choice)) for choice in choices])
+        return self._json(
+            "POST",
+            f"/api/v1/polls/{poll_id}/votes",
+            content=_urlencoded_form([("choices[]", str(choice)) for choice in choices]),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
 
     def upload_image(
         self,
@@ -263,3 +272,7 @@ def _next_cursor(response: httpx.Response) -> str | None:
 
 def _drop_none(values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
+
+
+def _urlencoded_form(fields: list[tuple[str, str]]) -> bytes:
+    return urlencode(fields).encode("utf-8")

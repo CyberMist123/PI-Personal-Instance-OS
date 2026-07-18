@@ -168,6 +168,57 @@ def test_mastodon_422_validation_is_not_misreported_as_content_limit():
         pass
 
 
+def test_publish_urlencodes_form_fields_for_httpx():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("Content-Type")
+        seen["body"] = request.read().decode("utf-8")
+        return httpx.Response(200, json={"id": "new"})
+
+    client = object.__new__(MastodonClient)
+    client._client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url="https://mastodon.example",
+    )
+    try:
+        result = client.publish(
+            text="hello",
+            visibility="private",
+            reply_to_id=None,
+            media_ids=[],
+            idempotency_key="req",
+        )
+        assert result == {"id": "new"}
+        assert seen["content_type"] == "application/x-www-form-urlencoded"
+        assert "status=hello" in seen["body"]
+        assert "visibility=private" in seen["body"]
+    finally:
+        client.close()
+
+
+def test_vote_poll_urlencodes_repeated_choice_fields_for_httpx():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("Content-Type")
+        seen["body"] = request.read().decode("utf-8")
+        return httpx.Response(200, json={"voted": True})
+
+    client = object.__new__(MastodonClient)
+    client._client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url="https://mastodon.example",
+    )
+    try:
+        result = client.vote_poll("poll-1", [0, 2])
+        assert result == {"voted": True}
+        assert seen["content_type"] == "application/x-www-form-urlencoded"
+        assert seen["body"] == "choices%5B%5D=0&choices%5B%5D=2"
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("detail", ["already voted", "poll has expired", "choices are invalid"])
 def test_poll_422_errors_are_not_content_limit(detail):
     client = object.__new__(MastodonClient)
