@@ -7,7 +7,7 @@ import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
 from mcp.shared.auth import OAuthClientInformationFull
 
-from cmx_mcp.remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE
+from cmx_mcp.remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 
 
 def _client() -> OAuthClientInformationFull:
@@ -37,15 +37,37 @@ def _provider(tmp_path, *, enabled=lambda bot_id: bot_id == "gpt"):
     return store, provider
 
 
-def _params(resource: str = "https://pi.example/mcp/gpt") -> AuthorizationParams:
+def _params(resource: str = "https://pi.example/mcp/gpt", scopes=None) -> AuthorizationParams:
     return AuthorizationParams(
         state="client-state",
-        scopes=[READ_SCOPE],
+        scopes=scopes or [READ_SCOPE],
         code_challenge="A" * 43,
         redirect_uri="http://127.0.0.1:9999/callback",
         redirect_uri_provided_explicitly=True,
         resource=resource,
     )
+
+
+def test_refresh_scopes_are_a_subset_of_original_grant(tmp_path):
+    async def scenario():
+        _store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+        approval_url = await provider.authorize(client, _params(scopes=[READ_SCOPE, SOCIAL_SCOPE]))
+        callback = provider.complete(approval_url.rsplit("=", 1)[1], approved=True)
+        code = await provider.load_authorization_code(client, callback.split("code=", 1)[1].split("&", 1)[0])
+        tokens = await provider.exchange_authorization_code(client, code)
+        refresh = await provider.load_refresh_token(client, tokens.refresh_token)
+        assert refresh is not None
+        reduced = await provider.exchange_refresh_token(client, refresh, [SOCIAL_SCOPE, READ_SCOPE, READ_SCOPE])
+        assert reduced.scope == "cmx:read cmx:social"
+
+        refresh = await provider.load_refresh_token(client, reduced.refresh_token)
+        assert refresh is not None
+        with pytest.raises(Exception):
+            await provider.exchange_refresh_token(client, refresh, ["cmx:read", "cmx:unknown"])
+
+    asyncio.run(scenario())
 
 
 def test_oauth_code_refresh_revoke_and_hashed_storage(tmp_path):

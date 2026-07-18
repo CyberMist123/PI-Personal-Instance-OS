@@ -18,6 +18,10 @@ class Bot:
     default_audience: str
     allow_public: bool
     enabled: bool
+    remote_profile: str = "reader"
+    remote_polls: bool = True
+    remote_boosts: bool = False
+    remote_notifications: bool = False
 
 
 class Database:
@@ -35,8 +39,10 @@ class Database:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            self._migrate_legacy_cache(db)
             db.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS bots (
                     bot_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -52,7 +58,8 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS status_cache (
-                    status_id TEXT PRIMARY KEY,
+                    bot_id TEXT NOT NULL,
+                    status_id TEXT NOT NULL,
                     author_id TEXT NOT NULL,
                     author_acct TEXT NOT NULL,
                     text TEXT NOT NULL,
@@ -62,10 +69,12 @@ class Database:
                     visibility TEXT,
                     reply_to_id TEXT,
                     payload_json TEXT NOT NULL,
-                    indexed_at INTEGER NOT NULL
+                    indexed_at INTEGER NOT NULL,
+                    PRIMARY KEY (bot_id, status_id)
                 );
 
                 CREATE VIRTUAL TABLE IF NOT EXISTS status_fts USING fts5(
+                    bot_id UNINDEXED,
                     status_id UNINDEXED,
                     author_acct,
                     text,
@@ -94,9 +103,72 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_audit_bot_created
                     ON audit_events(bot_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_status_created
-                    ON status_cache(created_at DESC);
+                    ON status_cache(bot_id, created_at DESC);
                 """
             )
+            for name, definition in (
+                ("remote_profile", "TEXT NOT NULL DEFAULT 'reader'"),
+                ("remote_polls", "INTEGER NOT NULL DEFAULT 1"),
+                ("remote_boosts", "INTEGER NOT NULL DEFAULT 0"),
+                ("remote_notifications", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in {r[1] for r in db.execute("PRAGMA table_info(bots)")}:
+                    db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
+            self._migrate_dedup(db)
+            db.execute("DELETE FROM schema_version")
+            db.execute("INSERT INTO schema_version(version) VALUES(2)")
+
+    def _migrate_dedup(self, db: sqlite3.Connection) -> None:
+        columns = {r[1] for r in db.execute("PRAGMA table_info(publish_dedup)")}
+        if not columns or "state" in columns:
+            return
+        db.execute("ALTER TABLE publish_dedup RENAME TO publish_dedup_legacy")
+        db.execute("""CREATE TABLE publish_dedup (
+            bot_id TEXT NOT NULL, operation TEXT NOT NULL, request_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending','succeeded','failed')),
+            status_id TEXT, error_code TEXT, lease_expires_at INTEGER,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, response_json TEXT,
+            PRIMARY KEY(bot_id,operation,request_id))""")
+        db.execute("""INSERT INTO publish_dedup
+            (bot_id,operation,request_id,state,created_at,updated_at,response_json)
+            SELECT bot_id,'publish',request_key,'succeeded',created_at,created_at,response_json
+            FROM publish_dedup_legacy""")
+        db.execute("DROP TABLE publish_dedup_legacy")
+
+    def _migrate_legacy_cache(self, db: sqlite3.Connection) -> None:
+        """Migrate the pre-Phase-0 global cache without dropping its rows."""
+        db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+        row = db.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row and int(row[0]) >= 2:
+            return
+        columns = {r[1] for r in db.execute("PRAGMA table_info(status_cache)")}
+        if not columns:
+            return
+        if columns and "bot_id" not in columns:
+            db.execute("ALTER TABLE status_cache RENAME TO status_cache_legacy")
+            db.execute("DROP TABLE IF EXISTS status_fts")
+            bots = [r[0] for r in db.execute("SELECT bot_id FROM bots ORDER BY bot_id")]
+            legacy_bot = bots[0] if len(bots) == 1 else "__legacy__"
+            db.execute("""CREATE TABLE status_cache (
+                bot_id TEXT NOT NULL, status_id TEXT NOT NULL, author_id TEXT NOT NULL,
+                author_acct TEXT NOT NULL, text TEXT NOT NULL, spoiler_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT, edited_at TEXT, visibility TEXT, reply_to_id TEXT,
+                payload_json TEXT NOT NULL, indexed_at INTEGER NOT NULL,
+                PRIMARY KEY (bot_id, status_id))""")
+            db.execute("""INSERT INTO status_cache
+                (bot_id,status_id,author_id,author_acct,text,spoiler_text,created_at,edited_at,
+                 visibility,reply_to_id,payload_json,indexed_at)
+                SELECT ?,status_id,author_id,author_acct,text,spoiler_text,created_at,edited_at,
+                 visibility,reply_to_id,payload_json,indexed_at FROM status_cache_legacy""", (legacy_bot,))
+            db.execute("DROP TABLE status_cache_legacy")
+        db.execute("DROP TABLE IF EXISTS status_fts")
+        db.execute("""CREATE VIRTUAL TABLE status_fts USING fts5(
+            bot_id UNINDEXED, status_id UNINDEXED, author_acct, text, spoiler_text,
+            tokenize='unicode61 remove_diacritics 2')""")
+        db.execute("""INSERT INTO status_fts(bot_id,status_id,author_acct,text,spoiler_text)
+            SELECT bot_id,status_id,author_acct,text,spoiler_text FROM status_cache""")
+        db.execute("DELETE FROM schema_version")
+        db.execute("INSERT INTO schema_version(version) VALUES(2)")
 
     def upsert_bot(
         self,
@@ -108,6 +180,10 @@ class Database:
         token_ref: str,
         default_audience: str,
         allow_public: bool,
+        remote_profile: str = "reader",
+        remote_polls: bool = True,
+        remote_boosts: bool = False,
+        remote_notifications: bool = False,
     ) -> None:
         now = int(time.time())
         with self.connect() as db:
@@ -115,8 +191,9 @@ class Database:
                 """
                 INSERT INTO bots(
                     bot_id, display_name, profile, media_root, token_ref,
-                    default_audience, allow_public, enabled, created_at, updated_at
-                ) VALUES(?,?,?,?,?,?,?,1,?,?)
+                    default_audience, allow_public, enabled, created_at, updated_at,
+                    remote_profile, remote_polls, remote_boosts, remote_notifications
+                ) VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     display_name=excluded.display_name,
                     profile=excluded.profile,
@@ -125,7 +202,11 @@ class Database:
                     default_audience=excluded.default_audience,
                     allow_public=excluded.allow_public,
                     enabled=1,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    remote_profile=excluded.remote_profile,
+                    remote_polls=excluded.remote_polls,
+                    remote_boosts=excluded.remote_boosts,
+                    remote_notifications=excluded.remote_notifications
                 """,
                 (
                     bot_id,
@@ -137,6 +218,10 @@ class Database:
                     int(allow_public),
                     now,
                     now,
+                    remote_profile,
+                    int(remote_polls),
+                    int(remote_boosts),
+                    int(remote_notifications),
                 ),
             )
 
@@ -154,6 +239,10 @@ class Database:
             default_audience=row["default_audience"],
             allow_public=bool(row["allow_public"]),
             enabled=bool(row["enabled"]),
+            remote_profile=row["remote_profile"] if "remote_profile" in row.keys() else "reader",
+            remote_polls=bool(row["remote_polls"]) if "remote_polls" in row.keys() else True,
+            remote_boosts=bool(row["remote_boosts"]) if "remote_boosts" in row.keys() else False,
+            remote_notifications=bool(row["remote_notifications"]) if "remote_notifications" in row.keys() else False,
         )
 
     def list_bots(self) -> list[Bot]:
@@ -169,6 +258,10 @@ class Database:
                 default_audience=row["default_audience"],
                 allow_public=bool(row["allow_public"]),
                 enabled=bool(row["enabled"]),
+                remote_profile=row["remote_profile"] if "remote_profile" in row.keys() else "reader",
+                remote_polls=bool(row["remote_polls"]) if "remote_polls" in row.keys() else True,
+                remote_boosts=bool(row["remote_boosts"]) if "remote_boosts" in row.keys() else False,
+                remote_notifications=bool(row["remote_notifications"]) if "remote_notifications" in row.keys() else False,
             )
             for row in rows
         ]
@@ -182,7 +275,7 @@ class Database:
             if cursor.rowcount != 1:
                 raise RuntimeError(f"Unknown bot: {bot_id}")
 
-    def cache_statuses(self, statuses: Iterable[dict[str, Any]]) -> None:
+    def cache_statuses(self, bot_id: str, statuses: Iterable[dict[str, Any]]) -> None:
         with self.connect() as db:
             for status in statuses:
                 status_id = str(status["id"])
@@ -192,11 +285,11 @@ class Database:
                 db.execute(
                     """
                     INSERT INTO status_cache(
-                        status_id, author_id, author_acct, text, spoiler_text,
+                        bot_id, status_id, author_id, author_acct, text, spoiler_text,
                         created_at, edited_at, visibility, reply_to_id,
                         payload_json, indexed_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(status_id) DO UPDATE SET
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(bot_id,status_id) DO UPDATE SET
                         author_id=excluded.author_id,
                         author_acct=excluded.author_acct,
                         text=excluded.text,
@@ -209,7 +302,7 @@ class Database:
                         indexed_at=excluded.indexed_at
                     """,
                     (
-                        status_id,
+                        bot_id, status_id,
                         str(account.get("id") or ""),
                         str(account.get("acct") or ""),
                         text,
@@ -222,35 +315,35 @@ class Database:
                         int(time.time()),
                     ),
                 )
-                db.execute("DELETE FROM status_fts WHERE status_id=?", (status_id,))
+                db.execute("DELETE FROM status_fts WHERE bot_id=? AND status_id=?", (bot_id, status_id))
                 db.execute(
-                    "INSERT INTO status_fts(status_id,author_acct,text,spoiler_text) VALUES(?,?,?,?)",
-                    (status_id, str(account.get("acct") or ""), text, spoiler),
+                    "INSERT INTO status_fts(bot_id,status_id,author_acct,text,spoiler_text) VALUES(?,?,?,?,?)",
+                    (bot_id, status_id, str(account.get("acct") or ""), text, spoiler),
                 )
 
-    def search_statuses(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def search_statuses(self, bot_id: str, query: str, limit: int) -> list[dict[str, Any]]:
         with self.connect() as db:
             try:
                 rows = db.execute(
                     """
                     SELECT c.payload_json
                     FROM status_fts f
-                    JOIN status_cache c ON c.status_id=f.status_id
-                    WHERE status_fts MATCH ?
+                    JOIN status_cache c ON c.status_id=f.status_id AND c.bot_id=f.bot_id
+                    WHERE status_fts MATCH ? AND f.bot_id=? AND c.bot_id=?
                     ORDER BY bm25(status_fts), c.created_at DESC
                     LIMIT ?
                     """,
-                    (query, limit),
+                    (query, bot_id, bot_id, limit),
                 ).fetchall()
             except sqlite3.OperationalError:
                 pattern = f"%{query}%"
                 rows = db.execute(
                     """
                     SELECT payload_json FROM status_cache
-                    WHERE text LIKE ? OR spoiler_text LIKE ? OR author_acct LIKE ?
+                    WHERE bot_id=? AND (text LIKE ? OR spoiler_text LIKE ? OR author_acct LIKE ?)
                     ORDER BY created_at DESC LIMIT ?
                     """,
-                    (pattern, pattern, pattern, limit),
+                    (bot_id, pattern, pattern, pattern, limit),
                 ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
@@ -277,7 +370,7 @@ class Database:
         cutoff = int(time.time()) - max_age_seconds
         with self.connect() as db:
             row = db.execute(
-                "SELECT response_json FROM publish_dedup WHERE request_key=? AND created_at>=?",
+                "SELECT response_json FROM publish_dedup WHERE operation='publish' AND request_id=? AND state='succeeded' AND created_at>=?",
                 (request_key, cutoff),
             ).fetchone()
         return json.loads(row["response_json"]) if row else None
@@ -286,17 +379,63 @@ class Database:
         with self.connect() as db:
             db.execute(
                 """
-                INSERT OR REPLACE INTO publish_dedup(request_key,bot_id,created_at,response_json)
-                VALUES(?,?,?,?)
+                INSERT OR REPLACE INTO publish_dedup(
+                    bot_id,operation,request_id,state,created_at,updated_at,response_json
+                ) VALUES(?,?,?,'succeeded',?,?,?)
                 """,
                 (
-                    request_key,
                     bot_id,
+                    "publish",
+                    request_key,
+                    int(time.time()),
                     int(time.time()),
                     json.dumps(response, ensure_ascii=False, separators=(",", ":")),
                 ),
             )
             db.execute(
-                "DELETE FROM publish_dedup WHERE created_at<?",
+                "DELETE FROM publish_dedup WHERE updated_at<?",
                 (int(time.time()) - 86400,),
             )
+
+    def claim_dedup(
+        self, *, bot_id: str, operation: str, request_id: str, lease_seconds: int = 300
+    ) -> dict[str, Any]:
+        """Atomically claim one external operation, or return its durable state."""
+        now = int(time.time())
+        lease = now + max(1, lease_seconds)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM publish_dedup WHERE bot_id=? AND operation=? AND request_id=?",
+                (bot_id, operation, request_id),
+            ).fetchone()
+            if row is None:
+                db.execute("""INSERT INTO publish_dedup
+                    (bot_id,operation,request_id,state,lease_expires_at,created_at,updated_at)
+                    VALUES(?,?,?,'pending',?,?,?)""", (bot_id, operation, request_id, lease, now, now))
+                return {"state": "pending", "claimed": True, "lease_expires_at": lease}
+            state = str(row["state"])
+            if state == "succeeded":
+                return {"state": state, "claimed": False, "response": json.loads(row["response_json"])}
+            if state == "pending" and row["lease_expires_at"] and int(row["lease_expires_at"]) > now:
+                return {"state": state, "claimed": False, "lease_expires_at": row["lease_expires_at"]}
+            db.execute("""UPDATE publish_dedup SET state='pending',lease_expires_at=?,
+                error_code=NULL,updated_at=? WHERE bot_id=? AND operation=? AND request_id=?""",
+                       (lease, now, bot_id, operation, request_id))
+            return {"state": "pending", "claimed": True, "lease_expires_at": lease}
+
+    def finish_dedup(
+        self, *, bot_id: str, operation: str, request_id: str,
+        response: dict[str, Any] | None = None, error_code: str | None = None,
+    ) -> None:
+        state = "succeeded" if response is not None and error_code is None else "failed"
+        with self.connect() as db:
+            db.execute("""UPDATE publish_dedup SET state=?,response_json=?,error_code=?,
+                lease_expires_at=NULL,updated_at=? WHERE bot_id=? AND operation=? AND request_id=?
+                AND state='pending'""", (state, json.dumps(response, separators=(",", ":")) if response is not None else None,
+                error_code, int(time.time()), bot_id, operation, request_id))
+
+    def cleanup_dedup(self, *, ttl_seconds: int = 86400) -> int:
+        with self.connect() as db:
+            cur = db.execute("DELETE FROM publish_dedup WHERE updated_at<?", (int(time.time()) - ttl_seconds,))
+            return cur.rowcount

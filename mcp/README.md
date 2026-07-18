@@ -1,4 +1,14 @@
-# CMX MCP — small private instance edition
+# CMX MCP – small private instance edition
+
+## Phase 0 remote safety
+
+The remote Streamable HTTP endpoint remains read-only in Phase 0. OAuth accepts
+`cmx:read` and the reserved `cmx:social` scope, but no remote social write tools
+are registered. Refresh requests are limited to the original grant, and each
+resident's SQLite status cache/FTS index is isolated by `(bot_id, status_id)`.
+Existing databases are migrated transactionally on startup; the migration
+preserves legacy cache rows and uses the sole configured bot when their owner
+is unambiguous.
 
 状态：`v0.3.0-rc.1` 已在目标 Windows 运行。本地 `gpt` STDIO、Claude Code 和公网 OAuth 只读 MCP 已通过真实链路验证；本地 Resident 写工具与全新账号创建仍需人工验收。
 

@@ -87,7 +87,7 @@ def build_server(
             since_id=newer_than,
         )
         compact_items = [compact_status(item) for item in page.items]
-        runtime.db.cache_statuses(compact_items)
+        runtime.db.cache_statuses(runtime.bot.bot_id, compact_items)
         runtime.audit("timeline", "home")
         return {"items": compact_items, "next_cursor": page.next_cursor}
 
@@ -99,7 +99,7 @@ def build_server(
         """Read one status, optionally with a strictly bounded thread context."""
         status_id = _id(status_id)
         item = compact_status(runtime.client.get_status(status_id))
-        runtime.db.cache_statuses([item])
+        runtime.db.cache_statuses(runtime.bot.bot_id, [item])
         result: dict = {"status": item}
         if include_context:
             raw = runtime.client.context(status_id)
@@ -116,7 +116,7 @@ def build_server(
                 descendants,
                 runtime.settings.max_context_chars,
             )
-            runtime.db.cache_statuses([*ancestors, *descendants])
+            runtime.db.cache_statuses(runtime.bot.bot_id, [*ancestors, *descendants])
             result["context"] = {
                 "ancestors": ancestors,
                 "descendants": descendants,
@@ -136,7 +136,7 @@ def build_server(
         if not query:
             raise ValueError("query is required")
         limit = _limit(limit, min(runtime.settings.max_items, 20))
-        items = runtime.db.search_statuses(query, limit)
+        items = runtime.db.search_statuses(runtime.bot.bot_id, query, limit)
         runtime.audit("search", "local")
         return {
             "items": items,
@@ -181,30 +181,43 @@ def build_server(
                 media_ids=media_ids,
                 request_id=request_id,
             )
-            cached = runtime.db.get_dedup(key)
-            if cached:
-                cached["deduplicated"] = True
-                runtime.audit("publish", "deduplicated", target_id=cached.get("status_id"))
-                return cached
-            raw = runtime.client.publish(
-                text=text,
-                visibility=visibility,
-                reply_to_id=reply_to_id,
-                media_ids=media_ids,
-                idempotency_key=key,
+            claim = runtime.db.claim_dedup(
+                bot_id=runtime.bot.bot_id, operation="publish", request_id=key
             )
-            compact = compact_status(raw)
-            runtime.db.cache_statuses([compact])
-            result = {
-                "ok": True,
-                "status_id": compact["interaction_target_id"],
-                "created_at": compact["created_at"],
-                "audience": audience,
-                "media_count": len(compact["media"]),
-                "reply_to_id": reply_to_id,
-                "deduplicated": False,
-            }
-            runtime.db.put_dedup(key, runtime.bot.bot_id, result)
+            if not claim["claimed"]:
+                if claim["state"] == "succeeded":
+                    cached = dict(claim["response"])
+                    cached["deduplicated"] = True
+                    runtime.audit("publish", "deduplicated", target_id=cached.get("status_id"))
+                    return cached
+                raise RuntimeError("publish request is already in progress")
+            try:
+                raw = runtime.client.publish(
+                    text=text,
+                    visibility=visibility,
+                    reply_to_id=reply_to_id,
+                    media_ids=media_ids,
+                    idempotency_key=key,
+                )
+                compact = compact_status(raw)
+                runtime.db.cache_statuses(runtime.bot.bot_id, [compact])
+                result = {
+                    "ok": True,
+                    "status_id": compact["interaction_target_id"],
+                    "created_at": compact["created_at"],
+                    "audience": audience,
+                    "media_count": len(compact["media"]),
+                    "reply_to_id": reply_to_id,
+                    "deduplicated": False,
+                }
+                runtime.db.finish_dedup(
+                    bot_id=runtime.bot.bot_id, operation="publish", request_id=key, response=result
+                )
+            except Exception:
+                runtime.db.finish_dedup(
+                    bot_id=runtime.bot.bot_id, operation="publish", request_id=key, error_code="external_error"
+                )
+                raise
             runtime.audit("publish", "reply" if reply_to_id else "create", target_id=result["status_id"])
             return result
 
@@ -224,7 +237,7 @@ def build_server(
             status_id = _id(status_id)
             raw = runtime.client.react(status_id, action)
             compact = compact_status(raw)
-            runtime.db.cache_statuses([compact])
+            runtime.db.cache_statuses(runtime.bot.bot_id, [compact])
             runtime.audit("react", action, target_id=status_id)
             return {
                 "ok": True,
@@ -278,7 +291,7 @@ def build_server(
                 account = compact_account(raw.get("account") or {})
                 status = compact_status(raw["status"]) if raw.get("status") else None
                 if status:
-                    runtime.db.cache_statuses([status])
+                    runtime.db.cache_statuses(runtime.bot.bot_id, [status])
                 items.append(
                     {
                         "id": str(raw.get("id") or ""),

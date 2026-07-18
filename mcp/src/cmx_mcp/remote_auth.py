@@ -26,6 +26,8 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 
 READ_SCOPE = "cmx:read"
+SOCIAL_SCOPE = "cmx:social"
+KNOWN_SCOPES = frozenset({READ_SCOPE, SOCIAL_SCOPE})
 AUTHORIZATION_CODE_TTL = 300
 ACCESS_TOKEN_TTL = 3600
 REFRESH_TOKEN_TTL = 30 * 86400
@@ -320,9 +322,10 @@ class CmxOAuthProvider:
             raise AuthorizeError("invalid_request", "resource must name one CMX resident MCP URL")
         if not self.bot_is_enabled(bot_id):
             raise AuthorizeError("access_denied", "the requested CMX resident is unavailable")
-        scopes = tuple(params.scopes or [READ_SCOPE])
-        if not scopes or any(scope != READ_SCOPE for scope in scopes):
-            raise AuthorizeError("invalid_scope", "only cmx:read is available remotely")
+        try:
+            scopes = normalize_scopes(params.scopes or [READ_SCOPE])
+        except ValueError as exc:
+            raise AuthorizeError("invalid_scope", str(exc)) from exc
 
         pending_id = secrets.token_urlsafe(32)
         pending = PendingAuthorization(
@@ -432,13 +435,19 @@ class CmxOAuthProvider:
         refresh_token: CmxRefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
+        requested = normalize_scopes(scopes)
+        original = normalize_scopes(refresh_token.scopes)
+        if not set(requested).issubset(original):
+            raise TokenError("invalid_scope", "refresh scope cannot exceed the original grant")
+        if not self.bot_is_enabled(str(refresh_token.subject or "")):
+            raise TokenError("invalid_grant", "the CMX resident is unavailable")
         if not self.store.rotate_family(refresh_token.family_id):
             raise TokenError("invalid_grant", "refresh token was already used or revoked")
         return self._issue_pair(
             client_id=str(client.client_id or ""),
             bot_id=str(refresh_token.subject or ""),
             resource=refresh_token.resource,
-            scopes=scopes,
+            scopes=requested,
             family_id=refresh_token.family_id,
         )
 
@@ -468,6 +477,7 @@ class CmxOAuthProvider:
         scopes: list[str],
         family_id: str | None = None,
     ) -> OAuthToken:
+        scopes = normalize_scopes(scopes)
         if not bot_id or not self.bot_is_enabled(bot_id):
             raise TokenError("invalid_grant", "the CMX resident is unavailable")
         if self.resource_to_bot(resource) != bot_id:
@@ -500,6 +510,20 @@ class CmxOAuthProvider:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def normalize_scopes(scopes: list[str] | tuple[str, ...] | str) -> list[str]:
+    values = scopes.split() if isinstance(scopes, str) else [str(value) for value in scopes]
+    result = sorted(set(value for value in values if value))
+    unknown = [value for value in result if value not in KNOWN_SCOPES]
+    if unknown:
+        raise ValueError("unknown scope")
+    return result
+
+
+def require_scope(granted_scopes: list[str] | tuple[str, ...], required_scope: str) -> None:
+    if required_scope not in normalize_scopes(granted_scopes):
+        raise PermissionError("insufficient_scope")
 
 
 def _safe_redirect_uri(value: str) -> bool:

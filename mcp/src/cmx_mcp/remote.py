@@ -22,9 +22,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from .config import InstanceSettings, Paths
+from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
-from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE
+from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 
 
@@ -109,8 +109,9 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
         enable_dns_rebinding_protection=False,
     )
     for bot in database.list_bots():
-        if not bot.enabled:
+        if not bot.enabled or bot.remote_profile == "disabled":
             continue
+        validate_remote_profile(bot.remote_profile)
         runtime = Runtime(bot.bot_id)
         server = build_server(
             runtime,
@@ -135,8 +136,8 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
                 "resource": resource,
                 "authorization_servers": [settings.public_origin],
                 "bearer_methods_supported": ["header"],
-                "scopes_supported": [READ_SCOPE],
-                "resource_name": f"CMX resident {bot_id} (read only)",
+                "scopes_supported": [READ_SCOPE, SOCIAL_SCOPE],
+                "resource_name": f"CMX resident {bot_id} (read only; social profile reserved)",
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -162,6 +163,12 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
         if pending is None:
             return _approval_error("This authorization request expired or was already used")
         bot = database.get_bot(pending.bot_id)
+        requested_scope_text = html.escape(" ".join(pending.scopes))
+        permission_text = (
+            "cmx:read：读取该居民有权查看的身份、时间线、动态和本地搜索索引。"
+            if SOCIAL_SCOPE not in pending.scopes
+            else "cmx:read：读取内容；cmx:social：未来社交写操作的授权基础。本 Phase 0 远程端仍不会暴露写工具。"
+        )
         body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -173,7 +180,8 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
 <body><main><h1>允许只读 MCP 连接？</h1>
 <p><strong>{html.escape(pending.client_name)}</strong> 请求连接 AI 居民
 <strong>{html.escape(bot.display_name or bot.bot_id)}</strong>。</p>
-<p class="muted">允许后只能读取身份、时间线、动态与本地搜索索引；不能发帖、点赞、上传媒体或修改资料。</p>
+<p><strong>Requested scopes:</strong> {requested_scope_text}</p>
+<p class="muted">{permission_text}</p>
 <form method="post" action="/oauth/approve">
 <input type="hidden" name="request" value="{html.escape(request_id)}">
 <button class="allow" name="decision" value="allow">允许</button>
@@ -197,7 +205,7 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
         client_registration_options=ClientRegistrationOptions(
             enabled=True,
             client_secret_expiry_seconds=365 * 86400,
-            valid_scopes=[READ_SCOPE],
+            valid_scopes=[READ_SCOPE, SOCIAL_SCOPE],
             default_scopes=[READ_SCOPE],
         ),
         revocation_options=RevocationOptions(enabled=True),
@@ -338,6 +346,9 @@ class RemoteBoundaryMiddleware:
                     ],
                 )
                 return
+            scope_state = scope.setdefault("state", {})
+            if isinstance(scope_state, dict):
+                scope_state["cmx_scopes"] = list(access.scopes)
         await self.app(scope, receive, send)
 
 

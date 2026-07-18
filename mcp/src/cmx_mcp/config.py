@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$")
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+REMOTE_PROFILES = frozenset({"disabled", "reader", "social", "social_plus"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,22 @@ class InstanceSettings:
                 "CMX_MAX_MEDIA_BYTES", 20 * 1024 * 1024, 1024, 100 * 1024 * 1024
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteCapabilities:
+    polls: bool = True
+    boosts: bool = False
+    notifications: bool = False
+
+
+def validate_remote_profile(profile: str, capabilities: RemoteCapabilities | None = None) -> tuple[str, RemoteCapabilities]:
+    if profile not in REMOTE_PROFILES:
+        raise ValueError("remote_profile must be disabled, reader, social, or social_plus")
+    caps = capabilities or RemoteCapabilities()
+    if not isinstance(caps.polls, bool) or not isinstance(caps.boosts, bool) or not isinstance(caps.notifications, bool):
+        raise ValueError("remote capabilities must be boolean")
+    return profile, caps
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
