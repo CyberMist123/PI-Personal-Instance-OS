@@ -115,18 +115,24 @@ class MastodonClient:
             fields.append(("poll[hide_totals]", "true" if poll.get("hide_totals") else "false"))
             for option in poll["options"]:
                 fields.append(("poll[options][]", str(option)))
-        return self._json(
-            "POST",
-            "/api/v1/statuses",
-            data=fields,
-            headers={"Idempotency-Key": idempotency_key},
-        )
+        try:
+            return self._json(
+                "POST",
+                "/api/v1/statuses",
+                data=fields,
+                headers={"Idempotency-Key": idempotency_key},
+            )
+        except MastodonApiError as exc:
+            raise _content_limit_if_confirmed(exc) from exc
 
     def edit_status(self, status_id: str, *, text: str) -> dict[str, Any]:
-        return self._json(
-            "PUT", f"/api/v1/statuses/{status_id}",
-            data={"status": text},
-        )
+        try:
+            return self._json(
+                "PUT", f"/api/v1/statuses/{status_id}",
+                data={"status": text},
+            )
+        except MastodonApiError as exc:
+            raise _content_limit_if_confirmed(exc) from exc
 
     def react(self, status_id: str, action: str) -> dict[str, Any]:
         allowed = {
@@ -191,7 +197,11 @@ class MastodonClient:
             if response.status_code == 401:
                 raise MastodonApiError("resident token is invalid", status_code=401)
             if response.status_code == 422:
-                raise MastodonApiError("content exceeds instance limit", status_code=422)
+                detail = _safe_error_detail(response)
+                suffix = f": {detail}" if detail else ""
+                raise MastodonApiError(
+                    f"Mastodon validation failed{suffix}", status_code=422
+                )
             if response.status_code == 429:
                 raise MastodonApiError("Mastodon rate limit exceeded", status_code=429)
             if response.status_code >= 500:
@@ -212,11 +222,31 @@ def _safe_error_detail(response: httpx.Response) -> str:
         if isinstance(payload, dict):
             value = payload.get("error_description") or payload.get("error")
             if value:
-                return str(value)[:300]
+                return _sanitize_error_detail(str(value))
     except (ValueError, json.JSONDecodeError):
         pass
     text = response.text.strip().replace("\r", " ").replace("\n", " ")
-    return text[:300]
+    return _sanitize_error_detail(text)
+
+
+def _sanitize_error_detail(value: str) -> str:
+    value = re.sub(r"(?i)\b(?:authorization|bearer|token|access_token)\b\s*[:=]?\s*(?:(?:bearer)\s+)?\S+", "[redacted]", value)
+    return value[:200]
+
+
+def _content_limit_if_confirmed(error: MastodonApiError) -> MastodonApiError:
+    if error.status_code == 422 and _looks_like_content_limit(str(error)):
+        return MastodonApiError("content exceeds instance limit", status_code=422)
+    return error
+
+
+def _looks_like_content_limit(message: str) -> bool:
+    return bool(re.search(
+        r"(?i)^too long$|\btoo long\b|"
+        r"(character|characters|content|status|text).{0,40}(limit|maximum|max|too long|longer)|"
+        r"(limit|maximum|max|too long).{0,40}(character|content|status|text)",
+        message,
+    ))
 
 
 def _next_cursor(response: httpx.Response) -> str | None:

@@ -521,8 +521,12 @@ def _remote_interact(runtime: Runtime, check_scope: Any, action: str, status_id:
                      choices: list[int] | None, ctx: Context) -> dict:
     check_scope(ctx)
     status_id = _id(status_id)
+    if action != "vote" and choices:
+        raise ValueError("choices is only accepted for vote")
     target = runtime.client.get_status(status_id)
     if action == "vote":
+        if choices is None or not choices:
+            raise ValueError("poll choices are required")
         poll = target.get("poll") or {}
         if not poll:
             raise ValueError("status has no poll")
@@ -532,7 +536,10 @@ def _remote_interact(runtime: Runtime, check_scope: Any, action: str, status_id:
     api_action = {"like": "favourite", "unlike": "unfavourite", "boost": "reblog", "unboost": "unreblog"}.get(action, action)
     raw = runtime.client.react(status_id, api_action)
     compact = compact_v2_status(raw)
-    return {"id": compact.get("id", status_id), "state": compact.get("state", {})}
+    result = {"id": compact.get("id", status_id)}
+    if compact.get("state"):
+        result["state"] = compact["state"]
+    return result
 
 
 def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,

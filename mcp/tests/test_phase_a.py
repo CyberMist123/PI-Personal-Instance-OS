@@ -8,6 +8,7 @@ from cmx_mcp.mastodon_client import MastodonApiError, MastodonClient
 from cmx_mcp.server import build_server
 from cmx_mcp.scope import READ_SCOPE, SOCIAL_SCOPE, require_request_scope
 from cmx_mcp.server import _remote_post
+from cmx_mcp.server import _remote_interact
 from cmx_mcp.server import _visibility_failure
 
 
@@ -133,16 +134,108 @@ def test_remote_post_does_not_reject_or_truncate_long_url_text():
 
 def test_mastodon_422_becomes_compact_content_limit_error():
     client = object.__new__(MastodonClient)
-    client._client = httpx.Client(
-        transport=httpx.MockTransport(lambda request: httpx.Response(422, json={"error": "too long"})),
-        base_url="https://mastodon.example",
+    client._json = lambda *args, **kwargs: (_ for _ in ()).throw(
+        MastodonApiError("Mastodon validation failed: too long", status_code=422)
     )
     try:
         with pytest.raises(MastodonApiError, match="^content exceeds instance limit$") as caught:
-            client._request("POST", "/api/v1/statuses")
+            client.publish(text="long", visibility="private", reply_to_id=None,
+                           media_ids=[], idempotency_key="req")
         assert caught.value.status_code == 422
     finally:
+        pass
+
+
+def _mock_mastodon_422(detail: str) -> MastodonClient:
+    client = object.__new__(MastodonClient)
+    client._client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(422, json={"error": detail})),
+        base_url="https://mastodon.example",
+    )
+    return client
+
+
+def test_mastodon_422_validation_is_not_misreported_as_content_limit():
+    client = object.__new__(MastodonClient)
+    client._json = lambda *args, **kwargs: (_ for _ in ()).throw(
+        MastodonApiError("Mastodon validation failed: visibility is invalid", status_code=422)
+    )
+    try:
+        with pytest.raises(MastodonApiError, match="^Mastodon validation failed: visibility is invalid$"):
+            client.publish(text="hello", visibility="private", reply_to_id=None,
+                           media_ids=[], idempotency_key="req")
+    finally:
+        pass
+
+
+@pytest.mark.parametrize("detail", ["already voted", "poll has expired", "choices are invalid"])
+def test_poll_422_errors_are_not_content_limit(detail):
+    client = object.__new__(MastodonClient)
+    client._json = lambda *args, **kwargs: (_ for _ in ()).throw(
+        MastodonApiError(f"Mastodon validation failed: {detail}", status_code=422)
+    )
+    try:
+        with pytest.raises(MastodonApiError) as caught:
+            client.vote_poll("poll-1", [0])
+        assert str(caught.value).startswith("Mastodon validation failed")
+        assert "content exceeds instance limit" not in str(caught.value)
+    finally:
+        pass
+
+
+def test_edit_validation_422_is_not_content_limit_and_redacts_secrets():
+    client = _mock_mastodon_422("invalid status; Authorization: Bearer secret-token")
+    try:
+        with pytest.raises(MastodonApiError) as caught:
+            client.edit_status("status-1", text="hello")
+        message = str(caught.value)
+        assert message.startswith("Mastodon validation failed")
+        assert "content exceeds instance limit" not in message
+        assert "Authorization" not in message
+        assert "secret-token" not in message
+    finally:
         client.close()
+
+
+def _interact_runtime(raw_status=None):
+    runtime = _runtime(boosts=True)
+    class Client:
+        def get_status(self, _):
+            return {"id": "status-1", "poll": {"id": "poll-1", "options": [{"title": "yes"}], "multiple": False}} if raw_status is None else raw_status
+        def react(self, status_id, action):
+            return raw_status or {"id": "status-1", "favourited": False, "bookmarked": False, "reblogged": False}
+        def vote_poll(self, poll_id, choices):
+            self.voted = (poll_id, choices)
+            return {"options": [{"title": "yes", "votes_count": 1}], "multiple": False}
+    runtime.client = Client()
+    return runtime
+
+
+@pytest.mark.parametrize("action", ["like", "unlike", "bookmark", "unbookmark", "boost", "unboost"])
+def test_interact_rejects_choices_for_every_non_vote_action(action):
+    with pytest.raises(ValueError, match="^choices is only accepted for vote$"):
+        _remote_interact(_interact_runtime(), lambda _ctx: None, action, "status-1", [0], None)
+
+
+def test_interact_vote_requires_choices_and_accepts_valid_choices():
+    runtime = _interact_runtime()
+    with pytest.raises(ValueError, match="^poll choices are required$"):
+        _remote_interact(runtime, lambda _ctx: None, "vote", "status-1", None, None)
+    result = _remote_interact(runtime, lambda _ctx: None, "vote", "status-1", [0], None)
+    assert result["id"] == "status-1"
+
+
+def test_interact_sparse_state_omits_empty_state():
+    runtime = _interact_runtime()
+    result = _remote_interact(runtime, lambda _ctx: None, "like", "status-1", None, None)
+    assert result == {"id": "status-1"}
+    assert all(value not in ({}, None, False) for value in result.values())
+
+
+def test_interact_includes_non_empty_state():
+    runtime = _interact_runtime({"id": "status-1", "favourited": True})
+    result = _remote_interact(runtime, lambda _ctx: None, "like", "status-1", None, None)
+    assert result == {"id": "status-1", "state": {"favourite": True}}
 
 
 def test_scope_guard_fails_closed_without_context_or_state():
