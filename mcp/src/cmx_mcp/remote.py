@@ -139,7 +139,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
                 "authorization_servers": [settings.public_origin],
                 "bearer_methods_supported": ["header"],
                 "scopes_supported": [READ_SCOPE, SOCIAL_SCOPE],
-                "resource_name": f"CMX resident {bot_id} (read only; social profile reserved)",
+                "resource_name": f"CMX resident {bot_id} ({database.get_bot(bot_id).remote_profile} profile)",
             },
             headers={"Cache-Control": "no-store"},
         )
