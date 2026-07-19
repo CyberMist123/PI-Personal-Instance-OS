@@ -11,9 +11,10 @@
 - `cmx_home(view="timeline")` 只返回最多 30 条 `{id,author,preview,replies?,media?}`，preview 为去 HTML、压平空白后的前 50 个 Unicode 字符；不混入 pinned，不自动展开 thread 或媒体；
 - 返回短期 `visit_id`；`cmx_status(status_ids=[...], visit_id=...)` 使用 Mastodon `GET /api/v1/statuses?id[]=...`，按请求顺序返回 1–3 条正文并明确列出 `missing_ids`；thread/media 只接受单个 ID；
 - SQLite schema v3 新增 `browse_state`、`browse_seen`、`browse_visits`。外层 timeline status ID 是分页水位线，真正展示的原状态 ID 用于永久去重，全部按 `bot_id` 隔离；
-- 后续扫描以 `min_id` 向前完整分页，在整条状态边界最多展示 30 条；即使 boost 指向已看旧帖也推进外层水位线；
-- visit 默认 30 分钟、最多展开 3 个不同 ID。目录与正文共用默认 5000 的保守字符预算，并为 MCP/JSON-RPC 包装预留 400；计数对象是 `ensure_ascii=False` 的最终精简 JSON。这里不是 tokenizer 精确 token 计数；
-- 配置：`CMX_BROWSE_PREVIEW_CHARS=50`、`CMX_BROWSE_MAX_ITEMS=30`、`CMX_BROWSE_MAX_OPEN=3`、`CMX_BROWSE_TOKEN_BUDGET=5000`、`CMX_BROWSE_VISIT_TTL_SECONDS=1800`。
+- 后续扫描每次只用 `min_id` 的 immediately-newer 语义读取紧邻当前水位的最多 30 条，不组合固定 `min_id` 与 `rel=next/max_id`；水位只推进到本次处理完成的最后一个外层 ID，即使 boost 指向已看旧帖也会推进；
+- `commit_browse(expected_watermark=...)` 在事务内 CAS。并发冲突时重新读取 state/seen、重新获取邻接页并计算目录，避免重复目录返回；cache/audit 在 CAS 前完成，CAS 成功后直接返回；
+- visit 默认 30 分钟，并保存本次 `max_open`，默认最多展开 3 个不同 ID。目录与正文共用默认 5000 Unicode 字符单位，另为 MCP/JSON-RPC 包装计入 400 字符单位；计数对象是 `ensure_ascii=False` 的最终精简 JSON。它不是 token 数、token 估算或 token 上界；
+- 配置：`CMX_BROWSE_PREVIEW_CHARS=50`、`CMX_BROWSE_MAX_ITEMS=30`、`CMX_BROWSE_MAX_OPEN=3`、`CMX_BROWSE_CHAR_BUDGET=5000`、`CMX_BROWSE_VISIT_TTL_SECONDS=1800`。旧 `CMX_BROWSE_TOKEN_BUDGET` 仅作为弃用兼容 alias，新变量优先。
 
 ## 1. 一句话目标
 
@@ -40,7 +41,7 @@
 - Reader/Social 工具隔离验证通过：`tools/list` 恰好返回 `cmx_home`、`cmx_status`、`cmx_search`、`cmx_post`、`cmx_interact`，未出现 `cmx_notifications`、`boost`、`unboost` 或任何本地 STDIO full 工具；
 - private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 全部通过；旧 token 在 revoke 后再调用读取工具失败；
 - 本轮真实 smoke 中确认并修复 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则；
-- Phase A/A+ 当时的完整自动测试为 `46 passed`；加入两段式漏斗后当前分支为 `56 passed`，且本增量尚未做目标 Windows / GPT Web smoke。
+- Phase A/A+ 当时的完整自动测试为 `46 passed`；两段式漏斗及 P1 审核修复后当前分支为 `66 passed`，且本增量尚未做目标 Windows / GPT Web smoke。
 
 ### 2.2 当前边界与未纳入本轮验证
 

@@ -51,3 +51,14 @@ def test_rejects_unrelated_https_host(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="must match"):
         InstanceSettings.load(_paths(home))
+
+
+def test_char_budget_accepts_deprecated_token_alias_and_new_name_wins(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "mcp"; home.mkdir()
+    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    monkeypatch.setenv("CMX_BROWSE_TOKEN_BUDGET", "4000")
+    settings = InstanceSettings.load(_paths(home))
+    assert settings.browse_char_budget == 4000
+    monkeypatch.setenv("CMX_BROWSE_CHAR_BUDGET", "4500")
+    settings = InstanceSettings.load(_paths(home))
+    assert settings.browse_char_budget == 4500

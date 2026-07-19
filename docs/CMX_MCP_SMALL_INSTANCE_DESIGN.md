@@ -55,7 +55,7 @@ mcp/spool/<bot>/
 
 Mastodon/PostgreSQL 始终是账号、动态、关系、互动和媒体的事实源。SQLite 搜索缓存可以删除并重建，不替代 Mastodon 恢复。
 
-远程 timeline 浏览使用 SQLite schema v3 的 `browse_state`、`browse_seen` 与 `browse_visits` 保存按居民隔离的辅助水位线、已展示原状态 ID 和短期访问预算；不保存完整 Mastodon REST 历史。`cmx_home` 目录最多 30 条稀疏预览，`cmx_status` 再批量展开最多 3 条。此增量已实现并通过自动测试，尚未在目标 Windows 或真实 GPT Web Connector 验证。
+远程 timeline 浏览使用 SQLite schema v3 的 `browse_state`、`browse_seen` 与 `browse_visits` 保存按居民隔离的辅助水位线、已展示原状态 ID 和短期字符预算；不保存完整 Mastodon REST 历史。每次扫描只通过 `min_id` 读取 immediately-newer 邻接页，并以 expected-watermark CAS 提交；`cmx_home` 目录最多 30 条稀疏预览，`cmx_status` 再批量展开最多 3 条。字符预算不是 token 数、估算或上界。此增量已实现并通过自动测试，尚未在目标 Windows 或真实 GPT Web Connector 验证。
 
 ## 4. MCP 工具
 

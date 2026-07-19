@@ -404,7 +404,8 @@ def _build_remote_server(
         """Read 1-3 statuses; thread/media are explicit single-status views."""
         read_scope(ctx)
         ids = [_id(value) for value in status_ids]
-        if not 1 <= len(ids) <= getattr(runtime.settings, "browse_max_open", 3):
+        direct_max_open = getattr(runtime.settings, "browse_max_open", 3)
+        if not 1 <= len(ids) <= 3:
             raise ValueError("status_ids must contain between 1 and 3 IDs")
         if len(set(ids)) != len(ids):
             raise ValueError("status_ids must be distinct")
@@ -415,8 +416,12 @@ def _build_remote_server(
             raise ValueError("visit_id is invalid or expired")
         if visit:
             allowed = set(json.loads(visit["allowed_ids_json"]))
+            if len(ids) > int(visit["max_open"]):
+                raise ValueError(f"visit may open at most {visit['max_open']} distinct statuses")
             if not set(ids).issubset(allowed):
                 raise ValueError("status_id was not offered by this visit")
+        elif len(ids) > direct_max_open:
+            raise ValueError(f"status_ids may contain at most {direct_max_open} IDs")
         returned = runtime.client.get_statuses(ids)
         by_id = {str(item.get("id") or ""): item for item in returned}
         raws = [by_id[value] for value in ids if value in by_id]
@@ -426,15 +431,27 @@ def _build_remote_server(
         if view == "compact":
             result = _budget_statuses(runtime, ids, compacts, missing, visit)
             if visit_id:
-                runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id,
-                                     opened_ids=[item["id"] for item in result["items"]],
-                                     added_budget=result.pop("_budget_used"))
+                added_chars = result.pop("_chars_used")
+                if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id,
+                                            opened_ids=[item["id"] for item in result["items"]],
+                                            added_chars=added_chars):
+                    visit = runtime.db.get_visit(runtime.bot.bot_id, visit_id)
+                    result = _budget_statuses(runtime, ids, compacts, missing, visit)
+                    added_chars = result.pop("_chars_used")
+                    if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id,
+                                                opened_ids=[item["id"] for item in result["items"]],
+                                                added_chars=added_chars):
+                        visit = runtime.db.get_visit(runtime.bot.bot_id, visit_id)
+                        result = _budget_statuses(runtime, ids, [], missing, visit)
+                        result.pop("_chars_used")
             else:
-                result.pop("_budget_used", None)
+                result.pop("_chars_used", None)
             return result
         raw = raws[0] if raws else None
         if raw is None:
-            return {"items": [], "missing_ids": missing}
+            result = _status_response(ids, [], missing, int(visit["char_budget_limit"]) if visit else getattr(runtime.settings, "browse_char_budget", 5000), int(visit["char_budget_used"]) if visit else 400)
+            result.pop("_chars_used")
+            return result
         compact = compacts[0]
         status_id = ids[0]
         if view == "compact":
@@ -442,7 +459,8 @@ def _build_remote_server(
         if view == "media":
             result = {"id": compact["id"], "media": compact.get("media", [])}
             if visit_id:
-                runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_budget=_json_cost(result))
+                if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_chars=_json_cost(result)):
+                    return {"truncated": True, "remaining_ids": [compact["id"]], "budget_chars_remaining": 0}
             return result
         context = runtime.client.context(status_id)
         ancestors = [compact_v2_status(item) for item in context.get("ancestors") or []]
@@ -468,7 +486,8 @@ def _build_remote_server(
             result["truncated"] = True
             result["reason"] = "thread_safety_limit"
         if visit_id:
-            runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_budget=_json_cost(result))
+            if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_chars=_json_cost(result)):
+                return {"truncated": True, "remaining_ids": [compact["id"]], "budget_chars_remaining": 0}
         return result
 
     @mcp.tool()
@@ -564,87 +583,116 @@ def _remote_timeline_funnel(runtime: Runtime) -> dict[str, Any]:
     bot_id = runtime.bot.bot_id
     maximum = getattr(runtime.settings, "browse_max_items", 30)
     preview_chars = getattr(runtime.settings, "browse_preview_chars", 50)
-    budget = getattr(runtime.settings, "browse_token_budget", 5000)
+    char_budget = getattr(runtime.settings, "browse_char_budget", 5000)
+    max_open = getattr(runtime.settings, "browse_max_open", 3)
     ttl = getattr(runtime.settings, "browse_visit_ttl_seconds", 1800)
-    watermark = runtime.db.get_browse_watermark(bot_id) or None
-    raw_items: list[dict[str, Any]] = []
-    if watermark is None:
-        raw_items = runtime.client.home_timeline(limit=maximum).items
-        ordered = list(reversed(raw_items))
-    else:
-        cursor = None
-        cursors: set[str] = set()
-        while True:
-            page = runtime.client.home_timeline(limit=maximum, min_id=watermark, max_id=cursor)
-            raw_items.extend(page.items)
-            if not page.next_cursor or page.next_cursor in cursors:
+    while True:
+        watermark = runtime.db.get_browse_watermark(bot_id)
+        if watermark is None:
+            raw_items = runtime.client.home_timeline(limit=maximum).items
+            ordered = list(reversed(raw_items))
+        else:
+            # Mastodon min_id returns the page immediately newer than this ID.
+            # A later call advances from the last outer ID processed here.
+            raw_items = runtime.client.home_timeline(limit=maximum, min_id=watermark).items
+            ordered = sorted(raw_items, key=_status_sort_key)
+
+        source_ids = [str((item.get("reblog") or item).get("id") or item.get("id") or "") for item in ordered]
+        seen = runtime.db.seen_status_ids(bot_id, [value for value in source_ids if value])
+        previews: list[dict[str, Any]] = []
+        newly_seen: list[str] = []
+        new_watermark = watermark
+        visit_id = secrets.token_urlsafe(18)
+        stopped = False
+        remaining_ids: list[str] = []
+        for index, (raw, source_id) in enumerate(zip(ordered, source_ids)):
+            candidate = timeline_preview(raw, preview_chars)
+            is_new = source_id not in seen and source_id not in newly_seen
+            candidate_items = [*previews, candidate] if is_new else previews
+            later_ids: list[str] = []
+            known = {*seen, *newly_seen}
+            if is_new:
+                known.add(source_id)
+            for later in source_ids[index + 1:]:
+                if later not in known and later not in later_ids:
+                    later_ids.append(later)
+            candidate_result = _timeline_response(
+                candidate_items, visit_id, char_budget,
+                truncated=bool(later_ids), remaining_ids=later_ids,
+            )
+            if is_new and 400 + candidate_result["_chars_used"] > char_budget:
+                stopped = True
+                remaining_ids = [source_id, *later_ids]
                 break
-            cursors.add(page.next_cursor)
-            cursor = page.next_cursor
-        ordered = sorted(raw_items, key=_status_sort_key)
+            if is_new:
+                previews.append(candidate)
+                newly_seen.append(source_id)
+            new_watermark = str(raw.get("id") or new_watermark or "") or None
 
-    source_ids = [str((item.get("reblog") or item).get("id") or item.get("id") or "") for item in ordered]
-    seen = runtime.db.seen_status_ids(bot_id, [value for value in source_ids if value])
-    previews: list[dict[str, Any]] = []
-    newly_seen: list[str] = []
-    new_watermark = watermark
-    for raw, source_id in zip(ordered, source_ids):
-        candidate = timeline_preview(raw, preview_chars)
-        prospective = {"view": "timeline", "items": [*previews, candidate], "scope": "resident"}
-        is_new = source_id not in seen and source_id not in newly_seen
-        if is_new and len(previews) < maximum and _json_cost(prospective) + 400 <= budget:
-            previews.append(candidate)
-            newly_seen.append(source_id)
-        elif is_new and len(previews) >= maximum:
-            break
-        elif is_new and _json_cost(prospective) + 400 > budget:
-            break
-        new_watermark = str(raw.get("id") or new_watermark or "")
-
-    visit_id = secrets.token_urlsafe(18)
-    result: dict[str, Any] = {"view": "timeline", "items": previews, "scope": "resident", "visit_id": visit_id}
-    result["budget_remaining"] = 0
-    used = _json_cost(result) + 400
-    result["budget_remaining"] = max(0, budget - used)
-    used = _json_cost(result) + 400
-    result["budget_remaining"] = max(0, budget - used)
-    if ordered and new_watermark is None:
-        new_watermark = str(ordered[-1].get("id") or "")
-    if new_watermark is None:
-        new_watermark = watermark or ""
-    runtime.db.commit_browse(bot_id=bot_id, feed="timeline", watermark=new_watermark,
-                             seen_ids=newly_seen, visit_id=visit_id,
-                             allowed_ids=[item["id"] for item in previews], budget_limit=budget,
-                             budget_used=used, expires_at=int(time.time()) + ttl)
-    runtime.db.cache_statuses(bot_id, [compact_status(item) for item in raw_items])
-    runtime.audit("home", "timeline")
-    return result
+        result = _timeline_response(
+            previews, visit_id, char_budget, truncated=stopped,
+            remaining_ids=remaining_ids,
+        )
+        used = 400 + result.pop("_chars_used")
+        # Cache/audit failures must happen before the only durable watermark write.
+        runtime.db.cache_statuses(bot_id, [compact_status(item) for item in raw_items])
+        runtime.audit("home", "timeline")
+        committed = runtime.db.commit_browse(
+            bot_id=bot_id, feed="timeline", expected_watermark=watermark,
+            watermark=new_watermark, seen_ids=newly_seen, visit_id=visit_id,
+            allowed_ids=[item["id"] for item in previews], max_open=max_open,
+            char_budget_limit=char_budget, char_budget_used=used,
+            expires_at=int(time.time()) + ttl,
+        )
+        if committed:
+            return result
 
 
 def _budget_statuses(runtime: Runtime, requested_ids: list[str], items: list[dict[str, Any]],
                      missing_ids: list[str], visit: dict[str, Any] | None) -> dict[str, Any]:
-    limit = int(visit["budget_limit"]) if visit else getattr(runtime.settings, "browse_token_budget", 5000)
-    used_before = int(visit["budget_used"]) if visit else 400
-    accepted: list[dict[str, Any]] = []
-    for item in items:
-        candidate = {"items": [*accepted, item], "missing_ids": missing_ids}
-        if used_before + _json_cost(candidate) > limit:
+    limit = int(visit["char_budget_limit"]) if visit else getattr(runtime.settings, "browse_char_budget", 5000)
+    used_before = int(visit["char_budget_used"]) if visit else 400
+    for count in range(len(items), -1, -1):
+        candidate = _status_response(requested_ids, items[:count], missing_ids, limit, used_before)
+        if used_before + candidate["_chars_used"] <= limit:
+            return candidate
+    return _status_response(requested_ids, [], missing_ids, limit, used_before)
+
+
+def _finalize_char_budget(payload: dict[str, Any], limit: int, used_before: int = 0) -> dict[str, Any]:
+    payload["budget_chars_remaining"] = 0
+    for _ in range(4):
+        chars = _json_cost(payload)
+        remaining = max(0, limit - used_before - chars)
+        if payload["budget_chars_remaining"] == remaining:
             break
-        accepted.append(item)
+        payload["budget_chars_remaining"] = remaining
+    payload["_chars_used"] = _json_cost(payload)
+    return payload
+
+
+def _timeline_response(items: list[dict[str, Any]], visit_id: str, limit: int,
+                       *, truncated: bool = False,
+                       remaining_ids: list[str] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"view": "timeline", "items": items, "scope": "resident", "visit_id": visit_id}
+    if truncated:
+        payload["truncated"] = True
+    if remaining_ids:
+        payload["remaining_ids"] = remaining_ids
+    return _finalize_char_budget(payload, limit, 400)
+
+
+def _status_response(requested_ids: list[str], accepted: list[dict[str, Any]],
+                     missing_ids: list[str], limit: int, used_before: int) -> dict[str, Any]:
     accepted_ids = {item["id"] for item in accepted}
     remaining = [value for value in requested_ids if value not in accepted_ids and value not in missing_ids]
-    result: dict[str, Any] = {"items": accepted}
+    payload: dict[str, Any] = {"items": accepted}
     if missing_ids:
-        result["missing_ids"] = missing_ids
+        payload["missing_ids"] = missing_ids
     if remaining:
-        result.update({"truncated": True, "remaining_ids": remaining})
-    result["budget_remaining"] = 0
-    added = _json_cost(result)
-    result["budget_remaining"] = max(0, limit - used_before - added)
-    added = _json_cost(result)
-    result["budget_remaining"] = max(0, limit - used_before - added)
-    result["_budget_used"] = added
-    return result
+        payload["truncated"] = True
+        payload["remaining_ids"] = remaining
+    return _finalize_char_budget(payload, limit, used_before)
 
 
 def _remote_interact(runtime: Runtime, check_scope: Any, action: str, status_id: str,

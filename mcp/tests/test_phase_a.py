@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 
 import httpx
 import pytest
@@ -257,8 +259,13 @@ def _browse_raw(value, *, source=None):
     return item
 
 
-def test_timeline_funnel_is_incremental_and_uses_min_id(tmp_path):
-    runtime = _runtime(); runtime.settings = SimpleNamespace(browse_max_items=30, browse_preview_chars=50, browse_token_budget=5000, browse_visit_ttl_seconds=1800)
+def _browse_settings(**overrides):
+    return SimpleNamespace(browse_max_items=30, browse_preview_chars=50, browse_char_budget=5000,
+                           browse_max_open=3, browse_visit_ttl_seconds=1800, **overrides)
+
+
+def test_timeline_funnel_is_incremental_and_uses_single_min_id_page(tmp_path):
+    runtime = _runtime(); runtime.settings = _browse_settings()
     runtime.db = Database(tmp_path / "browse.sqlite3"); runtime.db.initialize(); runtime.audit = lambda *args, **kwargs: None
     class Client:
         calls = []; round = 0
@@ -273,29 +280,101 @@ def test_timeline_funnel_is_incremental_and_uses_min_id(tmp_path):
     assert [x["id"] for x in first["items"]] == ["1", "2", "3"]
     assert second["items"] == []
     assert runtime.client.calls[-1]["min_id"] == "3"
+    assert "max_id" not in runtime.client.calls[-1]
 
 
-def test_forward_pagination_over_thirty_does_not_skip_old_boost(tmp_path):
-    runtime = _runtime(); runtime.settings = SimpleNamespace(browse_max_items=30, browse_preview_chars=50, browse_token_budget=5000, browse_visit_ttl_seconds=1800)
+@pytest.mark.parametrize("new_count", [31, 65, 100])
+def test_min_id_adjacent_pages_eventually_read_31_to_100_without_gaps(tmp_path, new_count):
+    runtime = _runtime(); runtime.settings = _browse_settings()
     runtime.db = Database(tmp_path / "browse.sqlite3"); runtime.db.initialize(); runtime.audit=lambda *a, **k: None
-    runtime.db.commit_browse(bot_id="gpt", feed="timeline", watermark="100", seen_ids=["old"], visit_id="oldvisit", allowed_ids=[], budget_limit=5000, budget_used=0, expires_at=9999999999)
-    pages = [[_browse_raw(str(i)) for i in range(140, 120, -1)], [_browse_raw("120", source="old"), *[_browse_raw(str(i)) for i in range(119, 100, -1)]]]
+    runtime.db.commit_browse(bot_id="gpt", feed="timeline", expected_watermark=None, watermark="100", seen_ids=[], visit_id="oldvisit", allowed_ids=[], max_open=3, char_budget_limit=5000, char_budget_used=0, expires_at=9999999999)
+    all_items = [_browse_raw(str(value)) for value in range(101, 101 + new_count)]
     class Client:
         calls=[]
         def home_timeline(self, **kwargs):
-            self.calls.append(kwargs); index=len(self.calls)-1
-            return SimpleNamespace(items=pages[index], next_cursor="next" if index == 0 else None)
-    runtime.client=Client(); result=_remote_timeline_funnel(runtime)
-    assert len(result["items"]) == 30 and result["items"][0]["id"] == "101"
-    assert runtime.db.get_browse_watermark("gpt") == "131"
-    assert all(call["min_id"] == "100" for call in runtime.client.calls)
+            self.calls.append(kwargs)
+            newer = [item for item in all_items if int(item["id"]) > int(kwargs["min_id"])]
+            # Real min_id semantics: only the immediately newer page. Response order may be newest first.
+            immediate = newer[:kwargs["limit"]]
+            return SimpleNamespace(items=list(reversed(immediate)), next_cursor="ignored-rel-next")
+    runtime.client=Client(); observed=[]
+    while True:
+        result = _remote_timeline_funnel(runtime)
+        ids = [item["id"] for item in result["items"]]
+        if not ids: break
+        observed.extend(ids)
+    expected = [str(value) for value in range(101, 101 + new_count)]
+    assert observed == expected
+    assert len(observed) == len(set(observed))
+    assert all("max_id" not in call for call in runtime.client.calls)
+    assert [call["min_id"] for call in runtime.client.calls[:2]] == ["100", "130"]
 
 
-def test_budget_stops_at_whole_status_boundary():
-    runtime=_runtime(); runtime.settings=SimpleNamespace(browse_token_budget=5000)
-    result=_budget_statuses(runtime, ["1", "2"], [{"id":"1","text":"x"*20},{"id":"2","text":"y"}], [], {"budget_limit": 530, "budget_used": 500})
-    assert result["truncated"] is True and result["remaining_ids"]
-    assert all(item["text"] in {"x"*20, "y"} for item in result["items"])
+def test_seen_boost_advances_outer_watermark_without_duplicate(tmp_path):
+    runtime = _runtime(); runtime.settings = _browse_settings()
+    runtime.db = Database(tmp_path / "browse.sqlite3"); runtime.db.initialize(); runtime.audit=lambda *a, **k: None
+    runtime.db.commit_browse(bot_id="gpt", feed="timeline", expected_watermark=None, watermark="100", seen_ids=["old"], visit_id="old", allowed_ids=[], max_open=3, char_budget_limit=5000, char_budget_used=0, expires_at=9999999999)
+    class Client:
+        def home_timeline(self, **kwargs):
+            return SimpleNamespace(items=[_browse_raw("102"), _browse_raw("101", source="old")], next_cursor=None)
+    runtime.client = Client(); result = _remote_timeline_funnel(runtime)
+    assert [item["id"] for item in result["items"]] == ["102"]
+    assert runtime.db.get_browse_watermark("gpt") == "102"
+
+
+def test_two_concurrent_scans_same_bot_return_no_duplicate_catalog(tmp_path):
+    path = tmp_path / "concurrent.sqlite3"
+    seed = Database(path); seed.initialize()
+    seed.commit_browse(bot_id="gpt", feed="timeline", expected_watermark=None, watermark="100", seen_ids=[], visit_id="seed", allowed_ids=[], max_open=3, char_budget_limit=5000, char_budget_used=0, expires_at=9999999999)
+    barrier = Barrier(2); lock = Lock(); first_calls = 0
+    statuses = [_browse_raw(str(value)) for value in range(101, 111)]
+    class Client:
+        def home_timeline(self, **kwargs):
+            nonlocal first_calls
+            with lock:
+                first_calls += 1; call_number = first_calls
+            if call_number <= 2:
+                barrier.wait(timeout=5)
+            newer = [item for item in statuses if int(item["id"]) > int(kwargs["min_id"])]
+            return SimpleNamespace(items=list(reversed(newer[:kwargs["limit"]])), next_cursor=None)
+    def scan():
+        runtime = _runtime(); runtime.settings = _browse_settings(); runtime.db = Database(path)
+        runtime.client = Client(); runtime.audit = lambda *a, **k: None
+        return _remote_timeline_funnel(runtime)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: scan(), range(2)))
+    catalogs = [[item["id"] for item in result["items"]] for result in results]
+    flattened = [item for catalog in catalogs for item in catalog]
+    assert sorted(flattened, key=int) == [str(value) for value in range(101, 111)]
+    assert len(flattened) == len(set(flattened))
+    assert sorted(map(len, catalogs)) == [0, 10]
+
+
+def test_cache_or_audit_failure_cannot_advance_watermark(tmp_path):
+    runtime = _runtime(); runtime.settings = _browse_settings()
+    runtime.db = Database(tmp_path / "ordering.sqlite3"); runtime.db.initialize()
+    runtime.db.commit_browse(bot_id="gpt", feed="timeline", expected_watermark=None, watermark="100", seen_ids=[], visit_id="seed", allowed_ids=[], max_open=3, char_budget_limit=5000, char_budget_used=0, expires_at=9999999999)
+    runtime.client = SimpleNamespace(home_timeline=lambda **kwargs: SimpleNamespace(items=[_browse_raw("101")], next_cursor=None))
+    runtime.audit = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failed"))
+    with pytest.raises(RuntimeError, match="audit failed"):
+        _remote_timeline_funnel(runtime)
+    assert runtime.db.get_browse_watermark("gpt") == "100"
+    assert runtime.db.seen_status_ids("gpt", ["101"]) == set()
+
+
+@pytest.mark.parametrize("text", ["😀" * 12, "中文边界" * 8])
+def test_char_budget_counts_final_json_and_stops_at_whole_status(text):
+    runtime=_runtime(); runtime.settings=SimpleNamespace(browse_char_budget=5000)
+    items = [{"id":"1","text":text}, {"id":"2","text":"末条"}]
+    exact_limit = next(limit for limit in range(501, 1000)
+                       if len(_budget_statuses(runtime, ["1", "2", "missing"], items, ["missing"], {"char_budget_limit":limit,"char_budget_used":500})["items"]) == 2)
+    exact = _budget_statuses(runtime, ["1", "2", "missing"], items, ["missing"], {"char_budget_limit":exact_limit,"char_budget_used":500})
+    over = _budget_statuses(runtime, ["1", "2", "missing"], items, ["missing"], {"char_budget_limit":exact_limit - 1,"char_budget_used":500})
+    assert [item["id"] for item in exact["items"]] == ["1", "2"]
+    assert "truncated" not in exact and exact["budget_chars_remaining"] >= 0
+    assert over["truncated"] is True and over["remaining_ids"] == ["1", "2"]
+    assert over["items"] == []
+    assert over["missing_ids"] == ["missing"]
 
 
 def test_remote_status_batches_in_request_order_and_lists_missing():
@@ -316,7 +395,7 @@ def test_remote_status_batches_in_request_order_and_lists_missing():
 
 def test_remote_status_visit_allowlist_and_repeat_are_enforced(tmp_path):
     runtime = _runtime(); runtime.db = Database(tmp_path / "visit.sqlite3"); runtime.db.initialize()
-    runtime.db.commit_browse(bot_id="gpt", feed="timeline", watermark="1", seen_ids=[], visit_id="v", allowed_ids=["1"], budget_limit=5000, budget_used=500, expires_at=9999999999)
+    runtime.db.commit_browse(bot_id="gpt", feed="timeline", expected_watermark=None, watermark="1", seen_ids=[], visit_id="v", allowed_ids=["1"], max_open=3, char_budget_limit=5000, char_budget_used=500, expires_at=9999999999)
     class Client:
         def get_statuses(self, ids): return [_browse_raw(value) for value in ids]
     runtime.client = Client()

@@ -118,7 +118,7 @@ D:\AI\PI-Personal-Instance-OS\mcp
 - 修改显示名、简介、头像和主页横幅；
 - 独立 `cmx-smoke` / `smoke.ps1`：不依赖 Telegram 或 Fable，直接由 MCP client 启动 STDIO 服务、列工具并调用身份和时间线；
 - 远程 `cmx_home(view="timeline")` 使用两段式浏览漏斗：目录最多 30 条、正文预览最多 50 字，随后由 `cmx_status(status_ids=[...], visit_id=...)` 一次展开最多 3 条；普通浏览不自动读取 thread、媒体详情或 pinned；
-- timeline 按居民保存外层 Mastodon status ID 水位线，以 `min_id` 完整向前分页，并按实际展示的原状态 ID 永久去重；短期 visit 同时限制目录白名单、不同正文数与保守字符预算；
+- timeline 按居民保存外层 Mastodon status ID 水位线；每次用 `min_id` 的 immediately-newer 语义读取紧邻水位的最多 30 条，并以 CAS 提交本次最后处理的外层 ID；短期 visit 同时限制目录白名单、不同正文数与字符预算（不是 token 估算或上界）；
 - `setup-ai.ps1`：创建并批准 Mastodon AI 居民（或选择已有账号），打开浏览器 OAuth + PKCE，DPAPI 保存 Token，校验账号名、运行独立 smoke，并在远程服务已启用时刷新居民映射；
 - `cmx-mcp-http`：只绑定 `127.0.0.1:8766`，由 Nginx/Cloudflare 暴露经过 OAuth 与 profile 隔离的 Streamable HTTP；
 - OAuth 2.1：动态客户端注册、PKCE、一次性授权码、access/refresh token、刷新轮换、撤销、每居民 resource/subject 绑定；远程 Token 仅以 SHA-256 hash 写入 SQLite；
@@ -161,7 +161,7 @@ cmx_profile_update
 - 真实写入 smoke 全部通过：private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 均成功；OAuth revoke 后旧 token 再读失败；
 - 本轮真实 smoke 未发布 public，未测试 direct，未测试 boosts、notifications 或 Phase B/C；
 - 真实 smoke 中确认并修复 2 个实现 bug：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 误套用 direct recipient 规则；
-- 两段式浏览漏斗代码与自动测试已实现；最新完整自动测试为 `56 passed`。本功能尚未部署到目标 Windows，也未在真实 GPT Web Connector 上 smoke；
+- 两段式浏览漏斗与 P1 审核修复已实现；最新完整自动测试为 `66 passed`。本功能尚未部署到目标 Windows，也未在真实 GPT Web Connector 上 smoke；
 - 公网 `gpt` 继续保持 Reader，只列出读工具，没有暴露 Token；
 - Nginx 配置检查和 reload 通过，Docker 内 Nginx 可访问 Windows loopback 服务。
 

@@ -39,6 +39,10 @@ class Database:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+            version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            if version_row and version_row[0] is not None and int(version_row[0]) > 3:
+                raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
                 """
@@ -115,8 +119,9 @@ class Database:
                 );
                 CREATE TABLE IF NOT EXISTS browse_visits (
                     visit_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, allowed_ids_json TEXT NOT NULL,
-                    opened_ids_json TEXT NOT NULL DEFAULT '[]', budget_limit INTEGER NOT NULL,
-                    budget_used INTEGER NOT NULL, expires_at INTEGER NOT NULL
+                    opened_ids_json TEXT NOT NULL DEFAULT '[]', max_open INTEGER NOT NULL,
+                    char_budget_limit INTEGER NOT NULL, char_budget_used INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
                 );
                 """
             )
@@ -137,16 +142,22 @@ class Database:
             row = db.execute("SELECT timeline_watermark FROM browse_state WHERE bot_id=? AND feed=?", (bot_id, feed)).fetchone()
         return str(row[0]) if row and row[0] is not None else None
 
-    def commit_browse(self, *, bot_id: str, feed: str, watermark: str, seen_ids: list[str],
-                      visit_id: str, allowed_ids: list[str], budget_limit: int,
-                      budget_used: int, expires_at: int) -> None:
+    def commit_browse(self, *, bot_id: str, feed: str, expected_watermark: str | None,
+                      watermark: str | None, seen_ids: list[str], visit_id: str,
+                      allowed_ids: list[str], max_open: int, char_budget_limit: int,
+                      char_budget_used: int, expires_at: int) -> bool:
         now = int(time.time())
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT timeline_watermark FROM browse_state WHERE bot_id=? AND feed=?", (bot_id, feed)).fetchone()
+            actual = str(row[0]) if row and row[0] is not None else None
+            if actual != expected_watermark:
+                return False
             db.execute("INSERT INTO browse_state(bot_id,feed,timeline_watermark,updated_at) VALUES(?,?,?,?) ON CONFLICT(bot_id,feed) DO UPDATE SET timeline_watermark=excluded.timeline_watermark,updated_at=excluded.updated_at", (bot_id, feed, watermark, now))
             db.executemany("INSERT OR IGNORE INTO browse_seen(bot_id,source_status_id,seen_at) VALUES(?,?,?)", [(bot_id, value, now) for value in seen_ids])
             db.execute("DELETE FROM browse_visits WHERE expires_at<=?", (now,))
-            db.execute("INSERT INTO browse_visits(visit_id,bot_id,allowed_ids_json,budget_limit,budget_used,expires_at) VALUES(?,?,?,?,?,?)", (visit_id, bot_id, json.dumps(allowed_ids), budget_limit, budget_used, expires_at))
+            db.execute("INSERT INTO browse_visits(visit_id,bot_id,allowed_ids_json,max_open,char_budget_limit,char_budget_used,expires_at) VALUES(?,?,?,?,?,?,?)", (visit_id, bot_id, json.dumps(allowed_ids), max_open, char_budget_limit, char_budget_used, expires_at))
+            return True
 
     def seen_status_ids(self, bot_id: str, ids: list[str]) -> set[str]:
         if not ids: return set()
@@ -160,7 +171,7 @@ class Database:
             row = db.execute("SELECT * FROM browse_visits WHERE bot_id=? AND visit_id=? AND expires_at>?", (bot_id, visit_id, int(time.time()))).fetchone()
         return dict(row) if row else None
 
-    def use_visit(self, *, bot_id: str, visit_id: str, opened_ids: list[str], added_budget: int) -> None:
+    def use_visit(self, *, bot_id: str, visit_id: str, opened_ids: list[str], added_chars: int) -> bool:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM browse_visits WHERE bot_id=? AND visit_id=? AND expires_at>?", (bot_id, visit_id, int(time.time()))).fetchone()
@@ -168,9 +179,12 @@ class Database:
             old = set(json.loads(row["opened_ids_json"]))
             if old.intersection(opened_ids): raise ValueError("a status cannot be reopened in the same visit")
             merged = [*old, *opened_ids]
-            if len(merged) > 3: raise ValueError("visit may open at most 3 distinct statuses")
-            if row["budget_used"] + added_budget > row["budget_limit"]: raise ValueError("visit budget exceeded")
-            db.execute("UPDATE browse_visits SET opened_ids_json=?,budget_used=budget_used+? WHERE visit_id=?", (json.dumps(merged), added_budget, visit_id))
+            if len(merged) > int(row["max_open"]):
+                raise ValueError(f"visit may open at most {row['max_open']} distinct statuses")
+            if row["char_budget_used"] + added_chars > row["char_budget_limit"]:
+                return False
+            db.execute("UPDATE browse_visits SET opened_ids_json=?,char_budget_used=char_budget_used+? WHERE visit_id=?", (json.dumps(merged), added_chars, visit_id))
+            return True
 
     def _migrate_dedup(self, db: sqlite3.Connection) -> None:
         columns = {r[1] for r in db.execute("PRAGMA table_info(publish_dedup)")}

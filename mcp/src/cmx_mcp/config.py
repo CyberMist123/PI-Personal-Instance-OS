@@ -51,7 +51,7 @@ class InstanceSettings:
     browse_preview_chars: int = 50
     browse_max_items: int = 30
     browse_max_open: int = 3
-    browse_token_budget: int = 5000
+    browse_char_budget: int = 5000
     browse_visit_ttl_seconds: int = 1800
 
     @property
@@ -109,7 +109,9 @@ class InstanceSettings:
             browse_preview_chars=_bounded_int("CMX_BROWSE_PREVIEW_CHARS", 50, 20, 200),
             browse_max_items=_bounded_int("CMX_BROWSE_MAX_ITEMS", 30, 1, 30),
             browse_max_open=_bounded_int("CMX_BROWSE_MAX_OPEN", 3, 1, 3),
-            browse_token_budget=_bounded_int("CMX_BROWSE_TOKEN_BUDGET", 5000, 1000, 20000),
+            browse_char_budget=_bounded_int_alias(
+                "CMX_BROWSE_CHAR_BUDGET", "CMX_BROWSE_TOKEN_BUDGET", 5000, 1000, 20000
+            ),
             browse_visit_ttl_seconds=_bounded_int("CMX_BROWSE_VISIT_TTL_SECONDS", 1800, 60, 86400),
         )
 
@@ -149,6 +151,19 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
         value = default if raw is None else int(raw)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _bounded_int_alias(name: str, legacy_name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        raw = os.getenv(legacy_name)
+    try:
+        value = default if raw is None else int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} (or deprecated {legacy_name}) must be an integer") from exc
     if not minimum <= value <= maximum:
         raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
     return value

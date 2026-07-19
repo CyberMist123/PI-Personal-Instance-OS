@@ -126,8 +126,8 @@ def test_direct_statuses_are_cached_but_not_indexed(tmp_path: Path):
 def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
     import sqlite3
     path = tmp_path / "cmx.sqlite3"; db = Database(path); db.initialize()
-    db.commit_browse(bot_id="a", feed="timeline", watermark="10", seen_ids=["source"], visit_id="va", allowed_ids=["source"], budget_limit=5000, budget_used=100, expires_at=9999999999)
-    db.commit_browse(bot_id="b", feed="timeline", watermark="20", seen_ids=[], visit_id="vb", allowed_ids=["other"], budget_limit=5000, budget_used=100, expires_at=9999999999)
+    assert db.commit_browse(bot_id="a", feed="timeline", expected_watermark=None, watermark="10", seen_ids=["source"], visit_id="va", allowed_ids=["source"], max_open=2, char_budget_limit=5000, char_budget_used=100, expires_at=9999999999)
+    assert db.commit_browse(bot_id="b", feed="timeline", expected_watermark=None, watermark="20", seen_ids=[], visit_id="vb", allowed_ids=["other"], max_open=3, char_budget_limit=5000, char_budget_used=100, expires_at=9999999999)
     assert db.get_browse_watermark("a") == "10"
     assert db.seen_status_ids("a", ["source"]) == {"source"}
     assert db.seen_status_ids("b", ["source"]) == set()
@@ -139,9 +139,68 @@ def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
 def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
     import pytest
     db = Database(tmp_path / "cmx.sqlite3"); db.initialize()
-    db.commit_browse(bot_id="a", feed="timeline", watermark="1", seen_ids=[], visit_id="v", allowed_ids=["1", "2", "3"], budget_limit=120, budget_used=10, expires_at=9999999999)
-    db.use_visit(bot_id="a", visit_id="v", opened_ids=["1"], added_budget=10)
+    db.commit_browse(bot_id="a", feed="timeline", expected_watermark=None, watermark="1", seen_ids=[], visit_id="v", allowed_ids=["1", "2", "3"], max_open=2, char_budget_limit=120, char_budget_used=10, expires_at=9999999999)
+    assert db.use_visit(bot_id="a", visit_id="v", opened_ids=["1"], added_chars=10)
     with pytest.raises(ValueError, match="reopened"):
-        db.use_visit(bot_id="a", visit_id="v", opened_ids=["1"], added_budget=1)
-    with pytest.raises(ValueError, match="budget"):
-        db.use_visit(bot_id="a", visit_id="v", opened_ids=["2"], added_budget=101)
+        db.use_visit(bot_id="a", visit_id="v", opened_ids=["1"], added_chars=1)
+    assert db.use_visit(bot_id="a", visit_id="v", opened_ids=["2"], added_chars=101) is False
+    with pytest.raises(ValueError, match="at most 2"):
+        db.use_visit(bot_id="a", visit_id="v", opened_ids=["2", "3"], added_chars=1)
+
+
+def test_browse_watermark_compare_and_swap(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3"); db.initialize()
+    common = dict(bot_id="a", feed="timeline", seen_ids=[], allowed_ids=[], max_open=3,
+                  char_budget_limit=5000, char_budget_used=100, expires_at=9999999999)
+    assert db.commit_browse(expected_watermark=None, watermark="10", visit_id="v1", **common)
+    assert db.commit_browse(expected_watermark=None, watermark="20", visit_id="v2", **common) is False
+    assert db.get_browse_watermark("a") == "10"
+
+
+def test_real_v2_database_migrates_to_v3_without_data_loss(tmp_path: Path):
+    import sqlite3
+    path = tmp_path / "v2.sqlite3"
+    with sqlite3.connect(path) as raw:
+        raw.executescript("""
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES(2);
+            CREATE TABLE bots(bot_id TEXT PRIMARY KEY, display_name TEXT, profile TEXT,
+                media_root TEXT, token_ref TEXT, default_audience TEXT, allow_public INTEGER,
+                enabled INTEGER, created_at INTEGER, updated_at INTEGER, remote_profile TEXT,
+                remote_polls INTEGER, remote_boosts INTEGER, remote_notifications INTEGER);
+            INSERT INTO bots VALUES('gpt','GPT','reader','.','token','residents',0,1,1,1,'reader',1,0,0);
+            CREATE TABLE status_cache(bot_id TEXT, status_id TEXT, author_id TEXT, author_acct TEXT,
+                text TEXT, spoiler_text TEXT, created_at TEXT, edited_at TEXT, visibility TEXT,
+                reply_to_id TEXT, payload_json TEXT, indexed_at INTEGER, PRIMARY KEY(bot_id,status_id));
+            INSERT INTO status_cache VALUES('gpt','s1','a','alice','kept','',NULL,NULL,'private',NULL,'{"id":"s1"}',1);
+            CREATE VIRTUAL TABLE status_fts USING fts5(bot_id UNINDEXED,status_id UNINDEXED,author_acct,text,spoiler_text);
+            INSERT INTO status_fts VALUES('gpt','s1','alice','kept','');
+            CREATE TABLE publish_dedup(bot_id TEXT,operation TEXT,request_id TEXT,state TEXT,status_id TEXT,
+                error_code TEXT,lease_expires_at INTEGER,created_at INTEGER,updated_at INTEGER,response_json TEXT,
+                PRIMARY KEY(bot_id,operation,request_id));
+            INSERT INTO publish_dedup VALUES('gpt','publish','r1','succeeded','s1',NULL,NULL,1,1,'{"id":"s1"}');
+            CREATE TABLE mcp_oauth_tokens(token_hash TEXT PRIMARY KEY, subject TEXT, payload TEXT);
+            INSERT INTO mcp_oauth_tokens VALUES('hash','gpt','kept-oauth');
+        """)
+    Database(path).initialize()
+    with sqlite3.connect(path) as raw:
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
+        assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
+        assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
+        assert raw.execute("SELECT payload FROM mcp_oauth_tokens WHERE token_hash='hash'").fetchone()[0] == "kept-oauth"
+        tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"browse_state", "browse_seen", "browse_visits"}.issubset(tables)
+
+
+def test_future_schema_version_fails_closed(tmp_path: Path):
+    import sqlite3
+    path = tmp_path / "future.sqlite3"
+    with sqlite3.connect(path) as raw:
+        raw.execute("CREATE TABLE schema_version(version INTEGER NOT NULL)")
+        raw.execute("INSERT INTO schema_version VALUES(4)")
+    import pytest
+    with pytest.raises(RuntimeError, match="future database schema version"):
+        Database(path).initialize()
+    with sqlite3.connect(path) as raw:
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 4

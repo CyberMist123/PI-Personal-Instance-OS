@@ -13,9 +13,9 @@ is unambiguous.
 
 当前事实：远程默认使用 Reader profile。Reader 为 3 个工具，Social 为 5 个工具，Social Plus 为 6 个工具。目标 Windows 已部署当前 Draft 分支做受控验证；`test` 居民已完成真实 Windows / Mastodon Remote Social smoke，`gpt` 仍保持 Reader，生产常驻居民尚未开启 Social。
 
-远程普通 timeline 现在采用两段式漏斗：`cmx_home(view="timeline")` 返回最多 30 条 50 字预览与 `visit_id`，随后 `cmx_status(status_ids=[...], visit_id=...)` 一次读取 1–3 条正文。目录不自动附加 pinned、thread 或媒体详情；bookmarks、likes、mine 保持 compact v2。实现使用按 `bot_id` 隔离的 SQLite v3 水位线/去重/visit，并以 `min_id` 完整向前分页。该增量自动测试已通过，但尚未部署到目标 Windows或在真实 GPT Web Connector smoke。
+远程普通 timeline 现在采用两段式漏斗：`cmx_home(view="timeline")` 返回最多 30 条 50 字预览与 `visit_id`，随后 `cmx_status(status_ids=[...], visit_id=...)` 一次读取 1–3 条正文。目录不自动附加 pinned、thread 或媒体详情；bookmarks、likes、mine 保持 compact v2。实现使用按 `bot_id` 隔离的 SQLite v3 水位线/去重/visit；每次以 `min_id` 读取 immediately-newer 邻接页并用水位 CAS 防止并发重复。该增量自动测试已通过，但尚未部署到目标 Windows 或在真实 GPT Web Connector smoke。
 
-预算配置为 `CMX_BROWSE_TOKEN_BUDGET=5000`，实际采用保守字符计数：对 `ensure_ascii=False` 的精简 JSON 按一个 Unicode 字符计一个预算单位，并预留 400 给 MCP/JSON-RPC 包装；因此不声称是 tokenizer 精确 token 数。相关配置还包括 `CMX_BROWSE_PREVIEW_CHARS`、`CMX_BROWSE_MAX_ITEMS`、`CMX_BROWSE_MAX_OPEN` 与 `CMX_BROWSE_VISIT_TTL_SECONDS`。
+字符预算配置为 `CMX_BROWSE_CHAR_BUDGET=5000`：对 `ensure_ascii=False` 的最终精简 JSON 按一个 Unicode 字符计一个单位，并计入 400 个 MCP/JSON-RPC 包装字符单位。它不是 token 数、token 估算或 token 上界。旧 `CMX_BROWSE_TOKEN_BUDGET` 仅作为弃用兼容 alias，新变量优先。相关配置还包括 `CMX_BROWSE_PREVIEW_CHARS`、`CMX_BROWSE_MAX_ITEMS`、`CMX_BROWSE_MAX_OPEN` 与 `CMX_BROWSE_VISIT_TTL_SECONDS`。
 
 ## 目标
 
@@ -155,7 +155,7 @@ https://pi.ler428.xyz/mcp/gpt
 
 `test` 居民已在目标 Windows 上完成一次受控真实 Remote Social smoke：DCR → PKCE → 浏览器批准 `cmx:read + cmx:social` → token → MCP initialize → `tools/list` → `cmx_post`/`cmx_interact`/`cmx_home`/`cmx_status` 真实调用 → revoke 全链路通过。工具隔离结果恰好是 `cmx_home`、`cmx_status`、`cmx_search`、`cmx_post`、`cmx_interact`；未出现 `cmx_notifications`、`boost`、`unboost` 或本地 full 工具。private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 均通过，revoke 后旧 token 再读失败。该 smoke 未发布 public、未测试 direct、未测试 boosts、notifications 或 Phase B/C。
 
-这次真实 smoke 还发现并修复了 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则。两段式漏斗加入后的最新完整自动测试为 `56 passed`；漏斗本身尚未做目标 Windows / GPT Web smoke。
+这次真实 smoke 还发现并修复了 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则。两段式漏斗及 P1 审核修复后的最新完整自动测试为 `66 passed`；漏斗本身尚未做目标 Windows / GPT Web smoke。
 
 ChatGPT 网页端需要在 Apps → Create 中填写上述 URL 并完成 OAuth。当前实测账号为 Plus，界面没有 Create 入口；OpenAI 当前文档明确支持 Pro 只读 MCP，完整 MCP 则面向 Business/Enterprise/Edu。因此服务器已就绪，但该账号尚未实际连接。Claude Code 不受此套餐门槛影响。
 
