@@ -283,6 +283,23 @@ def test_timeline_funnel_is_incremental_and_uses_single_min_id_page(tmp_path):
     assert "max_id" not in runtime.client.calls[-1]
 
 
+def test_remote_home_timeline_honors_requested_limit(tmp_path):
+    runtime = _runtime(); runtime.settings = _browse_settings()
+    runtime.settings.max_items = 30
+    runtime.db = Database(tmp_path / "limit.sqlite3"); runtime.db.initialize()
+    runtime.audit = lambda *args, **kwargs: None
+    class Client:
+        requested = None
+        def home_timeline(self, **kwargs):
+            self.requested = kwargs["limit"]
+            return SimpleNamespace(items=[_browse_raw(str(value)) for value in range(30, 0, -1)], next_cursor=None)
+    runtime.client = Client()
+    tool = build_server(runtime, remote_profile="reader", remote_capabilities=runtime.bot)._tool_manager.get_tool("cmx_home")
+    result = tool.fn("timeline", 10, None, True, _ScopeContext())
+    assert runtime.client.requested == 10
+    assert len(result["items"]) == 10
+
+
 @pytest.mark.parametrize("new_count", [31, 65, 100])
 def test_min_id_adjacent_pages_eventually_read_31_to_100_without_gaps(tmp_path, new_count):
     runtime = _runtime(); runtime.settings = _browse_settings()

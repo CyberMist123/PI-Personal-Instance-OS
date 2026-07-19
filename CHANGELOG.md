@@ -5,6 +5,7 @@
 - 远程 timeline 改为两段式浏览漏斗：最多 30 条稀疏预览，再通过同一 `cmx_status` 批量展开最多 3 条正文；Reader 仍为 3 个工具，Social 仍为 5 个工具。
 - SQLite schema 升至 v3，新增按 `bot_id` 隔离的 timeline 水位线、原状态永久去重和短期 visit 白名单/字符预算；使用 Mastodon `min_id` immediately-newer 邻接读取、expected-watermark CAS 与原生批量 statuses API。
 - 默认 `CMX_BROWSE_CHAR_BUDGET=5000` 按最终 JSON 的 Unicode 字符单位计数并计入 400 包装字符；它不是 token 数、估算或上界。旧 `CMX_BROWSE_TOKEN_BUDGET` 仅为弃用兼容 alias。代码与自动测试已完成；尚未部署到目标 Windows，也未在真实 GPT Web Connector 上 smoke。
+- 修复 Linux 导入：`secrets.py` 不再于模块导入阶段加载 `Crypt32.dll`/`Kernel32.dll`；Windows DPAPI 改为首次实际调用时初始化，非 Windows DPAPI 调用明确 fail closed。`cmx_home(view="timeline", limit=N)` 现在实际执行请求上限。
 
 本文件记录可部署版本的用户可见变化。运行状态与边界仍以 `PROJECT.md` 为准。
 

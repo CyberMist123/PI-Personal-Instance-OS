@@ -107,7 +107,7 @@ D:\AI\PI-Personal-Instance-OS\mcp
 - 官方 MCP Python SDK v1 + STDIO；
 - Mastodon v4.6 REST 直连；
 - SQLite Bot 配置、FTS5 搜索缓存、最小审计和发布去重；
-- Windows DPAPI 加密居民 Token；
+- Windows DPAPI 加密居民 Token；DPAPI 仅在 Windows 实际读写凭据时延迟初始化，非 Windows 可正常导入 MCP 服务模块，实际调用明确 fail closed，不提供明文降级；
 - compact 返回、Link 分页、时间线/context/数组上限；
 - Mastodon REST 默认使用已验证的当前 `WEB_DOMAIN` HTTPS；显式配置时只允许同 Host HTTPS 或 loopback HTTP；
 - 图片 spool、canonical path、硬链接、reparse、magic MIME 和大小检查；
@@ -161,7 +161,7 @@ cmx_profile_update
 - 真实写入 smoke 全部通过：private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 均成功；OAuth revoke 后旧 token 再读失败；
 - 本轮真实 smoke 未发布 public，未测试 direct，未测试 boosts、notifications 或 Phase B/C；
 - 真实 smoke 中确认并修复 2 个实现 bug：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 误套用 direct recipient 规则；
-- 两段式浏览漏斗与 P1 审核修复已实现；最新完整自动测试为 `66 passed`。本功能尚未部署到目标 Windows，也未在真实 GPT Web Connector 上 smoke；
+- 两段式浏览漏斗、P1 审核修复及跨平台 DPAPI 导入修复已实现；最新本地完整自动测试为 `69 passed`。本功能尚未部署到目标 Windows，也未在真实 GPT Web Connector 上 smoke；GitHub Actions 状态以 PR 当前 run 为准；
 - 公网 `gpt` 继续保持 Reader，只列出读工具，没有暴露 Token；
 - Nginx 配置检查和 reload 通过，Docker 内 Nginx 可访问 Windows loopback 服务。
 

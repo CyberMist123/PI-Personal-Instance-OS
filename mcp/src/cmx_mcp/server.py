@@ -374,7 +374,7 @@ def _build_remote_server(
         read_scope(ctx)
         limit = _limit(limit, min(runtime.settings.max_items, 30))
         if view == "timeline":
-            return _remote_timeline_funnel(runtime)
+            return _remote_timeline_funnel(runtime, limit)
         elif view == "bookmarks":
             page = runtime.client.bookmarks(limit=limit, max_id=cursor)
         elif view == "likes":
@@ -570,7 +570,7 @@ def _build_remote_server(
 
 
 def _json_cost(value: Any) -> int:
-    """Conservative GPT-5.x budget: one Unicode character per token, plus JSON."""
+    """Return deterministic Unicode character units for compact JSON budgeting."""
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -579,9 +579,10 @@ def _status_sort_key(raw: dict[str, Any]) -> tuple[int, str]:
     return (int(value), value) if value.isdigit() else (0, value)
 
 
-def _remote_timeline_funnel(runtime: Runtime) -> dict[str, Any]:
+def _remote_timeline_funnel(runtime: Runtime, requested_limit: int | None = None) -> dict[str, Any]:
     bot_id = runtime.bot.bot_id
-    maximum = getattr(runtime.settings, "browse_max_items", 30)
+    configured_maximum = getattr(runtime.settings, "browse_max_items", 30)
+    maximum = min(requested_limit or configured_maximum, configured_maximum)
     preview_chars = getattr(runtime.settings, "browse_preview_chars", 50)
     char_budget = getattr(runtime.settings, "browse_char_budget", 5000)
     max_open = getattr(runtime.settings, "browse_max_open", 3)
@@ -589,12 +590,12 @@ def _remote_timeline_funnel(runtime: Runtime) -> dict[str, Any]:
     while True:
         watermark = runtime.db.get_browse_watermark(bot_id)
         if watermark is None:
-            raw_items = runtime.client.home_timeline(limit=maximum).items
+            raw_items = runtime.client.home_timeline(limit=maximum).items[:maximum]
             ordered = list(reversed(raw_items))
         else:
             # Mastodon min_id returns the page immediately newer than this ID.
             # A later call advances from the last outer ID processed here.
-            raw_items = runtime.client.home_timeline(limit=maximum, min_id=watermark).items
+            raw_items = runtime.client.home_timeline(limit=maximum, min_id=watermark).items[:maximum]
             ordered = sorted(raw_items, key=_status_sort_key)
 
         source_ids = [str((item.get("reblog") or item).get("id") or item.get("id") or "") for item in ordered]

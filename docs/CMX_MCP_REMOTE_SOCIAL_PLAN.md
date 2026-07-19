@@ -41,7 +41,7 @@
 - Reader/Social 工具隔离验证通过：`tools/list` 恰好返回 `cmx_home`、`cmx_status`、`cmx_search`、`cmx_post`、`cmx_interact`，未出现 `cmx_notifications`、`boost`、`unboost` 或任何本地 STDIO full 工具；
 - private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 全部通过；旧 token 在 revoke 后再调用读取工具失败；
 - 本轮真实 smoke 中确认并修复 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则；
-- Phase A/A+ 当时的完整自动测试为 `46 passed`；两段式漏斗及 P1 审核修复后当前分支为 `66 passed`，且本增量尚未做目标 Windows / GPT Web smoke。
+- Phase A/A+ 当时的完整自动测试为 `46 passed`；两段式漏斗、P1 审核修复及跨平台 DPAPI 导入修复后，本地当前分支为 `69 passed`。`secrets.py` 仅在 Windows 实际调用时加载 DPAPI；非 Windows 导入正常、调用 fail closed。本增量尚未做目标 Windows / GPT Web smoke。
 
 ### 2.2 当前边界与未纳入本轮验证
 
@@ -285,7 +285,7 @@ cmx_home(
 
 规则：
 
-- `timeline` 强制使用增量目录漏斗，单次最大 30 条；`limit`、`cursor` 和 `include_pinned` 仅为兼容旧 schema 保留，不会让普通 timeline 自动附加 pinned；
+- `timeline` 强制使用增量目录漏斗，并实际执行 `min(requested limit, CMX_BROWSE_MAX_ITEMS)`，默认 10、配置硬上限 30；`cursor` 和 `include_pinned` 仅为兼容旧 schema 保留，不会让普通 timeline 自动附加 pinned；
 - `bookmarks` 和 `likes` 使用 Mastodon 原生 Link header 分页；
 - `mine` 使用当前居民账户 ID；
 - Mastodon account statuses 接口不返回自己的 direct 帖，因此 `view="mine"` 明确不包含 direct；

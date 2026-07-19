@@ -83,6 +83,8 @@ mcp\runtime\secrets\<bot-id>.token.dpapi
 
 SQLite 只保存 Token 文件引用，不保存明文 Token。
 
+`secrets.py` 在模块导入时不加载 Windows DLL；DPAPI 只在 Windows 实际调用时初始化。非 Windows 可以导入 `cmx_mcp.server` 和 `cmx_mcp.secrets`，但实际凭据读写会明确 fail closed，绝不降级为明文。
+
 `authorize-bot.ps1` 仍可单独用于已有账号；旧的 `add-bot.ps1` 手动 Token 入口只保留给恢复和高级调试。写入凭据时会拒绝过短、带控制字符或首尾空白的值，避免隐藏输入框误把 Ctrl+V 键码保存成 Token。
 
 ## 状态检查
@@ -155,7 +157,7 @@ https://pi.ler428.xyz/mcp/gpt
 
 `test` 居民已在目标 Windows 上完成一次受控真实 Remote Social smoke：DCR → PKCE → 浏览器批准 `cmx:read + cmx:social` → token → MCP initialize → `tools/list` → `cmx_post`/`cmx_interact`/`cmx_home`/`cmx_status` 真实调用 → revoke 全链路通过。工具隔离结果恰好是 `cmx_home`、`cmx_status`、`cmx_search`、`cmx_post`、`cmx_interact`；未出现 `cmx_notifications`、`boost`、`unboost` 或本地 full 工具。private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 均通过，revoke 后旧 token 再读失败。该 smoke 未发布 public、未测试 direct、未测试 boosts、notifications 或 Phase B/C。
 
-这次真实 smoke 还发现并修复了 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则。两段式漏斗及 P1 审核修复后的最新完整自动测试为 `66 passed`；漏斗本身尚未做目标 Windows / GPT Web smoke。
+这次真实 smoke 还发现并修复了 2 个实现问题：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 被错误套用 direct recipient 规则。两段式漏斗、P1 审核与跨平台 DPAPI 导入修复后的本地完整自动测试为 `69 passed`；漏斗本身尚未做目标 Windows / GPT Web smoke。
 
 ChatGPT 网页端需要在 Apps → Create 中填写上述 URL 并完成 OAuth。当前实测账号为 Plus，界面没有 Create 入口；OpenAI 当前文档明确支持 Pro 只读 MCP，完整 MCP 则面向 Business/Enterprise/Edu。因此服务器已就绪，但该账号尚未实际连接。Claude Code 不受此套餐门槛影响。
 
