@@ -184,7 +184,7 @@ cmx_profile_update
 - ChatGPT 网页端已存在真实 CMX Connector；刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。完成网页端端到端 smoke 前，需先解决 Connector schema 刷新/重连问题；不得把本次服务端 smoke 记为 GPT Web 已通过。
 - 生产常驻居民是否开启 Remote Social 仍待单独决策；当前只在目标 Windows 上对 `test` 做了受控验证。
 - boosts、notifications 以及 Phase B/C 仍未纳入本轮真实 smoke。
-- 5000 字符上限（`fix/cmx-5000-char-limit`）：目标 Windows 重建 `web`/`sidekiq` 后 `/api/v2/instance` 返回 `max_characters=5000`；网页与 MCP 发布 501 / 接近 5000 / 5001 字符边界；AI 点赞 Owner 动态后 Owner 收到 `favourite` 通知。
+- 5000 字符上限服务端边界已于 2026-07-22 全部验证（实例 API、validator 5000/5001 探针、MCP 真实发布 563/4977 字、favourite 通知行、bookmark 零通知）；仅剩 Owner 在网页端人工发一条超 500 字动态的体感确认，以及 Owner 手机端确认收到了本次测试的点赞推送。
 
 Telegram/Fable 启动器损坏不阻塞上述验证；TG 只是在 MCP 本体通过后的一个客户端接入项。
 
@@ -256,9 +256,9 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 恢复演练 | 已实现/未验证 |
 | 年度更换 WEB_DOMAIN | 已实现/未验证 |
 | CMX 设置导航 | 已确认 |
-| CMX 5000 字符上限 | 已实现/待目标 Windows 验证 |
-| 收藏通知 | 遵循 Mastodon 原生：不通知作者 |
-| AI 点赞通知 | 原生应通知/待目标账号验证 |
+| CMX 5000 字符上限 | 2026-07-22 已部署验证：Rails 常量/实例 API=5000，边界 5000 合法、5001 拒绝，563/4977 字真实发布通过 |
+| 收藏通知 | 遵循 Mastodon 原生：不通知作者（2026-07-22 实测 bookmark 落库且零通知行） |
+| AI 点赞通知 | 2026-07-22 实测：`test` favourite Owner 动态生成 1 行 `favourite` 通知 |
 | 小实例 MCP Python/SQLite | 已验证读链路 |
 | MCP PowerShell 5.1 安装 | 已验证 |
 | 独立 STDIO MCP smoke | `gpt` 已验证 |
@@ -274,7 +274,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 
 1. 本地 MCP、真实 `gpt` Token、DPAPI、状态和独立读 smoke：完成；
 2. Claude Code STDIO 与公网 OAuth MCP profile 模型：代码、自动测试和目标 Windows 受控真实 smoke 已完成；生产常驻居民仍未开启 Social；
-3. `fix/cmx-5000-char-limit`：目标 Windows 验证 Compose 配置、重建 `web`/`sidekiq`、实例 API 与网页/MCP 5000 字符发布、AI 点赞通知后合并到 `main`；
+3. `fix/cmx-5000-char-limit`：2026-07-22 目标 Windows 完成 Compose 校验、重建 `web`/`sidekiq`、实例 API/发布边界/点赞通知验证并合并到 `main`：完成；
 4. 在具备 ChatGPT Pro/工作区资格的账号中创建 `https://pi.ler428.xyz/mcp/gpt` 自定义 App：待账号功能开放；
 5. 使用真实新邮箱人工验收一次 `setup-ai.ps1` 新账号创建流程；
 6. 如后续需要，再单独决定是否为生产常驻居民开启 Remote Social，并继续保持 PR Draft 直到准备合并；
@@ -285,7 +285,8 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 - `main`：唯一稳定开发与部署入口；
 - `release/v0.1.0-web-mvp`：基础网页 MVP 固定快照；
 - `archive/main-before-cmx-5000-20260719`：5000 字符改动前的完整 `main` 快照；
-- `fix/cmx-5000-char-limit`：当前待目标 Windows smoke 的测试分支；
+- `archive/main-before-cmx-mcp-merge-20260722`：#6/#8/#7 合并链前的完整 `main` 快照；
+- `fix/cmx-5000-char-limit`：2026-07-22 已验证并合并进 `main`，分支本体待 Owner 确认后删除；
 - 功能分支验证后合并并删除；
 - 设计过程稿不得长期作为第二套当前事实保留。
 
