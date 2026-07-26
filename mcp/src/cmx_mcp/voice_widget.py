@@ -21,15 +21,20 @@ same page token against the instance) and, when the local transcript comes back,
 text. Nothing is retried: if transcription fails or the page is closed first, the
 status simply stays text-less and the worker's reply remains the fallback.
 
+v5 only resizes: this is the owner's private single-user instance, so the mic
+no longer has to be discreet - 64px instead of 48px, resting at 50% opacity
+instead of 35%, with the check/cross satellites grown to 44px comfortable tap
+targets.
+
 Plain ES2017, no build step, no external dependency, no backticks (the source
 must stay safe to embed in any HTML or config context).
 """
 
 from __future__ import annotations
 
-VOICE_WIDGET_VERSION = "3"
+VOICE_WIDGET_VERSION = "5"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -46,6 +51,9 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
   var TRANSCRIBE_TIMEOUT_MS = 90000;
   var STATUS_MAX_CHARS = 4900;
   var ALT_MAX_CHARS = 1500;
+  var MIC_RESTING = "0.5";
+  var SAT_BUTTON_STYLE = { width: "44px", height: "44px", fontSize: "19px" };
+  var MIC_BUTTON_STYLE = { width: "64px", height: "64px", fontSize: "29px" };
 
   function warn(message, detail) {
     try {
@@ -147,6 +155,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
     });
   }
 
+  function applyStyle(node, styleMap) {
+    for (var key in styleMap) {
+      if (Object.prototype.hasOwnProperty.call(styleMap, key)) {
+        node.style[key] = styleMap[key];
+      }
+    }
+  }
+
   function injectStyle() {
     if (document.getElementById("pi-voice-style")) {
       return;
@@ -158,14 +174,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
       "#pi-voice-root{position:fixed;right:18px;bottom:84px;z-index:9999;display:flex;",
       "flex-direction:column;align-items:center;gap:8px;pointer-events:none}",
       "#pi-voice-root>*{pointer-events:auto}",
-      "#pi-voice-btn{width:48px;height:48px;border-radius:50%;border:0;cursor:pointer;",
-      "font-size:22px;line-height:1;display:flex;align-items:center;justify-content:center;",
-      "background:rgba(99,102,241,.25);color:#fff;opacity:.35;transition:.2s;",
+      "#pi-voice-btn{width:64px;height:64px;border-radius:50%;border:0;cursor:pointer;",
+      "font-size:29px;line-height:1;display:flex;align-items:center;justify-content:center;",
+      "background:rgba(99,102,241,.25);color:#fff;opacity:.5;transition:.2s;",
       "-webkit-tap-highlight-color:transparent}",
       "#pi-voice-btn:hover,#pi-voice-btn:focus,#pi-voice-root.pi-voice-active #pi-voice-btn{opacity:1}",
-      "#pi-voice-root.pi-voice-active #pi-voice-btn{background:rgba(239,68,68,.35);",
+      "#pi-voice-root.pi-voice-active #pi-voice-btn{background:rgba(239,68,68,.35);box-shadow:0 0 0 8px rgba(239,68,68,.28);",
       "animation:piVoicePulse 1.4s ease-in-out infinite}",
-      ".pi-voice-sat{width:34px;height:34px;border-radius:50%;border:0;cursor:pointer;font-size:15px;",
+      ".pi-voice-sat{width:44px;height:44px;border-radius:50%;border:0;cursor:pointer;font-size:19px;",
       "line-height:1;display:flex;align-items:center;justify-content:center;color:#fff;",
       "background:rgba(31,41,55,.72);opacity:.95;transition:.2s}",
       ".pi-voice-sat:hover,.pi-voice-sat:focus{opacity:1}",
@@ -214,6 +230,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
     okButton.className = "pi-voice-sat";
     okButton.textContent = "\\u2713";
     okButton.setAttribute("aria-label", "\\u53d1\\u5e03\\u8bed\\u97f3");
+    applyStyle(okButton, SAT_BUTTON_STYLE);
 
     var dropButton = document.createElement("button");
     dropButton.id = "pi-voice-drop";
@@ -221,6 +238,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
     dropButton.className = "pi-voice-sat";
     dropButton.textContent = "\\u2715";
     dropButton.setAttribute("aria-label", "\\u4e22\\u5f03\\u5f55\\u97f3");
+    applyStyle(dropButton, SAT_BUTTON_STYLE);
 
     var micButton = document.createElement("button");
     micButton.id = "pi-voice-btn";
@@ -228,6 +246,9 @@ VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page se
     micButton.textContent = "\\ud83c\\udf99\\ufe0f";
     micButton.setAttribute("aria-label", "\\u8bed\\u97f3\\u4fbf\\u7b7e");
     micButton.title = "\\u8bed\\u97f3\\u4fbf\\u7b7e";
+    applyStyle(micButton, MIC_BUTTON_STYLE);
+    micButton._piRest = MIC_RESTING;
+    micButton.style.opacity = MIC_RESTING;
 
     row.appendChild(okButton);
     row.appendChild(dropButton);

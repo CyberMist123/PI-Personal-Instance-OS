@@ -135,7 +135,11 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "TRANSCRIBE_TIMEOUT_MS = 90000" in VOICE_WIDGET_JS
     assert "STATUS_MAX_CHARS = 4900" in VOICE_WIDGET_JS
     assert "ALT_MAX_CHARS = 1500" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "3" and "voice widget v3" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "5" and "voice widget v5" in VOICE_WIDGET_JS
+    # v5: the mic is deliberately prominent on this private single-user instance.
+    assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
+    assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
+    assert 'width: "44px"' in VOICE_WIDGET_JS
     assert "default_privacy" in VOICE_WIDGET_JS
     assert "audio/mp4" in VOICE_WIDGET_JS
     assert "Idempotency-Key" in VOICE_WIDGET_JS
