@@ -87,8 +87,10 @@ def test_voice_js_is_served_as_a_plain_static_script(tmp_path, monkeypatch):
     assert "/api/v2/media" in body
     assert "/api/v1/statuses" in body
     assert "__piVoiceWidget" in body
-    # v2: transcribe first, then publish one status carrying the transcript.
+    # v3: publish immediately, then transcribe and edit the transcript in.
     assert "/files/transcribe" in body
+    assert "PUT" in body
+    assert "media_attributes" in body
     assert "description" in body
 
 
@@ -111,13 +113,29 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     # Logged-out pages have no meta.access_token and must be silently skipped.
     assert "access_token" in VOICE_WIDGET_JS
     assert "media_ids" in VOICE_WIDGET_JS
-    # One status = audio bubble + transcript body; alt text carries it too.
+    # v3 ordering: the status goes out with an empty body, then a PUT carrying
+    # media_attributes fills in both the body and the audio alt text.
+    assert 'body: JSON.stringify({ status: "", media_ids: [mediaId], visibility: visibility })' in (
+        VOICE_WIDGET_JS
+    )
+    assert 'fetch("/api/v1/statuses/" + encodeURIComponent(statusId), {' in VOICE_WIDGET_JS
+    assert 'method: "PUT"' in VOICE_WIDGET_JS
+    assert "media_attributes: [{ id: mediaId, description: clip(text, ALT_MAX_CHARS) }]" in (
+        VOICE_WIDGET_JS
+    )
+    assert "status: clip(text, STATUS_MAX_CHARS)" in VOICE_WIDGET_JS
+    # publish() must resolve before backfill() is even called.
+    assert VOICE_WIDGET_JS.index(".then(publish)") < VOICE_WIDGET_JS.index(
+        "backfill(statusId, clipMediaId, clipBlob, clipName)"
+    )
+    # The background edit reads only locals captured at ✓ time, so a second
+    # recording started mid-transcription cannot redirect it.
+    assert "var clipMime = mimeType;" in VOICE_WIDGET_JS
+    assert "function blobName(blob, mime)" in VOICE_WIDGET_JS
     assert "TRANSCRIBE_TIMEOUT_MS = 90000" in VOICE_WIDGET_JS
     assert "STATUS_MAX_CHARS = 4900" in VOICE_WIDGET_JS
     assert "ALT_MAX_CHARS = 1500" in VOICE_WIDGET_JS
-    assert 'form.append("description", description)' in VOICE_WIDGET_JS
-    assert "status: statusText" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "2" and "voice widget v2" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "3" and "voice widget v3" in VOICE_WIDGET_JS
     assert "default_privacy" in VOICE_WIDGET_JS
     assert "audio/mp4" in VOICE_WIDGET_JS
     assert "Idempotency-Key" in VOICE_WIDGET_JS

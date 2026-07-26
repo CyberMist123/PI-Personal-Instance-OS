@@ -11,12 +11,15 @@ rules keep the increment same-origin and credential-free:
   stored, copied or transmitted anywhere else. Logged-out pages simply have no
   token, and the widget then removes itself silently.
 
-Since v2 the published status carries its own transcript: ✓ first posts the blob
-to the same-origin ``/files/transcribe`` (CMX's own endpoint, which verifies that
-same page token against the instance), then publishes **one** status whose body
-is the transcript and whose audio attachment carries it as alt text. When
-transcription is unavailable the body stays empty, exactly like v1, and the
-worker's reply remains the fallback.
+Since v3 recording is **publish-first, transcribe-later**: ✓ uploads the audio and
+immediately posts an empty-bodied voice status, so the user waits for nothing but
+the upload. The blob then stays in memory while the page posts it to the
+same-origin ``/files/transcribe`` (CMX's own endpoint, which re-verifies that
+same page token against the instance) and, when the local transcript comes back,
+**edits the status it just created** (``PUT /api/v1/statuses/<id>`` with
+``media_attributes``) so the body becomes the transcript and the audio gains alt
+text. Nothing is retried: if transcription fails or the page is closed first, the
+status simply stays text-less and the worker's reply remains the fallback.
 
 Plain ES2017, no build step, no external dependency, no backticks (the source
 must stay safe to embed in any HTML or config context).
@@ -24,9 +27,9 @@ must stay safe to embed in any HTML or config context).
 
 from __future__ import annotations
 
-VOICE_WIDGET_VERSION = "2"
+VOICE_WIDGET_VERSION = "3"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v3 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -260,6 +263,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
       }, 2000);
     }
 
+    function quietFlash(text) {
+      /* Background notices must never paint over a running mm:ss timer. */
+      if (root.classList.contains("pi-voice-active") || busy) {
+        return;
+      }
+      flash(text);
+    }
+
     function stopTimer() {
       if (timerId) {
         window.clearInterval(timerId);
@@ -345,18 +356,20 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
       });
     }
 
-    function clipName(blob) {
-      var isMp4 = (blob.type || mimeType).indexOf("mp4") >= 0;
+    function blobName(blob, mime) {
+      /* Pure on purpose: a background transcribe must not read the shared
+         mimeType, which a newly started recording may already have replaced. */
+      var isMp4 = String(blob.type || mime || "").indexOf("mp4") >= 0;
       return isMp4 ? "voice.m4a" : "voice.webm";
     }
 
-    function transcribe(blob) {
+    function transcribe(blob, filename) {
       /* CMX's own same-origin endpoint: it re-verifies this page token against
-         the instance, transcribes locally and stores nothing. Any failure is
-         non-fatal - the status is then published with an empty body and the
-         worker's reply stays as the fallback. */
+         the instance, transcribes locally and stores nothing. Runs only after
+         the status is already published, so any failure just leaves that status
+         text-less and the worker's reply stays as the fallback. */
       var form = new FormData();
-      form.append("file", blob, clipName(blob));
+      form.append("file", blob, filename);
       var options = {
         method: "POST",
         headers: { Authorization: authHeader },
@@ -395,18 +408,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
         })
         .catch(function (error) {
           done();
-          warn("transcription unavailable; posting voice only", error);
+          warn("transcription unavailable; the voice post stays text-less", error);
           return "";
         });
     }
 
-    function upload(blob, description) {
+    function upload(blob, filename) {
       var form = new FormData();
-      form.append("file", blob, clipName(blob));
-      if (description) {
-        /* Alt text keeps the audio accessible and gives MCP a compact media alt. */
-        form.append("description", description);
-      }
+      form.append("file", blob, filename);
       return fetch("/api/v2/media", {
         method: "POST",
         headers: { Authorization: authHeader },
@@ -444,7 +453,9 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
       return attempt();
     }
 
-    function publish(mediaId, statusText) {
+    function publish(mediaId) {
+      /* Publish first, with an empty body: the transcript is edited in later so
+         that tapping the check mark never waits on transcription. */
       return fetch("/api/v1/statuses", {
         method: "POST",
         headers: {
@@ -452,17 +463,59 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
           "Content-Type": "application/json",
           "Idempotency-Key": idempotencyKey()
         },
-        body: JSON.stringify({
-          status: statusText || "",
-          media_ids: [mediaId],
-          visibility: visibility
-        })
+        body: JSON.stringify({ status: "", media_ids: [mediaId], visibility: visibility })
       }).then(function (response) {
         if (!response.ok) {
           throw new Error("status publish HTTP " + response.status);
         }
         return response.json();
       });
+    }
+
+    function editWithTranscript(statusId, mediaId, text) {
+      /* Mastodon's edit API takes media_attributes, so one PUT fills in both the
+         body and the audio alt text of the status that is already online. */
+      return fetch("/api/v1/statuses/" + encodeURIComponent(statusId), {
+        method: "PUT",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          status: clip(text, STATUS_MAX_CHARS),
+          media_ids: [mediaId],
+          media_attributes: [{ id: mediaId, description: clip(text, ALT_MAX_CHARS) }]
+        })
+      }).then(function (response) {
+        if (!response.ok) {
+          throw new Error("status edit HTTP " + response.status);
+        }
+        return response.json();
+      });
+    }
+
+    function backfill(statusId, mediaId, blob, filename) {
+      /* Fire-and-forget, and deliberately state-free: every value it touches was
+         captured when its own status was published, so a second recording started
+         meanwhile cannot redirect this edit. No retry - a text-less voice post is
+         still a complete post, and the worker's reply covers it. */
+      if (!statusId || !mediaId) {
+        warn("published status carried no id; skipping the transcript edit");
+        return;
+      }
+      transcribe(blob, filename)
+        .then(function (text) {
+          if (!text) {
+            return null;
+          }
+          return editWithTranscript(statusId, mediaId, text).then(function () {
+            quietFlash("\\u6587\\u5b57\\u5df2\\u8865\\u4e0a \\u2713");
+            return null;
+          });
+        })
+        .catch(function (error) {
+          warn("could not add the transcript to " + statusId, error);
+        });
     }
 
     micButton.addEventListener("click", function () {
@@ -492,37 +545,37 @@ VOICE_WIDGET_JS = """/* CMX voice widget v2 - same-origin, relative API, page se
       busy = true;
       stopTimer();
       setChip("\\u23f3");
+      /* Locals, captured once per tap: the background transcript edit below runs
+         long after resetUi() and after a new recording may have started. */
+      var clipMime = mimeType;
+      var clipBlob = null;
+      var clipName = "";
+      var clipMediaId = "";
       stopRecorder()
         .then(function (parts) {
           releaseStream();
           if (!parts.length) {
             throw new Error("empty recording");
           }
-          return new Blob(parts, { type: mimeType || parts[0].type || "audio/webm" });
+          clipBlob = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
+          clipName = blobName(clipBlob, clipMime);
+          return upload(clipBlob, clipName);
         })
-        .then(function (blob) {
-          /* One status carries both the audio bubble and its transcript. */
-          return transcribe(blob).then(function (text) {
-            return upload(blob, clip(text, ALT_MAX_CHARS)).then(function (media) {
-              return { media: media, text: clip(text, STATUS_MAX_CHARS) };
-            });
-          });
-        })
-        .then(function (bundle) {
-          if (!bundle.media.id) {
+        .then(function (media) {
+          if (!media.id) {
             throw new Error("media upload returned no id");
           }
-          var ready = bundle.media.pending
-            ? waitForMedia(bundle.media.id)
-            : Promise.resolve(bundle.media.id);
-          return ready.then(function (mediaId) {
-            return publish(mediaId, bundle.text);
-          });
+          clipMediaId = String(media.id);
+          return media.pending ? waitForMedia(clipMediaId) : clipMediaId;
         })
-        .then(function () {
+        .then(publish)
+        .then(function (status) {
+          var statusId = String((status && status.id) || "");
           busy = false;
           resetUi();
           flash("\\u5df2\\u53d1\\u5e03 \\ud83c\\udf99\\ufe0f");
+          /* The voice post is already online; the transcript catches up on its own. */
+          backfill(statusId, clipMediaId, clipBlob, clipName);
         })
         .catch(function (error) {
           warn("publish failed; recording discarded", error);
