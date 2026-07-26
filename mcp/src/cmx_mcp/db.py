@@ -41,7 +41,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 4:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 5:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -133,6 +133,13 @@ class Database:
                 CREATE TABLE IF NOT EXISTS cmx_settings (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS worker_done (
+                    bot_id TEXT NOT NULL,
+                    status_id TEXT NOT NULL,
+                    done_at INTEGER NOT NULL,
+                    PRIMARY KEY (bot_id, status_id)
+                );
                 """
             )
             for name, definition in (
@@ -145,7 +152,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(4)")
+            db.execute("INSERT INTO schema_version(version) VALUES(5)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -236,6 +243,20 @@ class Database:
                 return None
             db.execute("DELETE FROM filebox_files WHERE bot_id=? AND file_id=?", (bot_id, file_id))
         return dict(row)
+
+    def worker_is_done(self, bot_id: str, status_id: str) -> bool:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT 1 FROM worker_done WHERE bot_id=? AND status_id=?", (bot_id, status_id)
+            ).fetchone()
+        return row is not None
+
+    def worker_mark_done(self, bot_id: str, status_id: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO worker_done(bot_id,status_id,done_at) VALUES(?,?,?)",
+                (bot_id, status_id, int(time.time())),
+            )
 
     def get_setting(self, key: str) -> str | None:
         with self.connect() as db:

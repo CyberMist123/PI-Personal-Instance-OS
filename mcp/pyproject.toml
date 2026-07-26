@@ -20,6 +20,10 @@ cmx-admin = "cmx_mcp.cli:main"
 cmx-smoke = "cmx_mcp.smoke:main"
 cmx-authorize = "cmx_mcp.authorize:main"
 cmx-mcp-http = "cmx_mcp.remote:main"
+cmx-worker = "cmx_mcp.workers:main"
+
+[project.optional-dependencies]
+workers = ["faster-whisper>=1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from importlib import metadata
+from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 from urllib.parse import urlencode
 
@@ -32,6 +33,8 @@ class MastodonApiError(RuntimeError):
 
 class MastodonClient:
     def __init__(self, *, base_url: str, host_header: str, token: str, timeout: float):
+        self._base_host = (httpx.URL(base_url).host or "").lower()
+        self._host_header = host_header.split(":")[0].lower()
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
@@ -185,6 +188,46 @@ class MastodonClient:
         files = {"file": (filename, stream, mime_type)}
         data = {"description": description} if description else None
         return self._json("POST", "/api/v2/media", files=files, data=data)
+
+    def download_file(self, url: str, dest_path: str | Path, *, max_bytes: int) -> int:
+        """Stream one same-instance attachment to disk under a hard size limit."""
+        parsed = httpx.URL(url)
+        host = (parsed.host or "").lower()
+        if parsed.scheme != "https" or not host:
+            raise MastodonApiError("download URL must be an absolute https URL")
+        if host not in {self._base_host, self._host_header}:
+            raise MastodonApiError("download URL must stay on this Mastodon host")
+
+        destination = Path(dest_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        try:
+            with self._client.stream("GET", url) as response:
+                if response.is_redirect:
+                    raise MastodonApiError(
+                        f"download unexpectedly redirected ({response.status_code})"
+                    )
+                if response.status_code >= 400:
+                    raise MastodonApiError(
+                        f"download failed with {response.status_code}",
+                        status_code=response.status_code,
+                    )
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise MastodonApiError("download exceeds size limit")
+                        handle.write(chunk)
+        except MastodonApiError:
+            destination.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise MastodonApiError("download could not be written to disk") from exc
+        except httpx.HTTPError as exc:
+            destination.unlink(missing_ok=True)
+            raise MastodonApiError("Mastodon connection failed") from exc
+        return written
 
     def set_pin(self, status_id: str, action: str) -> dict[str, Any]:
         if action not in {"pin", "unpin"}:
