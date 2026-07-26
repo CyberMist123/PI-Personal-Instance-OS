@@ -33,6 +33,9 @@ ACCESS_TOKEN_TTL = 3600
 REFRESH_REUSE_TOMBSTONE_TTL = 30 * 86400
 PENDING_LIMIT = 64
 CLIENT_LIMIT = 100
+INVITE_DEFAULT_TTL = 72 * 3600
+INVITE_REDEEMED_RETENTION = 30 * 86400
+INVITE_ATTEMPT_LIMIT = 5
 
 
 # The upstream MCP SDK models are plain pydantic models that silently drop
@@ -119,6 +122,16 @@ class OAuthStore:
                     ON mcp_oauth_tokens(family_id);
                 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_expiry
                     ON mcp_oauth_tokens(expires_at);
+
+                CREATE TABLE IF NOT EXISTS mcp_oauth_invites (
+                    code_hash TEXT PRIMARY KEY,
+                    bot_id TEXT NOT NULL,
+                    scopes_json TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    redeemed_at INTEGER,
+                    redeemed_client_id TEXT
+                );
                 """
             )
             # Rebuild legacy tables that predate nullable refresh expiry or the
@@ -161,6 +174,14 @@ class OAuthStore:
         with self.connect() as db:
             db.execute("DELETE FROM mcp_oauth_codes WHERE expires_at < ?", (now,))
             db.execute("DELETE FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL AND expires_at < ?", (now,))
+            db.execute(
+                """
+                DELETE FROM mcp_oauth_invites
+                WHERE (redeemed_at IS NULL AND expires_at < ?)
+                   OR (redeemed_at IS NOT NULL AND redeemed_at < ?)
+                """,
+                (now, now - INVITE_REDEEMED_RETENTION),
+            )
 
     def client_count(self) -> int:
         with self.connect() as db:
@@ -353,6 +374,107 @@ class OAuthStore:
         with self.connect() as db:
             db.execute("DELETE FROM mcp_oauth_tokens WHERE family_id=?", (family_id,))
 
+    def create_invite(
+        self,
+        *,
+        bot_id: str,
+        scopes: list[str],
+        ttl_seconds: int = INVITE_DEFAULT_TTL,
+    ) -> str:
+        """Mint a single-use onboarding invite; only its SHA-256 hash is stored."""
+        normalized = normalize_scopes(scopes)
+        if READ_SCOPE not in normalized:
+            raise ValueError("an invite must always include cmx:read")
+        raw_code = f"cmx-{secrets.token_urlsafe(24)}"
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO mcp_oauth_invites(
+                    code_hash,bot_id,scopes_json,expires_at,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (
+                    _token_hash(raw_code),
+                    bot_id,
+                    json.dumps(normalized, separators=(",", ":")),
+                    now + max(60, ttl_seconds),
+                    now,
+                ),
+            )
+        return raw_code
+
+    def list_invites(self, bot_id: str | None = None) -> list[dict]:
+        with self.connect() as db:
+            if bot_id:
+                rows = db.execute(
+                    "SELECT * FROM mcp_oauth_invites WHERE bot_id=? ORDER BY created_at DESC",
+                    (bot_id,),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM mcp_oauth_invites ORDER BY created_at DESC"
+                ).fetchall()
+        now = int(time.time())
+        return [
+            {
+                "bot_id": row["bot_id"],
+                "scopes": json.loads(row["scopes_json"]),
+                "created_at": row["created_at"],
+                "expires_at": row["expires_at"],
+                "status": (
+                    "redeemed"
+                    if row["redeemed_at"] is not None
+                    else ("expired" if int(row["expires_at"]) < now else "active")
+                ),
+                "redeemed_client_id": row["redeemed_client_id"],
+            }
+            for row in rows
+        ]
+
+    def revoke_invites(self, bot_id: str) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM mcp_oauth_invites WHERE bot_id=? AND redeemed_at IS NULL",
+                (bot_id,),
+            )
+            return cursor.rowcount
+
+    def redeem_invite(
+        self,
+        *,
+        raw_code: str,
+        bot_id: str,
+        requested_scopes: list[str] | tuple[str, ...],
+        client_id: str,
+    ) -> str:
+        """Atomically consume one invite. Returns 'ok', 'scope', or 'invalid'."""
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM mcp_oauth_invites WHERE code_hash=?",
+                (_token_hash(raw_code.strip()),),
+            ).fetchone()
+            if (
+                row is None
+                or row["redeemed_at"] is not None
+                or int(row["expires_at"]) < now
+                or row["bot_id"] != bot_id
+            ):
+                return "invalid"
+            allowed = set(json.loads(row["scopes_json"]))
+            if not set(requested_scopes).issubset(allowed):
+                return "scope"
+            db.execute(
+                """
+                UPDATE mcp_oauth_invites SET redeemed_at=?, redeemed_client_id=?
+                WHERE code_hash=? AND redeemed_at IS NULL
+                """,
+                (now, client_id, _token_hash(raw_code.strip())),
+            )
+        return "ok"
+
 
 class CmxOAuthProvider:
     """OAuth 2.1 provider with local-only owner approval and per-bot binding."""
@@ -365,13 +487,19 @@ class CmxOAuthProvider:
         resource_to_bot: Callable[[str], str | None],
         bot_is_enabled: Callable[[str], bool],
         bot_remote_profile: Callable[[str], str | None] | None = None,
+        redeem_origin: str | None = None,
     ) -> None:
         self.store = store
         self.approval_origin = approval_origin.rstrip("/")
+        # When set, authorization requests are sent to the public invite-code
+        # redemption page instead of the loopback-only owner approval page.
+        # The loopback page keeps working for the owner either way.
+        self.redeem_origin = redeem_origin.rstrip("/") if redeem_origin else None
         self.resource_to_bot = resource_to_bot
         self.bot_is_enabled = bot_is_enabled
         self.bot_remote_profile = bot_remote_profile or (lambda _bot_id: "social_plus")
         self._pending: OrderedDict[str, PendingAuthorization] = OrderedDict()
+        self._invite_attempts: dict[str, int] = {}
         self._pending_lock = threading.RLock()
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
@@ -437,6 +565,8 @@ class CmxOAuthProvider:
             while len(self._pending) >= PENDING_LIMIT:
                 self._pending.popitem(last=False)
             self._pending[pending_id] = pending
+        if self.redeem_origin:
+            return f"{self.redeem_origin}/oauth/invite?request={pending_id}"
         return f"{self.approval_origin}/oauth/approve?request={pending_id}"
 
     def pending(self, request_id: str) -> PendingAuthorization | None:
@@ -444,10 +574,42 @@ class CmxOAuthProvider:
             self._cleanup_pending_locked()
             return self._pending.get(request_id)
 
+    def redeem(self, request_id: str, raw_code: str) -> str:
+        """Approve one pending authorization with a single-use invite code."""
+        with self._pending_lock:
+            self._cleanup_pending_locked()
+            pending = self._pending.get(request_id)
+            if pending is None:
+                raise RuntimeError("This authorization request expired or was already used")
+            attempts = self._invite_attempts.get(request_id, 0)
+            if attempts >= INVITE_ATTEMPT_LIMIT:
+                self._pending.pop(request_id, None)
+                self._invite_attempts.pop(request_id, None)
+                raise RuntimeError("Too many invalid invite codes; restart the connection")
+        raw_code = raw_code.strip()
+        status = "invalid"
+        if raw_code:
+            status = self.store.redeem_invite(
+                raw_code=raw_code,
+                bot_id=pending.bot_id,
+                requested_scopes=pending.scopes,
+                client_id=pending.client_id,
+            )
+        if status == "ok":
+            with self._pending_lock:
+                self._invite_attempts.pop(request_id, None)
+            return self.complete(request_id, approved=True)
+        with self._pending_lock:
+            self._invite_attempts[request_id] = self._invite_attempts.get(request_id, 0) + 1
+        if status == "scope":
+            raise ValueError("这张邀请码不包含本次请求的全部权限；请重新连接并只申请只读，或让 Owner 生成带社交权限的邀请码")
+        raise ValueError("邀请码无效、已被使用或已过期")
+
     def complete(self, request_id: str, *, approved: bool) -> str:
         with self._pending_lock:
             self._cleanup_pending_locked()
             pending = self._pending.pop(request_id, None)
+            self._invite_attempts.pop(request_id, None)
         if pending is None:
             raise RuntimeError("This authorization request expired or was already used")
         if not approved:
@@ -615,6 +777,9 @@ class CmxOAuthProvider:
         for key, value in list(self._pending.items()):
             if value.expires_at < now:
                 self._pending.pop(key, None)
+        for key in list(self._invite_attempts):
+            if key not in self._pending:
+                self._invite_attempts.pop(key, None)
 
 
 def _token_hash(token: str) -> str:

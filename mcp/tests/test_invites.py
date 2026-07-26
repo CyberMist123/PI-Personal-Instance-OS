@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+from mcp.server.auth.provider import AuthorizationParams
+from mcp.shared.auth import OAuthClientInformationFull
+from starlette.testclient import TestClient
+
+from cmx_mcp.config import Paths
+from cmx_mcp.db import Database
+from cmx_mcp.remote import create_remote_app
+from cmx_mcp.remote_auth import (
+    INVITE_ATTEMPT_LIMIT,
+    CmxOAuthProvider,
+    OAuthStore,
+    READ_SCOPE,
+    SOCIAL_SCOPE,
+)
+
+
+def _client() -> OAuthClientInformationFull:
+    return OAuthClientInformationFull(
+        client_id="client-1",
+        client_id_issued_at=1,
+        redirect_uris=["http://127.0.0.1:9999/callback"],
+        token_endpoint_auth_method="none",
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        scope=READ_SCOPE,
+        client_name="invite test client",
+    )
+
+
+def _provider(tmp_path):
+    store = OAuthStore(tmp_path / "oauth.sqlite3")
+    store.initialize()
+    provider = CmxOAuthProvider(
+        store=store,
+        approval_origin="http://127.0.0.1:8766",
+        resource_to_bot=lambda resource: (
+            "gpt" if resource.rstrip("/") == "https://pi.example/mcp/gpt" else None
+        ),
+        bot_is_enabled=lambda bot_id: bot_id == "gpt",
+        redeem_origin="https://pi.example",
+    )
+    return store, provider
+
+
+def _params(scopes=None) -> AuthorizationParams:
+    return AuthorizationParams(
+        state="client-state",
+        scopes=scopes or [READ_SCOPE],
+        code_challenge="A" * 43,
+        redirect_uri="http://127.0.0.1:9999/callback",
+        redirect_uri_provided_explicitly=True,
+        resource="https://pi.example/mcp/gpt",
+    )
+
+
+async def _pending_request(provider, client, scopes=None) -> str:
+    url = await provider.authorize(client, _params(scopes=scopes))
+    assert "/oauth/invite?request=" in url
+    return url.rsplit("=", 1)[1]
+
+
+def test_invite_redeem_approves_pending_and_is_single_use(tmp_path):
+    async def scenario():
+        store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+
+        request_id = await _pending_request(provider, client)
+        code = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+        target = provider.redeem(request_id, code)
+        assert target.startswith("http://127.0.0.1:9999/callback")
+        assert "code=" in target and "state=client-state" in target
+
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert auth_code is not None and auth_code.subject == "gpt"
+        tokens = await provider.exchange_authorization_code(client, auth_code)
+        access = await provider.load_access_token(tokens.access_token)
+        assert access is not None and access.subject == "gpt"
+
+        second = await _pending_request(provider, client)
+        with pytest.raises(ValueError, match="邀请码"):
+            provider.redeem(second, code)
+
+    asyncio.run(scenario())
+
+
+def test_invite_scope_ceiling_is_enforced(tmp_path):
+    async def scenario():
+        store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+
+        request_id = await _pending_request(provider, client, scopes=[READ_SCOPE, SOCIAL_SCOPE])
+        read_only = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+        with pytest.raises(ValueError, match="权限"):
+            provider.redeem(request_id, read_only)
+        assert provider.pending(request_id) is not None
+
+        social = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE, SOCIAL_SCOPE])
+        target = provider.redeem(request_id, social)
+        assert "code=" in target
+
+    asyncio.run(scenario())
+
+
+def test_expired_and_wrong_bot_invites_are_invalid(tmp_path):
+    async def scenario():
+        store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+
+        request_id = await _pending_request(provider, client)
+        expired = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+        with sqlite3.connect(store.path) as db:
+            db.execute("UPDATE mcp_oauth_invites SET expires_at=1")
+        with pytest.raises(ValueError, match="邀请码"):
+            provider.redeem(request_id, expired)
+
+        other = store.create_invite(bot_id="other", scopes=[READ_SCOPE])
+        with pytest.raises(ValueError, match="邀请码"):
+            provider.redeem(request_id, other)
+
+    asyncio.run(scenario())
+
+
+def test_attempt_limit_drops_the_pending_request(tmp_path):
+    async def scenario():
+        _store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+
+        request_id = await _pending_request(provider, client)
+        for _ in range(INVITE_ATTEMPT_LIMIT):
+            with pytest.raises(ValueError):
+                provider.redeem(request_id, "cmx-wrong")
+        with pytest.raises(RuntimeError, match="Too many"):
+            provider.redeem(request_id, "cmx-wrong")
+        assert provider.pending(request_id) is None
+
+    asyncio.run(scenario())
+
+
+def test_invites_store_only_hashes(tmp_path):
+    store, _provider_unused = _provider(tmp_path)
+    code = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+    with sqlite3.connect(store.path) as db:
+        dump = " ".join(
+            str(value)
+            for row in db.execute("SELECT * FROM mcp_oauth_invites").fetchall()
+            for value in row
+        )
+    assert code not in dump
+    listed = store.list_invites("gpt")
+    assert listed and listed[0]["status"] == "active"
+    assert store.revoke_invites("gpt") == 1
+
+
+def test_public_invite_page_end_to_end(tmp_path, monkeypatch):
+    paths = Paths(
+        home=tmp_path / "mcp",
+        runtime=tmp_path / "mcp" / "runtime",
+        database=tmp_path / "mcp" / "runtime" / "cmx.sqlite3",
+        secrets=tmp_path / "mcp" / "runtime" / "secrets",
+        logs=tmp_path / "mcp" / "runtime" / "logs",
+    )
+    database = Database(paths.database)
+    database.initialize()
+    database.upsert_bot(
+        bot_id="gpt",
+        display_name="GPT",
+        profile="resident",
+        media_root=tmp_path / "media",
+        token_ref="gpt.token.dpapi",
+        default_audience="residents",
+        allow_public=False,
+        remote_profile="reader",
+    )
+
+    class FakeRuntime:
+        def __init__(self, bot_id):
+            self.bot = database.get_bot(bot_id)
+            self.settings = SimpleNamespace(max_items=30)
+            self.client = SimpleNamespace(close=lambda: None)
+            self.db = database
+
+        def close(self):
+            self.client.close()
+
+    monkeypatch.setenv("WEB_DOMAIN", "pi.example")
+    monkeypatch.setattr("cmx_mcp.remote.Runtime", FakeRuntime)
+    app = create_remote_app(paths)
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        registered = client.post(
+            "/register",
+            json={
+                "redirect_uris": ["http://127.0.0.1:9999/callback"],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "scope": READ_SCOPE,
+                "client_name": "invite e2e",
+            },
+        )
+        assert registered.status_code in {200, 201}
+        client_id = registered.json()["client_id"]
+
+        authorize = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": "http://127.0.0.1:9999/callback",
+                "state": "st4te",
+                "code_challenge": "A" * 43,
+                "code_challenge_method": "S256",
+                "scope": READ_SCOPE,
+                "resource": "https://pi.example/mcp/gpt",
+            },
+            follow_redirects=False,
+        )
+        assert authorize.status_code in {302, 307}
+        location = authorize.headers["location"]
+        assert location.startswith("https://pi.example/oauth/invite?request=")
+        request_id = location.rsplit("=", 1)[1]
+
+        page = client.get(f"/oauth/invite?request={request_id}")
+        assert page.status_code == 200
+        assert "邀请码" in page.text
+        assert page.headers["cache-control"] == "no-store"
+
+        wrong = client.post(
+            "/oauth/invite",
+            data={"request": request_id, "code": "cmx-wrong"},
+            follow_redirects=False,
+        )
+        assert wrong.status_code == 200
+        assert "无效" in wrong.text
+
+        invite_code = OAuthStore(paths.database).create_invite(
+            bot_id="gpt", scopes=[READ_SCOPE]
+        )
+        redeemed = client.post(
+            "/oauth/invite",
+            data={"request": request_id, "code": invite_code},
+            follow_redirects=False,
+        )
+        assert redeemed.status_code == 303
+        target = redeemed.headers["location"]
+        assert target.startswith("http://127.0.0.1:9999/callback")
+        assert "code=" in target and "state=st4te" in target
