@@ -163,6 +163,113 @@ def test_invites_store_only_hashes(tmp_path):
     assert store.revoke_invites("gpt") == 1
 
 
+def test_confidential_client_full_flow_like_chatgpt(tmp_path, monkeypatch):
+    """ChatGPT-shaped client: secret-based auth + PKCE must reach a token."""
+    import base64
+    import hashlib
+
+    paths = Paths(
+        home=tmp_path / "mcp",
+        runtime=tmp_path / "mcp" / "runtime",
+        database=tmp_path / "mcp" / "runtime" / "cmx.sqlite3",
+        secrets=tmp_path / "mcp" / "runtime" / "secrets",
+        logs=tmp_path / "mcp" / "runtime" / "logs",
+    )
+    database = Database(paths.database)
+    database.initialize()
+    database.upsert_bot(
+        bot_id="gpt",
+        display_name="GPT",
+        profile="resident",
+        media_root=tmp_path / "media",
+        token_ref="gpt.token.dpapi",
+        default_audience="residents",
+        allow_public=False,
+        remote_profile="social",
+    )
+
+    class FakeRuntime:
+        def __init__(self, bot_id):
+            self.bot = database.get_bot(bot_id)
+            self.settings = SimpleNamespace(max_items=30)
+            self.client = SimpleNamespace(close=lambda: None)
+            self.db = database
+
+        def close(self):
+            self.client.close()
+
+    monkeypatch.setenv("WEB_DOMAIN", "pi.example")
+    monkeypatch.setattr("cmx_mcp.remote.Runtime", FakeRuntime)
+    app = create_remote_app(paths)
+
+    verifier = "chatgpt-style-verifier-" + "v" * 24
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        registered = client.post(
+            "/register",
+            json={
+                "redirect_uris": ["https://chatgpt.com/connector/oauth/x1"],
+                "token_endpoint_auth_method": "client_secret_post",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "client_name": "ChatGPT",
+            },
+        )
+        assert registered.status_code in {200, 201}
+        payload = registered.json()
+        assert payload.get("client_secret")
+        # A zero/instant expiry here is exactly the bug that broke ChatGPT.
+        assert not payload.get("client_secret_expires_at")
+
+        authorize = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": payload["client_id"],
+                "redirect_uri": "https://chatgpt.com/connector/oauth/x1",
+                "state": "gpt-state",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": f"{READ_SCOPE} {SOCIAL_SCOPE}",
+                "resource": "https://pi.example/mcp/gpt",
+            },
+            follow_redirects=False,
+        )
+        assert authorize.status_code in {302, 307}
+        request_id = authorize.headers["location"].rsplit("=", 1)[1]
+
+        invite_code = OAuthStore(paths.database).create_invite(
+            bot_id="gpt", scopes=[READ_SCOPE, SOCIAL_SCOPE]
+        )
+        redeemed = client.post(
+            "/oauth/invite",
+            data={"request": request_id, "code": invite_code},
+            follow_redirects=False,
+        )
+        assert redeemed.status_code == 303
+        auth_code = redeemed.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+
+        tokens = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": "https://chatgpt.com/connector/oauth/x1",
+                "client_id": payload["client_id"],
+                "client_secret": payload["client_secret"],
+                "code_verifier": verifier,
+            },
+        )
+        assert tokens.status_code == 200, tokens.text
+        body = tokens.json()
+        assert body.get("access_token") and body.get("refresh_token")
+
+
 def test_public_invite_page_end_to_end(tmp_path, monkeypatch):
     paths = Paths(
         home=tmp_path / "mcp",

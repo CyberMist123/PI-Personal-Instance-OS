@@ -297,7 +297,11 @@ http://127.0.0.1:{settings.port}/oauth/approve?request={html.escape(request_id)}
         issuer_url=AnyHttpUrl(settings.oauth_issuer),
         client_registration_options=ClientRegistrationOptions(
             enabled=True,
-            client_secret_expiry_seconds=0,
+            # None means client secrets never expire. The SDK reads an integer
+            # literally: 0 would stamp every confidential client (ChatGPT
+            # registers as one) with a secret that expires at issuance, killing
+            # its /token exchange with "Client secret has expired".
+            client_secret_expiry_seconds=None,
             valid_scopes=[READ_SCOPE, SOCIAL_SCOPE],
             default_scopes=[READ_SCOPE],
         ),
