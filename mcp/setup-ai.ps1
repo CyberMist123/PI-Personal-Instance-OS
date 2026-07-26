@@ -7,7 +7,8 @@ param(
     [ValidateSet("disabled", "reader", "social", "social_plus")][string]$RemoteProfile = "reader",
     [switch]$RemoteBoosts,
     [switch]$RemoteNotifications,
-    [switch]$UseExistingAccount
+    [switch]$UseExistingAccount,
+    [switch]$Invite
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,6 +64,19 @@ if (Test-Path -LiteralPath $httpMarker) {
     Write-Host "Refreshing the profiled remote MCP resident map..." -ForegroundColor Cyan
     & (Join-Path $Root "http-stop.ps1")
     & (Join-Path $Root "http-start.ps1")
+}
+
+if ($Invite) {
+    if ($RemoteProfile -eq "disabled") {
+        Write-Host "RemoteProfile is disabled; no onboarding invite was minted." -ForegroundColor Yellow
+    } else {
+        $admin = Join-Path $Root ".venv\Scripts\cmx-admin.exe"
+        $scopes = "read"
+        if ($RemoteProfile -in @("social", "social_plus")) { $scopes = "read,social" }
+        Write-Host "Minting a single-use onboarding invite..." -ForegroundColor Cyan
+        & $admin invite-new --bot $BotId --scopes $scopes
+        if ($LASTEXITCODE -ne 0) { throw "Invite creation failed." }
+    }
 }
 
 Write-Host ""

@@ -132,6 +132,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
         resource_to_bot=settings.resource_to_bot,
         bot_is_enabled=bot_is_enabled,
         bot_remote_profile=bot_remote_profile,
+        redeem_origin=settings.public_origin,
     )
 
     runtimes: dict[str, Runtime] = {}
@@ -220,6 +221,62 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
 </form></main></body></html>"""
         return HTMLResponse(body, headers={"Cache-Control": "no-store"})
 
+    def _invite_form(request_id: str, pending: Any, *, error: str | None = None) -> HTMLResponse:
+        bot = database.get_bot(pending.bot_id)
+        scope_text = html.escape(" ".join(pending.scopes))
+        error_html = (
+            f'<p style="color:#f87171"><strong>{html.escape(error)}</strong></p>' if error else ""
+        )
+        body = f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CMX MCP 邀请码</title>
+<style>body{{font-family:system-ui;margin:0;background:#111827;color:#f9fafb}}
+main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-radius:18px}}
+.muted{{color:#9ca3af}}input{{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;
+border:1px solid #374151;background:#111827;color:#f9fafb;font-size:16px}}
+button{{border:0;border-radius:10px;padding:12px 20px;margin-top:14px;background:#22c55e;color:#052e16;font-size:16px}}</style>
+</head><body><main><h1>输入邀请码完成连接</h1>
+<p><strong>{html.escape(pending.client_name)}</strong> 请求连接 AI 居民
+<strong>{html.escape(bot.display_name or bot.bot_id)}</strong>。</p>
+<p class="muted">Requested scopes: {scope_text}</p>
+{error_html}
+<form method="post" action="/oauth/invite">
+<input type="hidden" name="request" value="{html.escape(request_id)}">
+<input name="code" placeholder="cmx-…" autocomplete="off" autofocus>
+<br><button type="submit">兑换并授权</button>
+</form>
+<p class="muted">邀请码由该实例的 Owner 生成，单次有效。Owner 本人也可在服务器本机打开
+http://127.0.0.1:{settings.port}/oauth/approve?request={html.escape(request_id)} 直接批准。</p>
+</main></body></html>"""
+        return HTMLResponse(body, headers={"Cache-Control": "no-store"})
+
+    async def invite(request: Request) -> Response:
+        if request.method == "POST":
+            origin = request.headers.get("origin", "")
+            allowed_origins = {settings.public_origin, *_loopback_origins(settings.port)}
+            if origin and origin.rstrip("/") not in allowed_origins:
+                return JSONResponse({"error": "invalid_origin"}, status_code=403)
+            form = await request.form()
+            request_id = str(form.get("request") or "")
+            raw_code = str(form.get("code") or "")
+            try:
+                target = provider.redeem(request_id, raw_code)
+            except RuntimeError as exc:
+                return _approval_error(str(exc))
+            except ValueError as exc:
+                pending = provider.pending(request_id)
+                if pending is None:
+                    return _approval_error("This authorization request expired or was already used")
+                return _invite_form(request_id, pending, error=str(exc))
+            return RedirectResponse(target, status_code=303, headers={"Cache-Control": "no-store"})
+
+        request_id = str(request.query_params.get("request") or "")
+        pending = provider.pending(request_id)
+        if pending is None:
+            return _approval_error("This authorization request expired or was already used")
+        return _invite_form(request_id, pending)
+
     async def health(_request: Request) -> Response:
         social_enabled = any(
             bot.enabled and bot.remote_profile in {"social", "social_plus"}
@@ -259,6 +316,7 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
             methods=["GET", "OPTIONS"],
         ),
         Route("/oauth/approve", approve, methods=["GET", "POST"]),
+        Route("/oauth/invite", invite, methods=["GET", "POST"]),
         Route("/_cmx/mcp-health", health, methods=["GET"]),
         *mcp_routes,
     ]

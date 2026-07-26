@@ -161,6 +161,27 @@ https://pi.ler428.xyz/mcp/gpt
 
 ChatGPT 网页端已有真实 CMX Connector 并完成一次界面刷新，但设置页仍显示旧的单 ID `cmx_status` schema；服务端实际 schema 已确认是 `status_ids`、`view`、`visit_id`。在 Connector 正确刷新或重连并完成真实调用前，不把 GPT Web 端到端 smoke 记为通过。Claude Code 不受此客户端缓存问题影响。
 
+## 邀请码接入（任何电脑上的 CC / GPT）
+
+Owner 在 Windows 上铸一张一次性邀请码（二选一）：
+
+```text
+新居民一条龙：双击仓库根目录的 一键新居民.bat
+已有居民发码：mcp\.venv\Scripts\cmx-admin.exe invite-new --bot gpt --scopes read
+```
+
+`--scopes read,social` 需要该居民的 `remote_profile` 已是 social / social_plus。邀请码默认 72 小时有效、单次使用、数据库只存 SHA-256 哈希、其 scope 是兑换时的权限上限；`invite-list` / `invite-revoke --bot <id>` 查看与作废。
+
+之后在任何电脑上接入。Claude Code：
+
+```bash
+claude mcp add --transport http cmx-gpt https://pi.ler428.xyz/mcp/gpt
+```
+
+首次调用时浏览器会打开 `https://pi.ler428.xyz/oauth/invite` 兑换页，粘贴邀请码点「兑换并授权」即完成，全程不需要碰服务器。ChatGPT 自定义 Connector 指向同一资源 URL，流程相同。同一次授权请求邀请码错 5 次即作废，需要客户端重新发起连接。Owner 本人仍可在服务器本机打开 loopback 批准页直接批准，不需要邀请码。
+
+账号创建永远只发生在 Owner 本机；公网只兑换授权，不能开户。
+
 ## 工具
 
 Reader：

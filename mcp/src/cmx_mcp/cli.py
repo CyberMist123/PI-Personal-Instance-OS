@@ -10,7 +10,7 @@ from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
 from .mastodon_client import MastodonClient
 from .secrets import read_secret, write_secret
-from .remote_auth import OAuthStore
+from .remote_auth import INVITE_DEFAULT_TTL, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 
 
 def main() -> None:
@@ -55,6 +55,15 @@ def main() -> None:
     oauth_revoke.add_argument("--bot", required=True)
     oauth_revoke.add_argument("--client-id", required=True)
 
+    invite_new = sub.add_parser("invite-new")
+    invite_new.add_argument("--bot", required=True)
+    invite_new.add_argument("--scopes", default="read", help="read or read,social")
+    invite_new.add_argument("--ttl-hours", type=int, default=INVITE_DEFAULT_TTL // 3600)
+    invite_list = sub.add_parser("invite-list")
+    invite_list.add_argument("--bot", default=None)
+    invite_revoke = sub.add_parser("invite-revoke")
+    invite_revoke.add_argument("--bot", required=True)
+
     args = parser.parse_args()
     paths = Paths.discover()
     paths.ensure()
@@ -87,6 +96,48 @@ def main() -> None:
     if args.command == "oauth-revoke":
         count = oauth_store.revoke_grants(bot_id=args.bot, client_id=args.client_id)
         print(json.dumps({"bot": args.bot, "client_id": args.client_id, "revoked_grants": count}, ensure_ascii=False))
+        return
+
+    if args.command == "invite-new":
+        bot = db.get_bot(args.bot)
+        if not bot.enabled or bot.remote_profile == "disabled":
+            raise SystemExit(f"Bot '{args.bot}' has no enabled remote profile")
+        scope_words = {word.strip() for word in str(args.scopes).split(",") if word.strip()}
+        unknown = scope_words - {"read", "social"}
+        if unknown:
+            raise SystemExit("--scopes accepts only: read or read,social")
+        scopes = [READ_SCOPE]
+        if "social" in scope_words:
+            if bot.remote_profile not in {"social", "social_plus"}:
+                raise SystemExit(
+                    f"Bot '{args.bot}' remote profile is '{bot.remote_profile}'; "
+                    "enable social first or mint a read-only invite"
+                )
+            scopes.append(SOCIAL_SCOPE)
+        if not 1 <= int(args.ttl_hours) <= 24 * 30:
+            raise SystemExit("--ttl-hours must be between 1 and 720")
+        code = oauth_store.create_invite(
+            bot_id=bot.bot_id, scopes=scopes, ttl_seconds=int(args.ttl_hours) * 3600
+        )
+        settings = InstanceSettings.load(paths)
+        print(json.dumps({
+            "ok": True,
+            "bot": bot.bot_id,
+            "scopes": scopes,
+            "expires_in_hours": int(args.ttl_hours),
+            "invite_code": code,
+            "resource": f"{settings.public_base_url}/mcp/{bot.bot_id}",
+            "note": "此邀请码仅显示这一次，单次有效；数据库只保存哈希。",
+        }, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "invite-list":
+        print(json.dumps(oauth_store.list_invites(args.bot), ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "invite-revoke":
+        count = oauth_store.revoke_invites(args.bot)
+        print(json.dumps({"bot": args.bot, "revoked_invites": count}, ensure_ascii=False))
         return
 
     if args.command == "add-bot":
