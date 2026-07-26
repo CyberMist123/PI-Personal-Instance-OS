@@ -21,7 +21,12 @@ if ($process) {
         -and $process.CommandLine -notlike "*cmx_mcp.remote*" `
         -and $process.Name -ne "cmx-mcp-http.exe"
     ) {
-        throw "Refusing to stop unrelated PID $pidValue."
+        # PID reuse after a reboot or crash: never kill the stranger, but a
+        # stale PID file must not block stop/update flows either.
+        Write-Host "Stale PID file: PID $pidValue now belongs to an unrelated process; leaving it alone." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+        Write-Host "CMX remote MCP stopped." -ForegroundColor Green
+        exit 0
     }
     Stop-Process -Id $pidValue -Force
     Wait-Process -Id $pidValue -Timeout 10 -ErrorAction SilentlyContinue
