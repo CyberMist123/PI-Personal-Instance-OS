@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -69,6 +69,7 @@ class PendingAuthorization:
     redirect_uri: str
     redirect_uri_provided_explicitly: bool
     expires_at: float
+    scopes_explicit: bool = True
 
 
 class OAuthStore:
@@ -447,8 +448,11 @@ class OAuthStore:
         bot_id: str,
         requested_scopes: list[str] | tuple[str, ...],
         client_id: str,
-    ) -> str:
-        """Atomically consume one invite. Returns 'ok', 'scope', or 'invalid'."""
+    ) -> tuple[str, list[str] | None]:
+        """Atomically consume one invite.
+
+        Returns ('ok', invite_scopes), ('scope', None), or ('invalid', None).
+        """
         now = int(time.time())
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -462,10 +466,10 @@ class OAuthStore:
                 or int(row["expires_at"]) < now
                 or row["bot_id"] != bot_id
             ):
-                return "invalid"
+                return "invalid", None
             allowed = set(json.loads(row["scopes_json"]))
             if not set(requested_scopes).issubset(allowed):
-                return "scope"
+                return "scope", None
             db.execute(
                 """
                 UPDATE mcp_oauth_invites SET redeemed_at=?, redeemed_client_id=?
@@ -473,7 +477,7 @@ class OAuthStore:
                 """,
                 (now, client_id, _token_hash(raw_code.strip())),
             )
-        return "ok"
+        return "ok", sorted(allowed)
 
 
 class CmxOAuthProvider:
@@ -534,8 +538,10 @@ class CmxOAuthProvider:
             raise AuthorizeError("invalid_request", "resource must name one CMX resident MCP URL")
         if not self.bot_is_enabled(bot_id):
             raise AuthorizeError("access_denied", "the requested CMX resident is unavailable")
+        requested_scopes = list(params.scopes or [])
+        scopes_explicit = bool(requested_scopes)
         try:
-            scopes = normalize_scopes(params.scopes or [READ_SCOPE])
+            scopes = normalize_scopes(requested_scopes or [READ_SCOPE])
         except ValueError as exc:
             raise AuthorizeError("invalid_scope", str(exc)) from exc
         if READ_SCOPE not in scopes:
@@ -559,6 +565,7 @@ class CmxOAuthProvider:
             redirect_uri=str(params.redirect_uri),
             redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
             expires_at=time.time() + AUTHORIZATION_CODE_TTL,
+            scopes_explicit=scopes_explicit,
         )
         with self._pending_lock:
             self._cleanup_pending_locked()
@@ -587,16 +594,28 @@ class CmxOAuthProvider:
                 self._invite_attempts.pop(request_id, None)
                 raise RuntimeError("Too many invalid invite codes; restart the connection")
         raw_code = raw_code.strip()
-        status = "invalid"
+        status, invite_scopes = "invalid", None
         if raw_code:
-            status = self.store.redeem_invite(
+            # Clients that never asked for a scope (ChatGPT sends none) get
+            # exactly what the owner minted into the invite; explicit requests
+            # keep the invite as a ceiling.
+            status, invite_scopes = self.store.redeem_invite(
                 raw_code=raw_code,
                 bot_id=pending.bot_id,
-                requested_scopes=pending.scopes,
+                requested_scopes=list(pending.scopes) if pending.scopes_explicit else [],
                 client_id=pending.client_id,
             )
         if status == "ok":
+            if pending.scopes_explicit:
+                granted = list(pending.scopes)
+            else:
+                granted = normalize_scopes(invite_scopes or [READ_SCOPE])
+            if SOCIAL_SCOPE in granted and self.bot_remote_profile(pending.bot_id) not in {"social", "social_plus"}:
+                granted = [READ_SCOPE]
             with self._pending_lock:
+                current = self._pending.get(request_id)
+                if current is not None:
+                    self._pending[request_id] = replace(current, scopes=tuple(granted))
                 self._invite_attempts.pop(request_id, None)
             return self.complete(request_id, approved=True)
         with self._pending_lock:
