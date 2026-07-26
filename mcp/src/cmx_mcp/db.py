@@ -41,7 +41,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 3:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 4:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -123,6 +123,16 @@ class Database:
                     char_budget_limit INTEGER NOT NULL, char_budget_used INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS filebox_files (
+                    bot_id TEXT NOT NULL, file_id TEXT NOT NULL, file_name TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                    PRIMARY KEY (bot_id, file_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS cmx_settings (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
                 """
             )
             for name, definition in (
@@ -135,7 +145,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(3)")
+            db.execute("INSERT INTO schema_version(version) VALUES(4)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -185,6 +195,58 @@ class Database:
                 return False
             db.execute("UPDATE browse_visits SET opened_ids_json=?,char_budget_used=char_budget_used+? WHERE visit_id=?", (json.dumps(merged), added_chars, visit_id))
             return True
+
+    def filebox_add(self, *, bot_id: str, file_id: str, file_name: str, size_bytes: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO filebox_files(bot_id,file_id,file_name,size_bytes,created_at) VALUES(?,?,?,?,?)",
+                (bot_id, file_id, file_name, int(size_bytes), int(time.time())),
+            )
+
+    def filebox_usage(self, bot_id: str) -> int:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT COALESCE(SUM(size_bytes),0) FROM filebox_files WHERE bot_id=?", (bot_id,)
+            ).fetchone()
+        return int(row[0])
+
+    def filebox_get(self, bot_id: str, file_id: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM filebox_files WHERE bot_id=? AND file_id=?", (bot_id, file_id)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def filebox_list(self, bot_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            if bot_id:
+                rows = db.execute(
+                    "SELECT * FROM filebox_files WHERE bot_id=? ORDER BY created_at DESC", (bot_id,)
+                ).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM filebox_files ORDER BY created_at DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def filebox_remove(self, bot_id: str, file_id: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM filebox_files WHERE bot_id=? AND file_id=?", (bot_id, file_id)
+            ).fetchone()
+            if row is None:
+                return None
+            db.execute("DELETE FROM filebox_files WHERE bot_id=? AND file_id=?", (bot_id, file_id))
+        return dict(row)
+
+    def get_setting(self, key: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute("SELECT value FROM cmx_settings WHERE key=?", (key,)).fetchone()
+        return str(row[0]) if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO cmx_settings(key,value) VALUES(?,?)", (key, value)
+            )
 
     def _migrate_dedup(self, db: sqlite3.Connection) -> None:
         columns = {r[1] for r in db.execute("PRAGMA table_info(publish_dedup)")}

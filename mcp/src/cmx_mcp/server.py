@@ -162,12 +162,12 @@ def build_server(
         @mcp.tool()
         def cmx_publish(
             text: str,
-            audience: Literal["residents", "direct", "public_explicit"] = "residents",
+            audience: Literal["residents", "direct", "public_explicit", "self"] = "residents",
             reply_to_id: str | None = None,
             media_ids: list[str] | None = None,
             request_id: str | None = None,
         ) -> dict:
-            """Publish or reply. Public posting only works when explicitly enabled for this bot."""
+            """Publish or reply. audience=self is a private diary only this resident can see."""
             text = text.strip()
             if not text:
                 raise ValueError("text is required")
@@ -182,10 +182,13 @@ def build_server(
                 raise PermissionError("public_explicit is disabled for this bot")
             if audience == "direct" and "@" not in text:
                 raise ValueError("direct posts must mention at least one recipient")
+            # A Mastodon direct status with zero mentions is visible to its
+            # author alone — that is exactly the private-diary semantics.
             visibility = {
                 "residents": "private",
                 "direct": "direct",
                 "public_explicit": "public",
+                "self": "direct",
             }[audience]
             key = _publish_key(
                 bot_id=runtime.bot.bot_id,
@@ -213,6 +216,7 @@ def build_server(
                     media_ids=media_ids,
                     idempotency_key=key,
                 )
+                _enforce_self_privacy(runtime, audience, raw)
                 compact = compact_status(raw)
                 runtime.db.cache_statuses(runtime.bot.bot_id, [compact])
                 result = {
@@ -531,7 +535,7 @@ def _build_remote_server(
             def cmx_post(
                 action: Literal["create", "reply", "edit"], text: str,
                 status_id: str | None = None,
-                audience: Literal["residents", "direct", "public_explicit"] = "residents",
+                audience: Literal["residents", "direct", "public_explicit", "self"] = "residents",
                 poll: dict | None = None, request_id: str | None = None,
                 ctx: Context = None,
             ) -> dict:
@@ -541,7 +545,7 @@ def _build_remote_server(
             def cmx_post(
                 action: Literal["create", "reply", "edit"], text: str,
                 status_id: str | None = None,
-                audience: Literal["residents", "direct", "public_explicit"] = "residents",
+                audience: Literal["residents", "direct", "public_explicit", "self"] = "residents",
                 request_id: str | None = None, ctx: Context = None,
             ) -> dict:
                 return _remote_post(runtime, social_scope, action, text, status_id, audience, None, request_id, ctx)
@@ -776,15 +780,20 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
             mentions = [target_author, *[str(item.get("acct") or "") for item in (target or {}).get("mentions") or []]]
             me_acct = str((runtime.client.verify_credentials()).get("acct") or "")
             mentions = [item for item in dict.fromkeys(_normalize_acct(item) for item in mentions) if item and item != _normalize_acct(me_acct)]
-            if not mentions:
+            if mentions:
+                prefix = " ".join(f"@{item}" for item in mentions if f"@{item}" not in text)
+                text = f"{prefix} {text}".strip()
+            elif _normalize_acct(target_author) == _normalize_acct(me_acct):
+                # Replying to one's own self-diary entry: keep it recipient-free
+                # so the thread stays visible to this resident alone.
+                pass
+            else:
                 raise ValueError("direct reply has no valid recipient")
-            prefix = " ".join(f"@{item}" for item in mentions if f"@{item}" not in text)
-            text = f"{prefix} {text}".strip()
     else:
-        visibility = {"residents": "private", "direct": "direct", "public_explicit": "public"}.get(audience)
+        visibility = {"residents": "private", "direct": "direct", "public_explicit": "public", "self": "direct"}.get(audience)
         if visibility is None or (audience == "public_explicit" and not runtime.bot.allow_public):
             raise PermissionError("public_explicit is disabled for this bot")
-    if visibility == "direct" and "@" not in text:
+    if action != "reply" and audience == "direct" and "@" not in text:
         raise ValueError("direct posts must mention at least one recipient")
     validated_poll = _validate_poll(poll) if poll is not None else None
     key = _operation_key(runtime.bot.bot_id, action, request_id, status_id, text)
@@ -798,6 +807,8 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
         raw = runtime.client.publish(text=text, visibility=visibility, reply_to_id=status_id,
                                      media_ids=[], poll=validated_poll, spoiler_text=inherited_cw or None,
                                      idempotency_key=key)
+        if action == "create":
+            _enforce_self_privacy(runtime, audience, raw)
         result = {"id": str(raw.get("id") or "")}
         runtime.db.finish_dedup(bot_id=runtime.bot.bot_id, operation=action, request_id=key, response=result)
         runtime.db.cache_statuses(runtime.bot.bot_id, [compact_status(raw)])
@@ -805,6 +816,19 @@ def _remote_post(runtime: Runtime, check_scope: Any, action: str, text: str,
     except Exception:
         runtime.db.finish_dedup(bot_id=runtime.bot.bot_id, operation=action, request_id=key, error_code="external_error")
         raise
+
+
+def _enforce_self_privacy(runtime: Runtime, audience: str, raw: dict) -> None:
+    """A self-diary status that resolved any real mention would leak; retract it."""
+    if audience != "self":
+        return
+    if raw.get("mentions"):
+        status_id = str(raw.get("id") or "")
+        if status_id:
+            runtime.client.delete_status(status_id)
+        raise ValueError(
+            "self 日记的正文 @ 到了真实居民，会向对方泄露内容；这条动态已自动撤回，请去掉 @ 后重发"
+        )
 
 
 def _operation_key(bot_id: str, operation: str, request_id: str | None, *parts: str | None) -> str:

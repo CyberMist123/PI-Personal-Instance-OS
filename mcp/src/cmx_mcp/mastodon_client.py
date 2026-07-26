@@ -141,6 +141,9 @@ class MastodonClient:
         except MastodonApiError as exc:
             raise _content_limit_if_confirmed(exc) from exc
 
+    def delete_status(self, status_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/api/v1/statuses/{status_id}")
+
     def edit_status(self, status_id: str, *, text: str) -> dict[str, Any]:
         try:
             return self._json(

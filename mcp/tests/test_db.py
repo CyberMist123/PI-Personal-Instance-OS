@@ -133,7 +133,7 @@ def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
     assert db.seen_status_ids("b", ["source"]) == set()
     assert db.get_visit("a", "vb") is None
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 4
 
 
 def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
@@ -146,6 +146,23 @@ def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
     assert db.use_visit(bot_id="a", visit_id="v", opened_ids=["2"], added_chars=101) is False
     with pytest.raises(ValueError, match="at most 2"):
         db.use_visit(bot_id="a", visit_id="v", opened_ids=["2", "3"], added_chars=1)
+
+
+def test_filebox_quota_and_settings_roundtrip(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.filebox_add(bot_id="gpt", file_id="f1", file_name="a.zip", size_bytes=100)
+    db.filebox_add(bot_id="gpt", file_id="f2", file_name="b.bin", size_bytes=50)
+    db.filebox_add(bot_id="_owner", file_id="f3", file_name="c.mp4", size_bytes=999)
+    assert db.filebox_usage("gpt") == 150
+    assert db.filebox_get("gpt", "f1")["file_name"] == "a.zip"
+    assert db.filebox_get("gpt", "missing") is None
+    assert len(db.filebox_list("gpt")) == 2 and len(db.filebox_list()) == 3
+    removed = db.filebox_remove("gpt", "f1")
+    assert removed["size_bytes"] == 100 and db.filebox_usage("gpt") == 50
+    assert db.get_setting("filebox_pass") is None
+    db.set_setting("filebox_pass", "pbkdf2$aa$bb")
+    assert db.get_setting("filebox_pass") == "pbkdf2$aa$bb"
 
 
 def test_browse_watermark_compare_and_swap(tmp_path: Path):
@@ -184,7 +201,7 @@ def test_real_v2_database_migrates_to_v3_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 4
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
@@ -198,9 +215,9 @@ def test_future_schema_version_fails_closed(tmp_path: Path):
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as raw:
         raw.execute("CREATE TABLE schema_version(version INTEGER NOT NULL)")
-        raw.execute("INSERT INTO schema_version VALUES(4)")
+        raw.execute("INSERT INTO schema_version VALUES(5)")
     import pytest
     with pytest.raises(RuntimeError, match="future database schema version"):
         Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 4
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 5

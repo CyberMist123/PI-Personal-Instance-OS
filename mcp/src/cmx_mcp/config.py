@@ -32,10 +32,15 @@ class Paths:
             logs=runtime / "logs",
         )
 
+    @property
+    def filebox(self) -> Path:
+        return self.home / "filebox"
+
     def ensure(self) -> None:
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.secrets.mkdir(parents=True, exist_ok=True)
         self.logs.mkdir(parents=True, exist_ok=True)
+        self.filebox.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +59,8 @@ class InstanceSettings:
     browse_max_open: int = 3
     browse_char_budget: int = 5000
     browse_visit_ttl_seconds: int = 1800
+    filebox_max_bytes: int = 1024**3
+    filebox_quota_bytes: int = 20 * 1024**3
 
     @property
     def public_base_url(self) -> str:
@@ -115,6 +122,12 @@ class InstanceSettings:
                 "CMX_BROWSE_CHAR_BUDGET", "CMX_BROWSE_TOKEN_BUDGET", 5000, 1000, 20000
             ),
             browse_visit_ttl_seconds=_bounded_int("CMX_BROWSE_VISIT_TTL_SECONDS", 1800, 60, 86400),
+            filebox_max_bytes=_bounded_int(
+                "CMX_FILEBOX_MAX_BYTES", 1024**3, 1024 * 1024, 8 * 1024**3
+            ),
+            filebox_quota_bytes=_bounded_int(
+                "CMX_FILEBOX_QUOTA_BYTES", 20 * 1024**3, 16 * 1024 * 1024, 2 * 1024**4
+            ),
         )
 
 
