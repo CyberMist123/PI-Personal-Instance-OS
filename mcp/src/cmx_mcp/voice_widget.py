@@ -21,6 +21,14 @@ same page token against the instance) and, when the local transcript comes back,
 text. Nothing is retried: if transcription fails or the page is closed first, the
 status simply stays text-less and the worker's reply remains the fallback.
 
+Since v4 the widget never injects a ``<style>`` element: Mastodon 4.6.3 ships a
+strict Content-Security-Policy whose ``style-src`` is locked to a per-response
+``'nonce-…'``, so a runtime-injected stylesheet (and its keyframes) is refused by
+the browser. Every rule is therefore applied as an inline ``element.style.*``
+property and the recording "pulse" is driven by a ``setInterval`` toggle instead
+of a CSS animation. (The Nginx site also rewrites the CSP on injected pages so
+the external script itself is allowed to load — see ``nginx/default.conf``.)
+
 v5 only resizes: this is the owner's private single-user instance, so the mic
 no longer has to be discreet - 64px instead of 48px, resting at 50% opacity
 instead of 35%, with the check/cross satellites grown to 44px comfortable tap
@@ -155,43 +163,30 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
     });
   }
 
-  function applyStyle(node, styleMap) {
-    for (var key in styleMap) {
-      if (Object.prototype.hasOwnProperty.call(styleMap, key)) {
-        node.style[key] = styleMap[key];
-      }
+  function setStyle(element, styles) {
+    /* Inline styles only: Mastodon's CSP style-src is nonce-locked, so an
+       injected stylesheet element (with :hover or CSS animation) is refused. */
+    var keys = Object.keys(styles);
+    for (var i = 0; i < keys.length; i += 1) {
+      element.style[keys[i]] = styles[keys[i]];
     }
   }
 
-  function injectStyle() {
-    if (document.getElementById("pi-voice-style")) {
-      return;
+  function makeHoverable(element, restingOpacity) {
+    /* Replaces the CSS :hover / :focus opacity bump. element._piRest holds the
+       current resting opacity so the mic can rest at 1 while recording. */
+    element._piRest = restingOpacity;
+    element.style.opacity = restingOpacity;
+    function lift() {
+      element.style.opacity = "1";
     }
-    var style = document.createElement("style");
-    style.id = "pi-voice-style";
-    style.textContent = [
-      "@keyframes piVoicePulse{0%{transform:scale(1)}50%{transform:scale(1.08)}100%{transform:scale(1)}}",
-      "#pi-voice-root{position:fixed;right:18px;bottom:84px;z-index:9999;display:flex;",
-      "flex-direction:column;align-items:center;gap:8px;pointer-events:none}",
-      "#pi-voice-root>*{pointer-events:auto}",
-      "#pi-voice-btn{width:64px;height:64px;border-radius:50%;border:0;cursor:pointer;",
-      "font-size:29px;line-height:1;display:flex;align-items:center;justify-content:center;",
-      "background:rgba(99,102,241,.25);color:#fff;opacity:.5;transition:.2s;",
-      "-webkit-tap-highlight-color:transparent}",
-      "#pi-voice-btn:hover,#pi-voice-btn:focus,#pi-voice-root.pi-voice-active #pi-voice-btn{opacity:1}",
-      "#pi-voice-root.pi-voice-active #pi-voice-btn{background:rgba(239,68,68,.35);box-shadow:0 0 0 8px rgba(239,68,68,.28);",
-      "animation:piVoicePulse 1.4s ease-in-out infinite}",
-      ".pi-voice-sat{width:44px;height:44px;border-radius:50%;border:0;cursor:pointer;font-size:19px;",
-      "line-height:1;display:flex;align-items:center;justify-content:center;color:#fff;",
-      "background:rgba(31,41,55,.72);opacity:.95;transition:.2s}",
-      ".pi-voice-sat:hover,.pi-voice-sat:focus{opacity:1}",
-      "#pi-voice-ok{background:rgba(34,197,94,.75)}",
-      "#pi-voice-row{display:flex;gap:8px}",
-      "#pi-voice-chip{font:12px/1.4 system-ui,sans-serif;color:#f9fafb;background:rgba(17,24,39,.78);",
-      "border-radius:10px;padding:3px 9px;white-space:nowrap;transition:.2s}",
-      "#pi-voice-root:not(.pi-voice-active) #pi-voice-row{display:none}"
-    ].join("");
-    (document.head || document.documentElement).appendChild(style);
+    function settle() {
+      element.style.opacity = element._piRest;
+    }
+    element.addEventListener("mouseenter", lift);
+    element.addEventListener("focus", lift);
+    element.addEventListener("mouseleave", settle);
+    element.addEventListener("blur", settle);
   }
 
   function start(state) {
@@ -212,33 +207,59 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
     var visibility = pickVisibility(state);
     var authHeader = "Bearer " + token;
 
-    injectStyle();
-
     var root = document.createElement("div");
     root.id = "pi-voice-root";
+    setStyle(root, {
+      position: "fixed",
+      right: "18px",
+      bottom: "84px",
+      zIndex: "9999",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: "8px",
+      pointerEvents: "none"
+    });
 
     var chip = document.createElement("div");
     chip.id = "pi-voice-chip";
-    chip.style.display = "none";
+    setStyle(chip, {
+      pointerEvents: "auto",
+      font: "12px/1.4 system-ui,sans-serif",
+      color: "#f9fafb",
+      background: "rgba(17,24,39,.78)",
+      borderRadius: "10px",
+      padding: "3px 9px",
+      whiteSpace: "nowrap",
+      transition: "opacity .2s",
+      display: "none"
+    });
 
     var row = document.createElement("div");
     row.id = "pi-voice-row";
+    setStyle(row, {
+      pointerEvents: "auto",
+      display: "none",
+      gap: "8px"
+    });
 
     var okButton = document.createElement("button");
     okButton.id = "pi-voice-ok";
     okButton.type = "button";
-    okButton.className = "pi-voice-sat";
     okButton.textContent = "\\u2713";
     okButton.setAttribute("aria-label", "\\u53d1\\u5e03\\u8bed\\u97f3");
-    applyStyle(okButton, SAT_BUTTON_STYLE);
+    setStyle(okButton, SAT_BUTTON_STYLE);
+    okButton.style.background = "rgba(34,197,94,.75)";
+    makeHoverable(okButton, "0.95");
 
     var dropButton = document.createElement("button");
     dropButton.id = "pi-voice-drop";
     dropButton.type = "button";
-    dropButton.className = "pi-voice-sat";
     dropButton.textContent = "\\u2715";
     dropButton.setAttribute("aria-label", "\\u4e22\\u5f03\\u5f55\\u97f3");
-    applyStyle(dropButton, SAT_BUTTON_STYLE);
+    setStyle(dropButton, SAT_BUTTON_STYLE);
+    dropButton.style.background = "rgba(31,41,55,.72)";
+    makeHoverable(dropButton, "0.95");
 
     var micButton = document.createElement("button");
     micButton.id = "pi-voice-btn";
@@ -246,9 +267,25 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
     micButton.textContent = "\\ud83c\\udf99\\ufe0f";
     micButton.setAttribute("aria-label", "\\u8bed\\u97f3\\u4fbf\\u7b7e");
     micButton.title = "\\u8bed\\u97f3\\u4fbf\\u7b7e";
-    applyStyle(micButton, MIC_BUTTON_STYLE);
-    micButton._piRest = MIC_RESTING;
-    micButton.style.opacity = MIC_RESTING;
+    setStyle(micButton, {
+      pointerEvents: "auto",
+      width: "64px",
+      height: "64px",
+      borderRadius: "50%",
+      border: "0",
+      cursor: "pointer",
+      fontSize: "29px",
+      lineHeight: "1",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "rgba(99,102,241,.25)",
+      color: "#fff",
+      boxShadow: "none",
+      transition: "opacity .2s, background .2s, box-shadow .2s",
+      WebkitTapHighlightColor: "transparent"
+    });
+    makeHoverable(micButton, MIC_RESTING);
 
     row.appendChild(okButton);
     row.appendChild(dropButton);
@@ -263,7 +300,48 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
     var timerId = 0;
     var elapsed = 0;
     var busy = false;
+    var recording = false;
     var mimeType = "";
+    var pulseId = 0;
+    var pulseOn = false;
+
+    function startPulse() {
+      /* JS-driven pulse: no CSS keyframes, so nothing to nonce. */
+      stopPulse();
+      pulseId = window.setInterval(function () {
+        pulseOn = !pulseOn;
+        micButton.style.boxShadow = pulseOn
+          ? "0 0 0 8px rgba(239,68,68,.28)"
+          : "0 0 0 0 rgba(239,68,68,0)";
+      }, 700);
+    }
+
+    function stopPulse() {
+      if (pulseId) {
+        window.clearInterval(pulseId);
+        pulseId = 0;
+      }
+      pulseOn = false;
+      micButton.style.boxShadow = "none";
+    }
+
+    function enterRecordingLook() {
+      recording = true;
+      micButton.style.background = "rgba(239,68,68,.35)";
+      micButton._piRest = "1";
+      micButton.style.opacity = "1";
+      row.style.display = "flex";
+      startPulse();
+    }
+
+    function exitRecordingLook() {
+      recording = false;
+      stopPulse();
+      micButton.style.background = "rgba(99,102,241,.25)";
+      micButton._piRest = MIC_RESTING;
+      micButton.style.opacity = MIC_RESTING;
+      row.style.display = "none";
+    }
 
     function setChip(text) {
       if (!text) {
@@ -286,7 +364,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
 
     function quietFlash(text) {
       /* Background notices must never paint over a running mm:ss timer. */
-      if (root.classList.contains("pi-voice-active") || busy) {
+      if (recording || busy) {
         return;
       }
       flash(text);
@@ -314,7 +392,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
     }
 
     function resetUi() {
-      root.classList.remove("pi-voice-active");
+      exitRecordingLook();
       stopTimer();
       elapsed = 0;
       chunks = [];
@@ -346,7 +424,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
           warn("MediaRecorder error", event);
         };
         recorder.start();
-        root.classList.add("pi-voice-active");
+        enterRecordingLook();
         elapsed = 0;
         setChip(mmss(0));
         timerId = window.setInterval(function () {
@@ -543,7 +621,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
       if (busy) {
         return;
       }
-      if (root.classList.contains("pi-voice-active")) {
+      if (recording) {
         return;
       }
       beginRecording();

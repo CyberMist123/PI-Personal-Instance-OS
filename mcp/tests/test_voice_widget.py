@@ -92,6 +92,10 @@ def test_voice_js_is_served_as_a_plain_static_script(tmp_path, monkeypatch):
     assert "PUT" in body
     assert "media_attributes" in body
     assert "description" in body
+    # v4+: styles are inline (no injected stylesheet), so a nonce-locked CSP
+    # can no longer hide the button.
+    assert "style." in body
+    assert 'createElement("style")' not in body
 
 
 def test_voice_js_route_is_not_shadowed_by_the_filebox_download_route(tmp_path, monkeypatch):
@@ -135,6 +139,15 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "TRANSCRIBE_TIMEOUT_MS = 90000" in VOICE_WIDGET_JS
     assert "STATUS_MAX_CHARS = 4900" in VOICE_WIDGET_JS
     assert "ALT_MAX_CHARS = 1500" in VOICE_WIDGET_JS
+    # v4+: never inject a <style> element (Mastodon's CSP style-src is nonce
+    # locked); every rule is an inline element.style.* property and the pulse
+    # is a setInterval, so no stylesheet and no CSS keyframes exist.
+    assert 'createElement("style")' not in VOICE_WIDGET_JS
+    assert "@keyframes" not in VOICE_WIDGET_JS
+    assert "textContent = [" not in VOICE_WIDGET_JS
+    assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
+    assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
+    assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
     assert VOICE_WIDGET_VERSION == "5" and "voice widget v5" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
@@ -287,3 +300,18 @@ def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     # Exactly one injection point, in exactly one location block.
     assert conf.count("/files/voice.js") == 1
     assert conf.count("sub_filter '</body>'") == 1
+    # The injected page must drop Mastodon's nonce-locked CSP and re-issue one
+    # that lets our same-origin script + inline styles run, while staying strict
+    # everywhere else.
+    assert "proxy_hide_header Content-Security-Policy;" in conf
+    csp_line = next(
+        line for line in conf.splitlines() if "add_header Content-Security-Policy" in line
+    )
+    assert "script-src" in csp_line and "'unsafe-inline'" in csp_line
+    assert "style-src 'self' 'unsafe-inline'" in csp_line
+    assert "default-src 'none'" in csp_line
+    assert "base-uri 'none'" in csp_line
+    assert "frame-ancestors 'none'" in csp_line
+    # object-src is intentionally omitted so it inherits default-src 'none'.
+    assert "form-action 'none'" in csp_line
+    assert "object-src" not in csp_line
