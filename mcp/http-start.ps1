@@ -28,7 +28,18 @@ if (Test-Path -LiteralPath $PidFile) {
                     exit 0
                 }
             } catch {}
-            throw "PID file points to a running process, but MCP health failed: $existingPid"
+            $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$existingPid" -ErrorAction SilentlyContinue
+            $related = $owner -and (
+                $owner.ExecutablePath -eq $Executable `
+                -or $owner.CommandLine -like "*cmx_mcp.remote*" `
+                -or $owner.Name -eq "cmx-mcp-http.exe"
+            )
+            if ($related) {
+                throw "PID file points to a running process, but MCP health failed: $existingPid"
+            }
+            # PID reuse after a reboot: the recorded PID belongs to a stranger
+            # now. Treat the PID file as stale so autostart keeps working.
+            Write-Host "Stale PID file: PID $existingPid belongs to an unrelated process; continuing startup." -ForegroundColor Yellow
         }
     }
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
