@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
 import re
+import secrets
+import shutil
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import uvicorn
 from mcp.server.auth.routes import create_auth_routes
@@ -19,7 +23,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .config import InstanceSettings, Paths, validate_remote_profile
@@ -107,6 +111,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
     paths = paths or Paths.discover()
     paths.ensure()
     settings = RemoteSettings.load(paths)
+    instance_settings = InstanceSettings.load(paths)
     database = Database(paths.database)
     database.initialize()
     oauth_store = OAuthStore(paths.database)
@@ -280,6 +285,133 @@ http://127.0.0.1:{settings.port}/oauth/approve?request={html.escape(request_id)}
             return _approval_error("This authorization request expired or was already used")
         return _invite_form(request_id, pending)
 
+    owner_upload_failures: list[float] = []
+
+    async def _bearer_access(request: Request) -> Any | None:
+        auth = request.headers.get("authorization", "")
+        bearer = _BEARER_RE.fullmatch(auth.strip())
+        if not bearer:
+            return None
+        return await provider.load_access_token(bearer.group(1))
+
+    def _store_upload(bot_id: str, upload: Any) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+        name = _safe_filename(str(getattr(upload, "filename", "") or ""))
+        stream = upload.file
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(0)
+        if size < 1:
+            return None, JSONResponse({"error": "empty_file"}, status_code=400)
+        if size > instance_settings.filebox_max_bytes:
+            return None, JSONResponse(
+                {"error": "file_too_large", "max_bytes": instance_settings.filebox_max_bytes},
+                status_code=413,
+            )
+        if database.filebox_usage(bot_id) + size > instance_settings.filebox_quota_bytes:
+            return None, JSONResponse(
+                {"error": "quota_exceeded", "quota_bytes": instance_settings.filebox_quota_bytes},
+                status_code=413,
+            )
+        file_id = secrets.token_urlsafe(16)
+        target_dir = paths.filebox / bot_id / file_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with open(target_dir / name, "wb") as out:
+            shutil.copyfileobj(stream, out)
+        database.filebox_add(bot_id=bot_id, file_id=file_id, file_name=name, size_bytes=size)
+        return {
+            "ok": True,
+            "bot": bot_id,
+            "file_id": file_id,
+            "name": name,
+            "size_bytes": size,
+            "url": f"{settings.public_origin}/files/{bot_id}/{file_id}/{quote(name)}",
+        }, None
+
+    async def filebox_upload(request: Request) -> Response:
+        # File bytes never travel through MCP tools: this is a plain HTTP
+        # endpoint, so residents can store files without them ever entering a
+        # model context window.
+        access = await _bearer_access(request)
+        if access is None or SOCIAL_SCOPE not in access.scopes:
+            return JSONResponse(
+                {"error": "unauthorized", "hint": "a cmx:social bearer token is required"},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        result, failure = _store_upload(str(access.subject or ""), upload)
+        if failure is not None:
+            return failure
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    async def filebox_download(request: Request) -> Response:
+        bot_id = str(request.path_params.get("bot_id") or "")
+        file_id = str(request.path_params.get("file_id") or "")
+        name = str(request.path_params.get("name") or "")
+        row = database.filebox_get(bot_id, file_id) if _BOT_ID_RE.fullmatch(bot_id.lstrip("_")) else None
+        if row is None or row["file_name"] != name:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        path = paths.filebox / bot_id / file_id / name
+        if not path.is_file():
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return FileResponse(path, filename=name)
+
+    def _owner_page(message: str = "", link: str = "") -> HTMLResponse:
+        link_html = (
+            f'<p><strong>链接：</strong><br><code style="word-break:break-all">{html.escape(link)}</code></p>'
+            if link
+            else ""
+        )
+        message_html = f'<p style="color:#f87171">{html.escape(message)}</p>' if message else ""
+        configured = database.get_setting("filebox_pass") is not None
+        body_form = (
+            """<form method="post" action="/files/up" enctype="multipart/form-data">
+<input type="password" name="passphrase" placeholder="Owner 上传口令" autocomplete="off"><br><br>
+<input type="file" name="file"><br><br>
+<button type="submit">上传</button></form>"""
+            if configured
+            else "<p class=\"muted\">尚未设置上传口令。先在服务器运行：cmx-admin filebox-pass</p>"
+        )
+        body = f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CMX 文件柜</title>
+<style>body{{font-family:system-ui;margin:0;background:#111827;color:#f9fafb}}
+main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-radius:18px}}
+.muted{{color:#9ca3af}}input,button{{font-size:16px;padding:10px;border-radius:10px;border:1px solid #374151;
+background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;border:0;padding:10px 22px}}</style>
+</head><body><main><h1>CMX 文件柜 · Owner 上传</h1>
+{message_html}{link_html}{body_form}
+<p class="muted">任意后缀，单文件上限 {instance_settings.filebox_max_bytes // (1024 * 1024)} MB。
+上传后把链接贴进动态即可；AI 只会看到链接，不会读取文件内容。</p>
+</main></body></html>"""
+        return HTMLResponse(body, headers={"Cache-Control": "no-store"})
+
+    async def filebox_owner(request: Request) -> Response:
+        if request.method == "GET":
+            return _owner_page()
+        now = time.time()
+        owner_upload_failures[:] = [value for value in owner_upload_failures if now - value < 600]
+        if len(owner_upload_failures) >= 10:
+            return JSONResponse({"error": "too_many_attempts"}, status_code=429)
+        form = await request.form()
+        stored = database.get_setting("filebox_pass")
+        passphrase = str(form.get("passphrase") or "")
+        if not stored or not _verify_passphrase(passphrase, stored):
+            owner_upload_failures.append(now)
+            return _owner_page(message="口令不正确")
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return _owner_page(message="请选择一个文件")
+        result, failure = _store_upload("_owner", upload)
+        if failure is not None:
+            detail = failure.body.decode("utf-8", "ignore") if hasattr(failure, "body") else "上传失败"
+            return _owner_page(message=f"上传失败：{detail}")
+        return _owner_page(message="上传成功 ✓", link=result["url"])
+
     async def health(_request: Request) -> Response:
         social_enabled = any(
             bot.enabled and bot.remote_profile in {"social", "social_plus"}
@@ -324,6 +456,9 @@ http://127.0.0.1:{settings.port}/oauth/approve?request={html.escape(request_id)}
         ),
         Route("/oauth/approve", approve, methods=["GET", "POST"]),
         Route("/oauth/invite", invite, methods=["GET", "POST"]),
+        Route("/files/upload", filebox_upload, methods=["POST"]),
+        Route("/files/up", filebox_owner, methods=["GET", "POST"]),
+        Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
         Route("/_cmx/mcp-health", health, methods=["GET"]),
         *mcp_routes,
     ]
@@ -365,7 +500,8 @@ class RequestSizeLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope.get("type") == "http":
+        # The filebox enforces its own (much larger) size and quota limits.
+        if scope.get("type") == "http" and not str(scope.get("path", "")).startswith("/files"):
             headers = {key.lower(): value for key, value in scope.get("headers", [])}
             try:
                 length = int(headers.get(b"content-length", b"0") or b"0")
@@ -490,6 +626,34 @@ def _loopback_origins(port: int) -> set[str]:
         f"http://localhost:{port}",
         f"http://[::1]:{port}",
     }
+
+
+def _safe_filename(value: str) -> str:
+    name = value.replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r"[\x00-\x1f]", "", name).strip().lstrip(".")
+    name = name[:120]
+    return name or "file"
+
+
+def hash_passphrase(passphrase: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 200_000)
+    return f"pbkdf2${salt.hex()}${digest.hex()}"
+
+
+def _verify_passphrase(passphrase: str, stored: str) -> bool:
+    try:
+        scheme, salt_hex, digest_hex = stored.split("$", 2)
+        if scheme != "pbkdf2":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", passphrase.encode("utf-8"), bytes.fromhex(salt_hex), 200_000
+        )
+        import hmac as _hmac
+
+        return _hmac.compare_digest(digest.hex(), digest_hex)
+    except (ValueError, TypeError):
+        return False
 
 
 def _approval_error(message: str) -> HTMLResponse:

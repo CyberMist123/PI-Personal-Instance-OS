@@ -544,6 +544,58 @@ def test_private_reply_to_self_does_not_require_direct_recipients():
     assert runtime.client.published["text"] == "hello"
 
 
+def test_self_diary_is_direct_with_zero_mentions():
+    runtime = _runtime()
+    class DB:
+        def claim_dedup(self, **_): return {"claimed": True, "state": "pending"}
+        def finish_dedup(self, **_): pass
+        def cache_statuses(self, *_): pass
+    class Client:
+        published = None
+        def publish(self, **kwargs): self.published = kwargs; return {"id": "d1", "mentions": []}
+    runtime.db, runtime.client = DB(), Client()
+    result = _remote_post(runtime, lambda _ctx: None, "create", "今天只想写给自己", None, "self", None, "req-s1", None)
+    assert result["id"] == "d1"
+    assert runtime.client.published["visibility"] == "direct"
+    assert "@" not in runtime.client.published["text"]
+
+
+def test_self_diary_that_resolves_a_mention_is_retracted():
+    runtime = _runtime()
+    class DB:
+        def claim_dedup(self, **_): return {"claimed": True, "state": "pending"}
+        def finish_dedup(self, **_): pass
+        def cache_statuses(self, *_): pass
+    class Client:
+        deleted = None
+        def publish(self, **kwargs): return {"id": "leak1", "mentions": [{"acct": "gpt"}]}
+        def delete_status(self, status_id): self.deleted = status_id; return {"ok": True}
+    runtime.db, runtime.client = DB(), Client()
+    with pytest.raises(ValueError, match="撤回"):
+        _remote_post(runtime, lambda _ctx: None, "create", "偷偷说 @gpt 的坏话", None, "self", None, "req-s2", None)
+    assert runtime.client.deleted == "leak1"
+
+
+def test_reply_to_own_self_diary_stays_recipient_free():
+    runtime = _runtime()
+    class DB:
+        def claim_dedup(self, **_): return {"claimed": True, "state": "pending"}
+        def finish_dedup(self, **_): pass
+        def cache_statuses(self, *_): pass
+    class Client:
+        published = None
+        def get_status(self, _):
+            return {"id": "d1", "visibility": "direct", "spoiler_text": "",
+                    "account": {"acct": "self@example.test"}, "mentions": []}
+        def verify_credentials(self): return {"id": "me", "acct": "self@example.test"}
+        def publish(self, **kwargs): self.published = kwargs; return {"id": "d2", "mentions": []}
+    runtime.db, runtime.client = DB(), Client()
+    result = _remote_post(runtime, lambda _ctx: None, "reply", "日记的第二段", "d1", "residents", None, "req-s3", None)
+    assert result["id"] == "d2"
+    assert runtime.client.published["visibility"] == "direct"
+    assert runtime.client.published["text"] == "日记的第二段"
+
+
 def test_edit_rejects_complex_status_before_put():
     runtime = _runtime()
     class Client:

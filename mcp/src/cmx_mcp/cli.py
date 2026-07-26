@@ -64,6 +64,13 @@ def main() -> None:
     invite_revoke = sub.add_parser("invite-revoke")
     invite_revoke.add_argument("--bot", required=True)
 
+    sub.add_parser("filebox-pass")
+    filebox_list = sub.add_parser("filebox-list")
+    filebox_list.add_argument("--bot", default=None)
+    filebox_rm = sub.add_parser("filebox-rm")
+    filebox_rm.add_argument("--bot", required=True)
+    filebox_rm.add_argument("--file-id", required=True)
+
     args = parser.parse_args()
     paths = Paths.discover()
     paths.ensure()
@@ -138,6 +145,34 @@ def main() -> None:
     if args.command == "invite-revoke":
         count = oauth_store.revoke_invites(args.bot)
         print(json.dumps({"bot": args.bot, "revoked_invites": count}, ensure_ascii=False))
+        return
+
+    if args.command == "filebox-pass":
+        from .remote import hash_passphrase
+
+        passphrase = getpass.getpass("设置 Owner 上传口令（至少 8 位）: ").strip()
+        if len(passphrase) < 8:
+            raise SystemExit("口令至少 8 位")
+        if getpass.getpass("再输一次确认: ").strip() != passphrase:
+            raise SystemExit("两次输入不一致")
+        db.set_setting("filebox_pass", hash_passphrase(passphrase))
+        print("Owner 上传口令已保存（仅存 PBKDF2 哈希）。上传页：https://<WEB_DOMAIN>/files/up")
+        return
+
+    if args.command == "filebox-list":
+        print(json.dumps(db.filebox_list(args.bot), ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "filebox-rm":
+        row = db.filebox_remove(args.bot, args.file_id)
+        if row is None:
+            raise SystemExit("file not found")
+        directory = paths.filebox / args.bot / args.file_id
+        if directory.exists():
+            import shutil
+
+            shutil.rmtree(directory, ignore_errors=True)
+        print(json.dumps({"removed": row["file_name"], "bytes": row["size_bytes"]}, ensure_ascii=False))
         return
 
     if args.command == "add-bot":
