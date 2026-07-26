@@ -295,7 +295,7 @@ def test_remote_home_timeline_honors_requested_limit(tmp_path):
             return SimpleNamespace(items=[_browse_raw(str(value)) for value in range(30, 0, -1)], next_cursor=None)
     runtime.client = Client()
     tool = build_server(runtime, remote_profile="reader", remote_capabilities=runtime.bot)._tool_manager.get_tool("cmx_home")
-    result = tool.fn("timeline", 10, None, True, _ScopeContext())
+    result = tool.fn("timeline", 10, None, _ScopeContext())
     assert runtime.client.requested == 10
     assert len(result["items"]) == 10
 

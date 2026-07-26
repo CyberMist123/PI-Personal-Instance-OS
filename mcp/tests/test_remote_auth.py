@@ -164,7 +164,10 @@ def test_oauth_code_refresh_revoke_and_hashed_storage(tmp_path):
         refresh = await restarted.load_refresh_token(client, tokens.refresh_token)
         assert refresh is not None
         rotated = await restarted.exchange_refresh_token(client, refresh, [READ_SCOPE])
-        assert await provider.load_refresh_token(client, tokens.refresh_token) is None
+        # Store-level check: the rotated-away refresh token is no longer an
+        # active refresh row. (Presenting it through the provider is reuse and
+        # revokes the family; that behavior has its own test below.)
+        assert store.load_token(tokens.refresh_token, "refresh") is None
         assert await provider.load_access_token(tokens.access_token) is None
         assert await restarted.load_access_token(rotated.access_token) is not None
 
@@ -182,6 +185,40 @@ def test_oauth_code_refresh_revoke_and_hashed_storage(tmp_path):
         assert tokens.access_token not in stored
         assert tokens.refresh_token not in stored
         assert raw_code not in stored
+
+    asyncio.run(scenario())
+
+
+def test_refresh_token_reuse_revokes_entire_family(tmp_path):
+    async def scenario():
+        _store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+        approval_url = await provider.authorize(client, _params())
+        callback = provider.complete(approval_url.rsplit("=", 1)[1], approved=True)
+        raw_code = callback.split("code=", 1)[1].split("&", 1)[0]
+        code = await provider.load_authorization_code(client, raw_code)
+        tokens = await provider.exchange_authorization_code(client, code)
+        refresh = await provider.load_refresh_token(client, tokens.refresh_token)
+        rotated = await provider.exchange_refresh_token(client, refresh, [READ_SCOPE])
+        assert await provider.load_access_token(rotated.access_token) is not None
+
+        # Replaying the rotated-away refresh token is reuse: the whole family
+        # dies, including the freshly rotated pair.
+        assert await provider.load_refresh_token(client, tokens.refresh_token) is None
+        assert await provider.load_access_token(rotated.access_token) is None
+        assert await provider.load_refresh_token(client, rotated.refresh_token) is None
+
+    asyncio.run(scenario())
+
+
+def test_authorize_rejects_scopes_without_read(tmp_path):
+    async def scenario():
+        _store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+        with pytest.raises(AuthorizeError):
+            await provider.authorize(client, _params(scopes=[SOCIAL_SCOPE]))
 
     asyncio.run(scenario())
 

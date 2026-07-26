@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from importlib import metadata
 from typing import Any, BinaryIO, Iterable
 from urllib.parse import urlencode
 
@@ -10,6 +11,11 @@ import httpx
 
 _LINK_RE = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+try:
+    _VERSION = metadata.version("cmx-mcp")
+except metadata.PackageNotFoundError:  # running from a plain source tree
+    _VERSION = "dev"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +35,7 @@ class MastodonClient:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "User-Agent": "cmx-mcp/0.2.0",
+            "User-Agent": f"cmx-mcp/{_VERSION}",
         }
         # A custom Host header is only needed for an explicitly configured
         # loopback reverse proxy. Public HTTPS uses the URL's native host.
@@ -176,6 +182,24 @@ class MastodonClient:
         files = {"file": (filename, stream, mime_type)}
         data = {"description": description} if description else None
         return self._json("POST", "/api/v2/media", files=files, data=data)
+
+    def set_pin(self, status_id: str, action: str) -> dict[str, Any]:
+        if action not in {"pin", "unpin"}:
+            raise ValueError(f"Unsupported pin action: {action}")
+        return self._json("POST", f"/api/v1/statuses/{status_id}/{action}")
+
+    def update_profile(
+        self,
+        *,
+        data: dict[str, str] | None,
+        files: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return self._json(
+            "PATCH",
+            "/api/v1/accounts/update_credentials",
+            data=data or None,
+            files=files or None,
+        )
 
     def notifications(self, *, limit: int, max_id: str | None = None) -> Page:
         response = self._request(

@@ -2,11 +2,11 @@
 
 ## CMX Remote Social MCP v0.4.2 当前状态
 
-Phase 0、Phase A 与 Phase A+ 的代码已在 `codex/cmx-mcp-onboarding` 实现并保持在 Draft PR 中。目标 Windows 已部署当前 Draft 分支做受控验证；远程默认仍为 Reader，`test` 居民已完成一次真实 Remote Social smoke，`gpt` 仍保持 Reader。生产常驻居民尚未开启 Social；Phase B/C、public、direct、boosts 与 notifications 仍未纳入本轮验证。
+Phase 0、Phase A 与 Phase A+ 已随 #6/#8/#7 合并链于 2026-07-22 进入 `main`。目标 Windows 已部署并完成受控验证；远程默认仍为 Reader，`test` 居民已完成一次真实 Remote Social smoke，`gpt` 仍保持 Reader。生产常驻居民尚未开启 Social；Phase B/C、public、direct、boosts 与 notifications 仍未纳入本轮验证。
 
 > 本文件是需求、边界、架构、进度和下一步的唯一当前事实入口。
 >
-> 当前版本：`v0.2.0-rc.5`。最后更新：2026-07-19。
+> 当前版本：`v0.3.0-rc.2`。最后更新：2026-07-26。
 
 ## 1. 项目
 
@@ -128,7 +128,8 @@ D:\AI\PI-Personal-Instance-OS\mcp
 - `setup-ai.ps1`：创建并批准 Mastodon AI 居民（或选择已有账号），打开浏览器 OAuth + PKCE，DPAPI 保存 Token，校验账号名、运行独立 smoke，并在远程服务已启用时刷新居民映射；
 - `cmx-mcp-http`：只绑定 `127.0.0.1:8766`，由 Nginx/Cloudflare 暴露经过 OAuth 与 profile 隔离的 Streamable HTTP；
 - OAuth 2.1：动态客户端注册、PKCE、一次性授权码、access/refresh token、刷新轮换、撤销、每居民 resource/subject 绑定；所有居民 discovery 共用带尾斜杠的 canonical issuer，Protected Resource Metadata 的 `authorization_servers[0]` 与 Authorization Server Metadata 的 `issuer` 逐字符相同，metadata 使用 `Cache-Control: no-store` 便于立即纠正客户端发现；远程 Token 仅以 SHA-256 hash 写入 SQLite；
-- OAuth 批准页仅允许从本机 loopback 打开，外部客户端不能自行批准；
+- OAuth 加固（2026-07-26，云端 Linux 自动测试通过，未在目标 Windows 实测）：居民 subject/family 绑定改为显式 SDK 模型字段，兼容会静默丢弃未知字段的当前 mcp 1.x（实测 1.27.0）；刷新轮换带重用检测，已轮换的 refresh token 再次出示即撤销整个 token family（30 天 `refresh_used` tombstone，迁移自动重建 CHECK 约束并保留现有授权）；授权请求必须包含 `cmx:read`，social-only 请求返回 `invalid_scope`；
+- OAuth 批准页仅允许从本机 loopback 打开，外部客户端不能自行批准；批准 POST 的 Origin 校验接受与 GET 相同的 `127.0.0.1`/`localhost`/`[::1]` 三种本机形式；
 - `http-enable.ps1` / `http-disable.ps1` 控制是否随 PI OS 启停，`http-status.ps1` 检查本地服务；
 - editable install 生成的 `*.egg-info/` 已加入忽略规则，不再污染 Git 工作区。
 
@@ -180,6 +181,7 @@ cmx_profile_update
 
 待验证：
 
+- 2026-07-26 的 SDK 兼容与 OAuth 加固改动（显式 subject 字段、refresh 重用撤销、`cmx:read` 必需、移除 `include_pinned`）已在云端 Linux 通过 76 项自动测试与旧库迁移检查，尚未在目标 Windows 重新安装并实测；远程 `cmx_home` schema 有变化，远程客户端需刷新工具列表（与既有 `status_ids` schema 刷新属同一批）。
 - 使用一个新的真实邮箱完整执行 `setup-ai.ps1` 新账号创建流程；已有账号的浏览器 OAuth、DPAPI 保存和读链路已经运行验证。
 - ChatGPT 网页端已存在真实 CMX Connector；刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。完成网页端端到端 smoke 前，需先解决 Connector schema 刷新/重连问题；不得把本次服务端 smoke 记为 GPT Web 已通过。
 - 生产常驻居民是否开启 Remote Social 仍待单独决策；当前只在目标 Windows 上对 `test` 做了受控验证。

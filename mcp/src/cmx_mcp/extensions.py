@@ -98,7 +98,7 @@ def register_extended_tools(mcp: FastMCP, runtime: Runtime) -> None:
     ) -> dict:
         """Pin or unpin one status authored by this AI resident."""
         status_id = _id(status_id)
-        raw = runtime.client._json("POST", f"/api/v1/statuses/{status_id}/{action}")
+        raw = runtime.client.set_pin(status_id, action)
         runtime.audit("pin", action, target_id=status_id)
         return {
             "ok": True,
@@ -164,12 +164,7 @@ def register_extended_tools(mcp: FastMCP, runtime: Runtime) -> None:
                 )
                 files["header"] = (header.filename, header.stream, header.mime_type)
 
-            raw = runtime.client._json(
-                "PATCH",
-                "/api/v1/accounts/update_credentials",
-                data=data or None,
-                files=files or None,
-            )
+            raw = runtime.client.update_profile(data=data, files=files)
 
         account = compact_account(raw)
         account.update(

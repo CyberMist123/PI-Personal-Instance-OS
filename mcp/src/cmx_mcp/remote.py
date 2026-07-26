@@ -182,7 +182,7 @@ def create_remote_app(paths: Paths | None = None) -> Starlette:
             return Response(status_code=404)
         if request.method == "POST":
             origin = request.headers.get("origin", "")
-            if origin and origin.rstrip("/") != settings.approval_origin:
+            if origin and origin.rstrip("/") not in _loopback_origins(settings.port):
                 return JSONResponse({"error": "invalid_origin"}, status_code=403)
             form = await request.form()
             request_id = str(form.get("request") or "")
@@ -415,6 +415,15 @@ def _is_loopback_host(host: str, port: int) -> bool:
         f"127.0.0.1:{port}",
         f"localhost:{port}",
         f"[::1]:{port}",
+    }
+
+
+def _loopback_origins(port: int) -> set[str]:
+    """Origins matching every host form _is_loopback_host accepts for GET."""
+    return {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
     }
 
 
