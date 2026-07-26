@@ -11,15 +11,18 @@ import shutil
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+import httpx
 import uvicorn
 from mcp.server.auth.routes import create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -30,12 +33,40 @@ from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
+from .transcribe import transcribe_file
+from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
+from .workers import WorkerConfig
 
 
 _BOT_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 _MCP_PATH_RE = re.compile(r"^/mcp/([a-z0-9_-]+)$")
 _BEARER_RE = re.compile(r"^Bearer\s+([^\s]+)$", re.IGNORECASE)
+_AUDIO_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
 MAX_REQUEST_BYTES = 1024 * 1024
+VERIFY_TIMEOUT_SECONDS = 10.0
+
+
+def _verify_mastodon_bearer(base_url: str, token: str) -> bool:
+    """Ask the instance itself whether this browser session token is valid.
+
+    The token belongs to the caller's own Mastodon web session, not to CMX. It
+    is used exactly once, in memory, for this one upstream call: it is never
+    written to SQLite, to disk or to any log line, and never returned.
+    """
+    try:
+        with httpx.Client(
+            base_url=base_url,
+            timeout=VERIFY_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.get(
+                "/api/v1/accounts/verify_credentials",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            )
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
 
 
 class _NoStoreResponse:
@@ -412,6 +443,104 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             return _owner_page(message=f"上传失败：{detail}")
         return _owner_page(message="上传成功 ✓", link=result["url"])
 
+    async def voice_widget(_request: Request) -> Response:
+        # Nginx sub_filter injects <script src="/files/voice.js" defer> into the
+        # owner's own Mastodon HTML. The script is static and public: it carries
+        # no credential, it reads the page's own web token at runtime.
+        return Response(
+            VOICE_WIDGET_JS,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "ETag": f'"voice-{VOICE_WIDGET_VERSION}"',
+            },
+        )
+
+    async def voice_transcribe(request: Request) -> Response:
+        # Called by the injected widget before it publishes: the voice status
+        # itself carries the transcript, so there is no follow-up reply. The
+        # bearer here is the caller's OWN Mastodon web session token, verified
+        # against the instance and then dropped (never stored, never logged).
+        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+        verified = bool(bearer) and await run_in_threadpool(
+            _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+        )
+        if not verified:
+            return JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
+            )
+
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return JSONResponse(
+                {"error": "multipart field 'file' is required"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        stream = upload.file
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(0)
+        try:
+            config = WorkerConfig.load()
+        except RuntimeError:
+            return JSONResponse(
+                {"error": "transcriber_unavailable"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        if size < 1:
+            return JSONResponse(
+                {"error": "empty_file"}, status_code=400, headers={"Cache-Control": "no-store"}
+            )
+        if size > config.max_audio_bytes:
+            return JSONResponse(
+                {"error": "file_too_large", "max_bytes": config.max_audio_bytes},
+                status_code=413,
+                headers={"Cache-Control": "no-store"},
+            )
+        if not config.model_dir or not Path(config.model_dir).is_dir():
+            # No local model on this host: the widget degrades to a plain voice
+            # status and the worker's reply stays as the fallback.
+            return JSONResponse(
+                {"error": "transcriber_unavailable"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        temp_dir = paths.runtime / "voice-tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / f"{secrets.token_urlsafe(12)}{_audio_suffix(upload.filename)}"
+        try:
+            with open(temp_path, "wb") as out:
+                shutil.copyfileobj(stream, out)
+            # Whisper is CPU-bound and synchronous: keep it off the event loop
+            # or every other MCP request stalls for the length of the audio.
+            result = await run_in_threadpool(
+                transcribe_file,
+                temp_path,
+                model_dir=config.model_dir,
+                device=config.device,
+                compute_type=config.compute_type,
+                language=config.language,
+                max_audio_seconds=float(config.max_audio_seconds),
+            )
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if result.get("error"):
+            return JSONResponse(
+                {"error": str(result["error"])},
+                status_code=502,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {"text": str(result.get("text") or "").strip()}, headers={"Cache-Control": "no-store"}
+        )
+
     async def health(_request: Request) -> Response:
         social_enabled = any(
             bot.enabled and bot.remote_profile in {"social", "social_plus"}
@@ -458,6 +587,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         Route("/oauth/invite", invite, methods=["GET", "POST"]),
         Route("/files/upload", filebox_upload, methods=["POST"]),
         Route("/files/up", filebox_owner, methods=["GET", "POST"]),
+        # Must stay ahead of the templated download route, which would otherwise
+        # never match "voice.js" but would shadow future single-segment files.
+        Route("/files/voice.js", voice_widget, methods=["GET"]),
+        Route("/files/transcribe", voice_transcribe, methods=["POST"]),
         Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
         Route("/_cmx/mcp-health", health, methods=["GET"]),
         *mcp_routes,
@@ -626,6 +759,11 @@ def _loopback_origins(port: int) -> set[str]:
         f"http://localhost:{port}",
         f"http://[::1]:{port}",
     }
+
+
+def _audio_suffix(filename: str | None) -> str:
+    suffix = Path(_safe_filename(str(filename or ""))).suffix
+    return suffix if _AUDIO_SUFFIX_RE.fullmatch(suffix) else ".audio"
 
 
 def _safe_filename(value: str) -> str:

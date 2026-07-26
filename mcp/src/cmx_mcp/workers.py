@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .compact import strip_html
 from .config import _bounded_int
 from .mastodon_client import MastodonApiError
 from .server import Runtime
@@ -135,6 +136,14 @@ def _process_status(
         if str(item.get("type") or "") == "audio"
     ]
     if not attachments:
+        runtime.db.worker_mark_done(bot_id, source_id)
+        return False
+
+    if strip_html(source.get("content")).strip():
+        # The post already carries its own transcript: since voice widget v2 the
+        # web recorder transcribes before publishing, so the reply is only a
+        # fallback for voice statuses that arrived with an empty body.
+        _log(f"skip status {source_id}: text already present")
         runtime.db.worker_mark_done(bot_id, source_id)
         return False
 
