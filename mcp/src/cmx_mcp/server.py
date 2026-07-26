@@ -371,10 +371,14 @@ def _build_remote_server(
         view: Literal["timeline", "bookmarks", "likes", "mine"] = "timeline",
         limit: int = 10,
         cursor: str | None = None,
-        include_pinned: bool = True,
         ctx: Context = None,
     ) -> dict:
-        """Read timeline, bookmarks, likes, or this resident's own posts."""
+        """Read timeline, bookmarks, likes, or this resident's own posts.
+
+        The timeline view is an incremental two-stage funnel: it returns sparse
+        previews plus a visit_id and advances its own per-resident watermark, so
+        cursor is only honored by the bookmarks, likes, and mine views.
+        """
         read_scope(ctx)
         limit = _limit(limit, min(runtime.settings.max_items, 30))
         if view == "timeline":
@@ -458,8 +462,6 @@ def _build_remote_server(
             return result
         compact = compacts[0]
         status_id = ids[0]
-        if view == "compact":
-            return compact
         if view == "media":
             result = {"id": compact["id"], "media": compact.get("media", [])}
             if visit_id:

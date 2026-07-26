@@ -30,13 +30,27 @@ SOCIAL_SCOPE = "cmx:social"
 KNOWN_SCOPES = frozenset({READ_SCOPE, SOCIAL_SCOPE})
 AUTHORIZATION_CODE_TTL = 300
 ACCESS_TOKEN_TTL = 3600
+REFRESH_REUSE_TOMBSTONE_TTL = 30 * 86400
 PENDING_LIMIT = 64
 CLIENT_LIMIT = 100
+
+
+# The upstream MCP SDK models are plain pydantic models that silently drop
+# unknown constructor fields, so the CMX resident binding must be declared
+# explicitly instead of being passed as extra keyword arguments.
+class CmxAuthorizationCode(AuthorizationCode):
+    subject: str = ""
+
+
+class CmxAccessToken(AccessToken):
+    subject: str = ""
+    family_id: str = ""
 
 
 class CmxRefreshToken(RefreshToken):
     resource: str
     family_id: str
+    subject: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,13 +104,14 @@ class OAuthStore:
 
                 CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
                     token_hash TEXT PRIMARY KEY,
-                    token_kind TEXT NOT NULL CHECK(token_kind IN ('access','refresh')),
+                    token_kind TEXT NOT NULL
+                        CHECK(token_kind IN ('access','refresh','refresh_used')),
                     family_id TEXT NOT NULL,
                     client_id TEXT NOT NULL,
                     bot_id TEXT NOT NULL,
                     resource TEXT NOT NULL,
                     scopes_json TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL,
+                    expires_at INTEGER,
                     created_at INTEGER NOT NULL
                 );
 
@@ -106,33 +121,39 @@ class OAuthStore:
                     ON mcp_oauth_tokens(expires_at);
                 """
             )
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(mcp_oauth_tokens)")}
-            if "expires_at" in columns:
-                notnull = next(row["notnull"] for row in db.execute("PRAGMA table_info(mcp_oauth_tokens)") if row["name"] == "expires_at")
-                if notnull:
-                    db.executescript("""
-                        BEGIN;
-                        ALTER TABLE mcp_oauth_tokens RENAME TO mcp_oauth_tokens_legacy;
-                        DROP INDEX IF EXISTS idx_mcp_oauth_family;
-                        DROP INDEX IF EXISTS idx_mcp_oauth_expiry;
-                        CREATE TABLE mcp_oauth_tokens (
-                            token_hash TEXT PRIMARY KEY,
-                            token_kind TEXT NOT NULL CHECK(token_kind IN ('access','refresh')),
-                            family_id TEXT NOT NULL, client_id TEXT NOT NULL, bot_id TEXT NOT NULL,
-                            resource TEXT NOT NULL, scopes_json TEXT NOT NULL, expires_at INTEGER,
-                            created_at INTEGER NOT NULL
-                        );
-                        INSERT INTO mcp_oauth_tokens
-                        SELECT token_hash,token_kind,family_id,client_id,bot_id,resource,scopes_json,
-                               CASE WHEN token_kind='refresh' AND expires_at >= strftime('%s','now')
-                                    THEN NULL ELSE expires_at END, created_at
-                        FROM mcp_oauth_tokens_legacy
-                        WHERE token_kind='access' OR expires_at >= strftime('%s','now');
-                        DROP TABLE mcp_oauth_tokens_legacy;
-                        CREATE INDEX IF NOT EXISTS idx_mcp_oauth_family ON mcp_oauth_tokens(family_id);
-                        CREATE INDEX IF NOT EXISTS idx_mcp_oauth_expiry ON mcp_oauth_tokens(expires_at);
-                        COMMIT;
-                    """)
+            # Rebuild legacy tables that predate nullable refresh expiry or the
+            # 'refresh_used' reuse-detection tombstone kind.
+            row = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='mcp_oauth_tokens'"
+            ).fetchone()
+            table_sql = str(row["sql"]) if row else ""
+            if table_sql and ("refresh_used" not in table_sql or "expires_at INTEGER NOT NULL" in table_sql):
+                db.executescript("""
+                    BEGIN;
+                    ALTER TABLE mcp_oauth_tokens RENAME TO mcp_oauth_tokens_legacy;
+                    DROP INDEX IF EXISTS idx_mcp_oauth_family;
+                    DROP INDEX IF EXISTS idx_mcp_oauth_expiry;
+                    CREATE TABLE mcp_oauth_tokens (
+                        token_hash TEXT PRIMARY KEY,
+                        token_kind TEXT NOT NULL
+                            CHECK(token_kind IN ('access','refresh','refresh_used')),
+                        family_id TEXT NOT NULL, client_id TEXT NOT NULL, bot_id TEXT NOT NULL,
+                        resource TEXT NOT NULL, scopes_json TEXT NOT NULL, expires_at INTEGER,
+                        created_at INTEGER NOT NULL
+                    );
+                    INSERT INTO mcp_oauth_tokens
+                    SELECT token_hash,token_kind,family_id,client_id,bot_id,resource,scopes_json,
+                           CASE WHEN token_kind='refresh' AND expires_at IS NOT NULL
+                                     AND expires_at >= strftime('%s','now')
+                                THEN NULL ELSE expires_at END, created_at
+                    FROM mcp_oauth_tokens_legacy
+                    WHERE token_kind='refresh' OR expires_at IS NULL
+                          OR expires_at >= strftime('%s','now');
+                    DROP TABLE mcp_oauth_tokens_legacy;
+                    CREATE INDEX IF NOT EXISTS idx_mcp_oauth_family ON mcp_oauth_tokens(family_id);
+                    CREATE INDEX IF NOT EXISTS idx_mcp_oauth_expiry ON mcp_oauth_tokens(expires_at);
+                    COMMIT;
+                """)
         self.cleanup()
 
     def cleanup(self) -> None:
@@ -175,6 +196,10 @@ class OAuthStore:
             return None
         client = OAuthClientInformationFull.model_validate_json(row["payload_json"])
         if client.scope == READ_SCOPE:
+            # Widen the registered scope so long-lived clients that registered
+            # while a resident was read-only can request cmx:social later
+            # without a new DCR round-trip. Actual social access remains gated
+            # by the resident's remote_profile and the owner's approval page.
             client = client.model_copy(update={"scope": f"{READ_SCOPE} {SOCIAL_SCOPE}"})
         return client
 
@@ -223,7 +248,7 @@ class OAuthStore:
             return None
         payload = json.loads(row["payload_json"])
         payload["code"] = raw_code
-        return AuthorizationCode.model_validate(payload)
+        return CmxAuthorizationCode.model_validate(payload)
 
     def consume_code(self, raw_code: str, client_id: str) -> bool:
         with self.connect() as db:
@@ -305,15 +330,28 @@ class OAuthStore:
                 )
 
     def rotate_family(self, family_id: str) -> bool:
+        """Consume the family's active refresh token, keeping a reuse tombstone."""
+        now = int(time.time())
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(
-                "DELETE FROM mcp_oauth_tokens WHERE family_id=? AND token_kind='refresh'",
-                (family_id,),
+                """
+                UPDATE mcp_oauth_tokens SET token_kind='refresh_used', expires_at=?
+                WHERE family_id=? AND token_kind='refresh'
+                """,
+                (now + REFRESH_REUSE_TOMBSTONE_TTL, family_id),
             )
             if cursor.rowcount != 1:
                 return False
-            db.execute("DELETE FROM mcp_oauth_tokens WHERE family_id=?", (family_id,))
+            db.execute(
+                "DELETE FROM mcp_oauth_tokens WHERE family_id=? AND token_kind='access'",
+                (family_id,),
+            )
         return True
+
+    def revoke_family(self, family_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM mcp_oauth_tokens WHERE family_id=?", (family_id,))
 
 
 class CmxOAuthProvider:
@@ -372,6 +410,11 @@ class CmxOAuthProvider:
             scopes = normalize_scopes(params.scopes or [READ_SCOPE])
         except ValueError as exc:
             raise AuthorizeError("invalid_scope", str(exc)) from exc
+        if READ_SCOPE not in scopes:
+            # Every remote grant must be able to pass the resource boundary,
+            # which always requires cmx:read; a social-only token would be
+            # rejected on every request.
+            raise AuthorizeError("invalid_scope", "cmx:read is required")
         if SOCIAL_SCOPE in scopes and self.bot_remote_profile(bot_id) not in {"social", "social_plus"}:
             raise AuthorizeError("invalid_scope", "this resident only supports read access")
 
@@ -416,7 +459,7 @@ class CmxOAuthProvider:
             )
 
         raw_code = secrets.token_urlsafe(32)
-        code = AuthorizationCode(
+        code = CmxAuthorizationCode(
             code=raw_code,
             scopes=list(pending.scopes),
             expires_at=time.time() + AUTHORIZATION_CODE_TTL,
@@ -465,7 +508,15 @@ class CmxOAuthProvider:
         refresh_token: str,
     ) -> CmxRefreshToken | None:
         row = self.store.load_token(refresh_token, "refresh")
-        if row is None or row["client_id"] != str(client.client_id or ""):
+        if row is None:
+            used = self.store.load_token(refresh_token, "refresh_used")
+            if used is not None:
+                # OAuth 2.1 refresh rotation: replaying a rotated-away refresh
+                # token means it leaked or the client is broken. Revoke the
+                # whole family so neither side keeps a usable grant.
+                self.store.revoke_family(str(used["family_id"]))
+            return None
+        if row["client_id"] != str(client.client_id or ""):
             return None
         return CmxRefreshToken(
             token=refresh_token,
@@ -507,18 +558,18 @@ class CmxOAuthProvider:
             family_id=refresh_token.family_id,
         )
 
-    async def load_access_token(self, token: str) -> AccessToken | None:
+    async def load_access_token(self, token: str) -> CmxAccessToken | None:
         row = self.store.load_token(token, "access")
         if row is None or not self.bot_is_enabled(row["bot_id"]):
             return None
-        return AccessToken(
+        return CmxAccessToken(
             token=token,
             client_id=row["client_id"],
             scopes=json.loads(row["scopes_json"]),
             expires_at=row["expires_at"],
             resource=row["resource"],
             subject=row["bot_id"],
-            claims={"family_id": row["family_id"]},
+            family_id=row["family_id"],
         )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:

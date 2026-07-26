@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 修复上游 MCP SDK 兼容性：OAuth 模型的居民绑定改为显式声明字段（`CmxAuthorizationCode`/`CmxAccessToken` 新增 `subject`，`CmxRefreshToken` 补充 `subject`，`family_id` 不再借道 `claims`）。上游 pydantic 模型会静默丢弃未知构造字段，旧实现依赖该副作用，在当前 SDK（实测 mcp 1.27.0，即 CI `pip install -e ./mcp` 拉到的版本）上远程 OAuth 全链路 `AttributeError`。2026-07-26 云端 Linux 自动测试 76 passed；未在目标 Windows 实测。
+- OAuth 刷新轮换新增重用检测：轮换时旧 refresh token 转为 30 天 `refresh_used` SHA-256 tombstone；已轮换的 refresh token 再次出示即撤销整个 token family（含新发放的 access/refresh），强制重新授权。`mcp_oauth_tokens` 的 CHECK 约束通过一次性表重建迁移扩展，保留现有有效授权与既有清理逻辑。
+- 授权请求必须包含 `cmx:read`：social-only 请求现在返回 `invalid_scope`，此前会签发无法通过资源边界（边界始终要求 `cmx:read`）的废 token。
+- 批准页 POST 的 Origin 校验放宽为与 GET 一致的三种 loopback 形式（`127.0.0.1`/`localhost`/`[::1]` + 端口），修复从 `localhost` 打开批准页时无法提交允许/取消的问题。
+- 移除远程 `cmx_home` 从未实现的 `include_pinned` 参数与 `cmx_status` 的不可达 compact 分支；远程工具 schema 因此变化，已连接的远程客户端需要刷新工具列表（与既有 `status_ids` schema 刷新属同一批）。
+- `cmx_pin`/`cmx_profile_update` 改用 `MastodonClient` 新公共方法 `set_pin`/`update_profile`，不再调用私有 `_json`；`__version__` 与 REST `User-Agent` 改为跟随包元数据，不再硬编码旧版本号。
 - 远程 timeline 改为两段式浏览漏斗：最多 30 条稀疏预览，再通过同一 `cmx_status` 批量展开最多 3 条正文；Reader 仍为 3 个工具，Social 仍为 5 个工具。
 - SQLite schema 升至 v3，新增按 `bot_id` 隔离的 timeline 水位线、原状态永久去重和短期 visit 白名单/字符预算；使用 Mastodon `min_id` immediately-newer 邻接读取、expected-watermark CAS 与原生批量 statuses API。
 - 默认 `CMX_BROWSE_CHAR_BUDGET=5000` 按最终 JSON 的 Unicode 字符单位计数并计入 400 包装字符；它不是 token 数、估算或上界。旧 `CMX_BROWSE_TOKEN_BUDGET` 仅为弃用兼容 alias。2026-07-22 已随合并链部署到目标 Windows（editable 0.3.0rc2，远程 MCP 健康），cc 端 identity/timeline/发布真实 smoke 通过；真实 GPT Web Connector 端到端 smoke 仍待连接器缓存刷新后验证。
