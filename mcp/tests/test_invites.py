@@ -131,6 +131,48 @@ def test_expired_and_wrong_bot_invites_are_invalid(tmp_path):
     asyncio.run(scenario())
 
 
+def test_scopeless_client_scopes_follow_the_invite(tmp_path):
+    """ChatGPT-style clients send no scope: the minted invite defines the grant."""
+
+    def scopeless_params(state: str) -> AuthorizationParams:
+        return AuthorizationParams(
+            state=state,
+            scopes=None,
+            code_challenge="A" * 43,
+            redirect_uri="http://127.0.0.1:9999/callback",
+            redirect_uri_provided_explicitly=True,
+            resource="https://pi.example/mcp/gpt",
+        )
+
+    async def scenario():
+        store, provider = _provider(tmp_path)
+        client = _client()
+        await provider.register_client(client)
+
+        url = await provider.authorize(client, scopeless_params("s1"))
+        request_id = url.rsplit("=", 1)[1]
+        social_invite = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE, SOCIAL_SCOPE])
+        target = provider.redeem(request_id, social_invite)
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert sorted(auth_code.scopes) == [READ_SCOPE, SOCIAL_SCOPE]
+        tokens = await provider.exchange_authorization_code(client, auth_code)
+        access = await provider.load_access_token(tokens.access_token)
+        assert sorted(access.scopes) == [READ_SCOPE, SOCIAL_SCOPE]
+
+        # A read-only invite for a scope-less client grants read; it is not a
+        # ceiling violation.
+        url = await provider.authorize(client, scopeless_params("s2"))
+        request_id = url.rsplit("=", 1)[1]
+        read_invite = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+        target = provider.redeem(request_id, read_invite)
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert list(auth_code.scopes) == [READ_SCOPE]
+
+    asyncio.run(scenario())
+
+
 def test_attempt_limit_drops_the_pending_request(tmp_path):
     async def scenario():
         _store, provider = _provider(tmp_path)

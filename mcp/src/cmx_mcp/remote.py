@@ -223,7 +223,10 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
 
     def _invite_form(request_id: str, pending: Any, *, error: str | None = None) -> HTMLResponse:
         bot = database.get_bot(pending.bot_id)
-        scope_text = html.escape(" ".join(pending.scopes))
+        if getattr(pending, "scopes_explicit", True):
+            scope_text = html.escape(" ".join(pending.scopes))
+        else:
+            scope_text = "由邀请码决定（客户端未指定）"
         error_html = (
             f'<p style="color:#f87171"><strong>{html.escape(error)}</strong></p>' if error else ""
         )

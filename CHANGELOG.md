@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修复 scope 缺省客户端只拿到只读授权：ChatGPT 等客户端在 /authorize 不带 scope，此前一律回退为 `cmx:read`；现在客户端未明确申请时，授权范围以邀请码铸入的 scope 为准（兑换时若居民档案已不支持 social 会自动收缩为只读）；明确申请的客户端仍以邀请码为上限。兑换页在客户端未指定时显示「由邀请码决定」。`update.ps1` 的 smoke 步骤改为失败不中断，保证远程服务始终会被重启。
 - 修复 ChatGPT 等机密客户端换票失败：`client_secret_expiry_seconds` 由 `0` 改为 `None`。当前 SDK 把 0 按字面解释为「签发即过期」，导致所有带密钥的客户端（ChatGPT 注册为 client_secret_post）在 `POST /token` 被 "Client secret has expired" 拒绝；纯 PKCE 公共客户端（Claude Code）不受影响，故此前未被测试覆盖。新增 ChatGPT 同款（密钥 + PKCE + 邀请码）全流程回归测试。此前注册的带密钥客户端已带过期戳，需在客户端侧重新创建连接。
 - 修复重启后 PID 复用导致的运维卡死：`http-stop.ps1` / `http-start.ps1` 发现 PID 文件指向无关进程时，视为过期记录清理后继续（依旧绝不误杀陌生进程），不再抛错阻塞停止、启动与一键更新流程。
 - 新增一次性邀请码接入（Owner 2026-07-26 决定）：`cmx-admin invite-new/list/revoke` 在 Owner 本机铸码，SQLite 只存 SHA-256 哈希，默认 72 小时、单次有效、邀请码 scope 是兑换上限；公网新增 `/oauth/invite` 兑换页——任何电脑上的 MCP 客户端连接 `https://<WEB_DOMAIN>/mcp/<bot>` 时浏览器跳到该页，粘贴邀请码即完成授权，不再需要到服务器本机点批准（本机 loopback 批准页保持可用）；同一授权请求错 5 次即作废。`setup-ai.ps1 -Invite` 在开户+授权后顺带铸码；根目录新增 `一键新居民.bat`、`一键更新.bat`/`update.ps1`；Nginx 放行 `/oauth/invite`。账号创建仍只在 Owner 本机执行，公网不暴露开户能力。2026-07-26 云端 Linux 自动测试 82 passed；未在目标 Windows 实测，部署后需 Nginx 重载。
