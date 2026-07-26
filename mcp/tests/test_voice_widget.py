@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import io
+from pathlib import Path
+from types import SimpleNamespace
+
+from starlette.testclient import TestClient
+
+from cmx_mcp import remote as remote_module
+from cmx_mcp.config import Paths
+from cmx_mcp.db import Database
+from cmx_mcp.remote import create_remote_app
+from cmx_mcp.voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+NGINX_CONF = REPOSITORY_ROOT / "nginx" / "default.conf"
+SUB_FILTER = (
+    "sub_filter '</body>' "
+    "'<script src=\"/files/voice.js\" defer></script></body>';"
+)
+
+
+def _paths(tmp_path) -> Paths:
+    return Paths(
+        home=tmp_path / "mcp",
+        runtime=tmp_path / "mcp" / "runtime",
+        database=tmp_path / "mcp" / "runtime" / "cmx.sqlite3",
+        secrets=tmp_path / "mcp" / "runtime" / "secrets",
+        logs=tmp_path / "mcp" / "runtime" / "logs",
+    )
+
+
+def _app(tmp_path, monkeypatch):
+    paths = _paths(tmp_path)
+    database = Database(paths.database)
+    database.initialize()
+    database.upsert_bot(
+        bot_id="gpt",
+        display_name="GPT",
+        profile="resident",
+        media_root=tmp_path / "media",
+        token_ref="gpt.token.dpapi",
+        default_audience="residents",
+        allow_public=False,
+        remote_profile="social",
+    )
+
+    class FakeRuntime:
+        def __init__(self, bot_id):
+            self.bot = database.get_bot(bot_id)
+            self.settings = SimpleNamespace(max_items=30)
+            self.client = SimpleNamespace(close=lambda: None)
+            self.db = database
+
+        def close(self):
+            self.client.close()
+
+    monkeypatch.setenv("WEB_DOMAIN", "pi.example")
+    for name in (
+        "CMX_WHISPER_MODEL_DIR",
+        "CMX_WHISPER_DEVICE",
+        "CMX_WHISPER_COMPUTE",
+        "CMX_WHISPER_LANGUAGE",
+        "CMX_WORKER_POLL_SECONDS",
+        "CMX_WHISPER_MAX_SECONDS",
+        "CMX_WORKER_MAX_AUDIO_BYTES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("cmx_mcp.remote.Runtime", FakeRuntime)
+    return create_remote_app(paths)
+
+
+def test_voice_js_is_served_as_a_plain_static_script(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.get("/files/voice.js")
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "public, max-age=300"
+    assert VOICE_WIDGET_VERSION in response.headers["etag"]
+
+    body = response.text
+    assert "initial-state" in body
+    assert "MediaRecorder" in body
+    assert "/api/v2/media" in body
+    assert "/api/v1/statuses" in body
+    assert "__piVoiceWidget" in body
+    # v2: transcribe first, then publish one status carrying the transcript.
+    assert "/files/transcribe" in body
+    assert "description" in body
+
+
+def test_voice_js_route_is_not_shadowed_by_the_filebox_download_route(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    with TestClient(app, base_url="https://pi.example") as client:
+        # The templated /files/{bot}/{file}/{name} route must not win: a 200 with
+        # JavaScript proves the literal voice.js route is registered ahead of it.
+        assert client.get("/files/voice.js").status_code == 200
+        assert client.get("/files/gpt/nope/x.txt").status_code == 404
+
+
+def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> None:
+    # The script is embedded into nginx config discussions, HTML and shell docs;
+    # keeping it free of backticks means no template-literal/shell interpolation
+    # ever applies to it, so plain string concatenation is used throughout.
+    assert "`" not in VOICE_WIDGET_JS
+    assert "${" not in VOICE_WIDGET_JS
+
+    # Logged-out pages have no meta.access_token and must be silently skipped.
+    assert "access_token" in VOICE_WIDGET_JS
+    assert "media_ids" in VOICE_WIDGET_JS
+    # One status = audio bubble + transcript body; alt text carries it too.
+    assert "TRANSCRIBE_TIMEOUT_MS = 90000" in VOICE_WIDGET_JS
+    assert "STATUS_MAX_CHARS = 4900" in VOICE_WIDGET_JS
+    assert "ALT_MAX_CHARS = 1500" in VOICE_WIDGET_JS
+    assert 'form.append("description", description)' in VOICE_WIDGET_JS
+    assert "status: statusText" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "2" and "voice widget v2" in VOICE_WIDGET_JS
+    assert "default_privacy" in VOICE_WIDGET_JS
+    assert "audio/mp4" in VOICE_WIDGET_JS
+    assert "Idempotency-Key" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_JS.count("(function () {") >= 1
+    assert VOICE_WIDGET_JS.count("{") == VOICE_WIDGET_JS.count("}")
+    assert VOICE_WIDGET_JS.count("(") == VOICE_WIDGET_JS.count(")")
+
+
+def _audio(size: int = 64):
+    return {"file": ("voice.webm", io.BytesIO(b"a" * size), "audio/webm")}
+
+
+def test_transcribe_rejects_a_missing_or_invalid_page_bearer(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    seen: list[tuple[str, str]] = []
+
+    def fake_verify(base_url, token):
+        seen.append((base_url, token))
+        return False
+
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", fake_verify)
+    with TestClient(app, base_url="https://pi.example") as client:
+        anonymous = client.post("/files/transcribe", files=_audio())
+        assert anonymous.status_code == 401 and anonymous.json() == {"error": "unauthorized"}
+        assert seen == []  # no bearer header at all: never touch the instance
+
+        bad = client.post(
+            "/files/transcribe",
+            headers={"Authorization": "Bearer not-a-real-web-token"},
+            files=_audio(),
+        )
+        assert bad.status_code == 401 and bad.json() == {"error": "unauthorized"}
+        assert bad.headers["cache-control"] == "no-store"
+        assert seen == [("https://pi.example", "not-a-real-web-token")]
+
+
+def test_transcribe_is_unavailable_without_a_local_model_directory(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
+    with TestClient(app, base_url="https://pi.example") as client:
+        unset = client.post(
+            "/files/transcribe", headers={"Authorization": "Bearer web"}, files=_audio()
+        )
+        assert unset.status_code == 503
+        assert unset.json() == {"error": "transcriber_unavailable"}
+
+        monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(tmp_path / "no-such-model"))
+        missing = client.post(
+            "/files/transcribe", headers={"Authorization": "Bearer web"}, files=_audio()
+        )
+        assert missing.status_code == 503
+        assert missing.json() == {"error": "transcriber_unavailable"}
+
+
+def test_transcribe_returns_the_transcript_off_the_event_loop(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    paths = _paths(tmp_path)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
+    monkeypatch.setenv("CMX_WHISPER_LANGUAGE", "zh")
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
+
+    calls: list[dict] = []
+
+    def fake_transcribe_file(path, **kwargs):
+        # Proof the CPU-bound call really ran in a worker thread, with the audio
+        # bytes already on disk.
+        import threading
+
+        calls.append(
+            {
+                "path": str(path),
+                "bytes": Path(path).read_bytes(),
+                "thread": threading.current_thread().name,
+                **kwargs,
+            }
+        )
+        return {"text": " 今天天气不错 ", "elapsed_ms": 7}
+
+    monkeypatch.setattr(remote_module, "transcribe_file", fake_transcribe_file)
+    with TestClient(app, base_url="https://pi.example") as client:
+        ok = client.post(
+            "/files/transcribe",
+            headers={"Authorization": "Bearer web"},
+            files={"file": ("voice.m4a", io.BytesIO(b"fake-audio"), "audio/mp4")},
+        )
+
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {"text": "今天天气不错"}
+    assert ok.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0]["bytes"] == b"fake-audio"
+    assert calls[0]["model_dir"] == str(model_dir) and calls[0]["language"] == "zh"
+    assert calls[0]["path"].endswith(".m4a")
+    assert "MainThread" not in calls[0]["thread"]
+    # The temporary upload is always removed, success or failure.
+    assert list((paths.runtime / "voice-tmp").glob("*")) == []
+
+
+def test_transcriber_error_becomes_502_and_oversize_audio_413(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
+    monkeypatch.setenv("CMX_WORKER_MAX_AUDIO_BYTES", str(1024 * 1024))
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
+    monkeypatch.setattr(
+        remote_module,
+        "transcribe_file",
+        lambda path, **kwargs: {"error": "transcription_failed", "detail": "boom"},
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        failed = client.post(
+            "/files/transcribe", headers={"Authorization": "Bearer web"}, files=_audio()
+        )
+        assert failed.status_code == 502
+        assert failed.json() == {"error": "transcription_failed"}
+
+        big = client.post(
+            "/files/transcribe",
+            headers={"Authorization": "Bearer web"},
+            files=_audio(1024 * 1024 + 1),
+        )
+        assert big.status_code == 413 and big.json()["error"] == "file_too_large"
+
+        empty = client.post(
+            "/files/transcribe", headers={"Authorization": "Bearer web"}, files=_audio(0)
+        )
+        assert empty.status_code == 400 and empty.json()["error"] == "empty_file"
+
+        no_field = client.post(
+            "/files/transcribe", headers={"Authorization": "Bearer web"}, data={"x": "y"}
+        )
+        assert no_field.status_code == 400 and "file" in no_field.json()["error"]
+    assert list((tmp_path / "mcp" / "runtime" / "voice-tmp").glob("*")) == []
+
+
+def test_nginx_injects_the_widget_into_mastodon_html() -> None:
+    conf = NGINX_CONF.read_text(encoding="utf-8")
+
+    assert SUB_FILTER in conf
+    assert 'proxy_set_header Accept-Encoding "";' in conf
+    assert "sub_filter_once on;" in conf
+    # Exactly one injection point, in exactly one location block.
+    assert conf.count("/files/voice.js") == 1
+    assert conf.count("sub_filter '</body>'") == 1

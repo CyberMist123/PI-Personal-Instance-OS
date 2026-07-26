@@ -72,13 +72,21 @@ def _config(tmp_path: Path) -> WorkerConfig:
     return WorkerConfig(model_dir=str(model_dir))
 
 
-def _status(status_id: str, *, audio: bool = True, visibility: str = "private", account: str = "alice"):
+def _status(
+    status_id: str,
+    *,
+    audio: bool = True,
+    visibility: str = "private",
+    account: str = "alice",
+    content: str = "",
+):
     attachments = [{"id": "m1", "type": "audio", "url": AUDIO_URL}] if audio else [
         {"id": "m1", "type": "image", "url": "https://mastodon.example/media/x.png"}
     ]
     return {
         "id": status_id,
         "visibility": visibility,
+        "content": content,
         "account": {"id": account, "acct": account},
         "media_attachments": attachments,
     }
@@ -142,6 +150,34 @@ def test_non_audio_status_is_marked_done_without_transcription(tmp_path, monkeyp
     assert calls == [] and client.published == [] and client.downloads == []
     assert runtime.db.worker_is_done("gpt", "101") is True
     assert runtime.db.get_setting("worker_watermark_gpt") == "101"
+
+
+def test_audio_status_that_already_carries_text_is_skipped(tmp_path, monkeypatch):
+    # Voice widget v2 transcribes before publishing, so the status body already
+    # holds the transcript; the worker reply is only a fallback.
+    client = FakeClient([[_status("101", content="<p>今天天气不错</p>")]])
+    runtime = _runtime(tmp_path, client)
+    calls = _fake_transcribe(monkeypatch, {"text": "duplicate", "elapsed_ms": 1})
+
+    summary = run_once(runtime, _config(tmp_path))
+
+    assert summary == {"seen": 1, "transcribed": 0}
+    assert calls == [] and client.published == [] and client.downloads == []
+    assert runtime.db.worker_is_done("gpt", "101") is True
+    assert runtime.db.get_setting("worker_watermark_gpt") == "101"
+
+
+def test_audio_status_with_blank_markup_only_body_is_still_transcribed(tmp_path, monkeypatch):
+    # Empty <p></p> / whitespace markup is not a transcript: fall back as before.
+    client = FakeClient([[_status("101", content="<p>  </p>\n<p><br></p>")]])
+    runtime = _runtime(tmp_path, client)
+    calls = _fake_transcribe(monkeypatch, {"text": "语音内容", "elapsed_ms": 1})
+
+    summary = run_once(runtime, _config(tmp_path))
+
+    assert summary == {"seen": 1, "transcribed": 1}
+    assert len(calls) == 1
+    assert client.published[0]["text"] == "🎙️ 语音转写：\n语音内容"
 
 
 def test_worker_own_audio_status_is_skipped(tmp_path, monkeypatch):
