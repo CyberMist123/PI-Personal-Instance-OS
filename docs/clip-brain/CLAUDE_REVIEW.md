@@ -38,6 +38,8 @@ git rev-parse HEAD
 git status --short --branch
 ```
 
+如果 `git fetch` 的自动清理提示某个 `.idx` 无法 unlink，选择 `n` 结束清理重试；不得手动删除 `.git/objects/pack` 文件。确认 fetch 已完成后再继续 switch 与测试。
+
 ## 第 2 阶段：自动测试
 
 ```powershell
@@ -47,14 +49,15 @@ py -3 -m unittest discover -s demos\clip-brain\tests -p "test_*.py" -v
 必须逐项确认：
 
 - 所有前端文件少于 300 行；
-- `storage.js`、`archive.js`、`view.js`、`downloads.js`、`bulk.js`、`app.js` 语法通过；
+- `storage.js`、`archive.js`、`downloads.js`、`bulk.js`、`selection-menu.js`、`view.js`、`app.js` 语法通过；
 - HTML 存在 Mastodon / Clipboard 双入口；
-- 未选择时批量动作隐藏；选择后只出现两个动作：自适应复制/下载、全部焚毁；
-- CSS 没有 transition 或 animation；
+- 选择菜单只有两个动作：自适应“全部复制 / 下载”和“全部焚毁”；
+- 菜单采用 260ms 展开、220ms 收起，无 transition 或 animation；
+- 纯文本模式高亮“复制”，含文件模式高亮“下载”；
+- ZIP 生成时下载高亮位显示进度，菜单忙碌期间不会中途收起；
 - 测试生成的 ZIP 能被 Python 正常读取，CRC 与内容一致；
 - 危险文件名不会形成 ZIP 路径逃逸；
 - 选中内容等于 1 GiB 时严格拒绝；
-- 纯文本选择识别为复制模式；含文件选择识别为下载模式；
 - 批量焚毁只把明确选择的 ID 一次性交给 `removeMany`。
 
 ## 第 3 阶段：静态页面 smoke
@@ -73,7 +76,7 @@ if (-not $listener) {
 
 $response = Invoke-WebRequest "http://127.0.0.1:4173/clipboard/" -UseBasicParsing
 $response.StatusCode
-$response.Content | Select-String 'bulk-actions|bulk-action|bulk-destroy|downloads.js|bulk.js'
+$response.Content | Select-String 'selection-trigger|bulk-copy-label|bulk-download-label|selection-menu.js'
 ```
 
 如果本轮启动了 `$server`，检查结束后只停止该 PID：
@@ -110,4 +113,4 @@ git status --short --branch
 6. 是否发现阻断问题；
 7. 明确写明“未编辑、未提交、未部署、未开 PR”。
 
-浏览器真实点击、文件选择器、复制权限、两个标签页实时同步和 Windows 解压体验仍由 Owner 人工验收，不得冒充已经验证。
+浏览器真实悬停延时、文件选择器、复制权限、两个标签页实时同步和 Windows 解压体验仍由 Owner 人工验收，不得冒充已经验证。
