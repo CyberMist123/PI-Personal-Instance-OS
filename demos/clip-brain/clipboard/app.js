@@ -102,36 +102,6 @@
     for (const id of state.expanded) if (!existingIds.has(id)) state.expanded.delete(id);
     render();
   }
-  async function copyText(id) {
-    const clip = state.clips.find((item) => item.id === id);
-    if (!clip || !clip.text) return;
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(clip.text);
-    } else {
-      const fallback = document.createElement("textarea");
-      fallback.value = clip.text;
-      fallback.style.position = "fixed";
-      fallback.style.opacity = "0";
-      document.body.append(fallback);
-      fallback.select();
-      if (!document.execCommand("copy")) throw new Error("浏览器拒绝复制");
-      fallback.remove();
-    }
-    showMessage(statusBox, "文本已复制。");
-  }
-  function downloadFile(clipId, fileIndex) {
-    const clip = state.clips.find((item) => item.id === clipId);
-    const file = clip && (clip.files || [])[Number(fileIndex)];
-    if (!file) return;
-    const url = URL.createObjectURL(file.blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = file.name || "unnamed-file";
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
   function zipCallbacks() {
     return {
       onProgress(percent) {
@@ -243,9 +213,18 @@
   });
   clipList.addEventListener("click", async (event) => {
     const copy = event.target.closest(".clip-text, .copy-button");
-    if (copy) return copyText(copy.dataset.id).catch((error) => showMessage(errorBox, `复制失败：${error.message}`));
+    if (copy) {
+      const clip = state.clips.find((item) => item.id === copy.dataset.id);
+      return window.ClipDownloads.copyText(clip && clip.text)
+        .then(() => showMessage(statusBox, "文本已复制。"))
+        .catch((error) => showMessage(errorBox, `复制失败：${error.message}`));
+    }
     const fileDownload = event.target.closest(".file-download");
-    if (fileDownload) return downloadFile(fileDownload.dataset.clipId, fileDownload.dataset.fileIndex);
+    if (fileDownload) {
+      const clip = state.clips.find((item) => item.id === fileDownload.dataset.clipId);
+      const file = clip && (clip.files || [])[Number(fileDownload.dataset.fileIndex)];
+      return file ? window.ClipDownloads.downloadFile(file) : undefined;
+    }
     const fileDelete = event.target.closest(".file-delete");
     if (fileDelete) return deleteFile(fileDelete.dataset.clipId, fileDelete.dataset.fileIndex);
     const more = event.target.closest(".more-files");
