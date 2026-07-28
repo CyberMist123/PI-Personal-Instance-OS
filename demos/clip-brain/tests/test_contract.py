@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "clipboard"
-JS_FILES = ["storage.js", "archive.js", "view.js", "app.js"]
+JS_FILES = ["storage.js", "archive.js", "view.js", "bulk.js", "app.js"]
 FRONTEND_FILES = ["index.html", "styles.css", "components.css", *JS_FILES]
 
 
@@ -38,12 +38,16 @@ class ClipBrainContractTests(unittest.TestCase):
         for marker in [
             'href="/"',
             'href="/clipboard/"',
-            'id="download-selected"',
+            'id="bulk-actions"',
+            'id="bulk-action"',
+            'id="bulk-destroy"',
             'id="select-page"',
             'src="./archive.js"',
             'src="./view.js"',
+            'src="./bulk.js"',
         ]:
             self.assertIn(marker, html)
+        self.assertNotIn('id="download-selected"', html)
 
     def test_no_animation_contract(self) -> None:
         css = (
@@ -73,6 +77,19 @@ class ClipBrainContractTests(unittest.TestCase):
                 self.assertTrue(all("/../" not in name for name in names))
                 report = next(name for name in names if name.endswith("/report.txt"))
                 self.assertEqual(archive.read(report), b"abc")
+
+    def test_bulk_action_contract(self) -> None:
+        run = subprocess.run(
+            ["node", str(Path(__file__).with_name("bulk-smoke.mjs"))],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(run.stdout)
+        self.assertFalse(result["hasFilesTextOnly"])
+        self.assertTrue(result["hasFilesWithFile"])
+        self.assertEqual(result["removedIds"], ["a", "b"])
+        self.assertTrue(result["strictLimitPassed"])
 
 
 if __name__ == "__main__":
