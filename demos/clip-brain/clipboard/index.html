@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#f4d928">
+  <title>Clip Brain · 24h Clipboard</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="ink ink-a" aria-hidden="true"></div>
+  <div class="ink ink-b" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="brand-lockup">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" role="img">
+          <path d="M23 16h18v7h7v28H16V23h7z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <path d="M26 13h12a4 4 0 0 1 4 4v6H22v-6a4 4 0 0 1 4-4z" fill="currentColor"/>
+          <path d="M25 34c2-5 12-5 14 0m-16 7c4 6 14 6 18 0" fill="none" stroke="#15141d" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <p class="eyebrow">TEMPORARY DROP ZONE</p>
+        <h1>CLIP BRAIN</h1>
+        <p class="subtitle">文字和文件在 24 小时后自动焚毁。</p>
+      </div>
+    </div>
+
+    <nav class="mode-switch" aria-label="站点入口">
+      <a class="mode-link mastodon-link" href="https://pi.ler428.xyz/" aria-label="返回 Mastodon">
+        <span class="mode-icon mastodon-icon" aria-hidden="true">M</span>
+        <span>Mastodon</span>
+      </a>
+      <a class="mode-link clip-link" href="/clipboard" aria-current="page" aria-label="Clip Brain 当前页面">
+        <span class="mode-icon clip-icon" aria-hidden="true">CB</span>
+        <span>Clipboard</span>
+      </a>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="composer-panel" aria-labelledby="drop-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">NEW DROP</p>
+          <h2 id="drop-title">丢进来，明天自动消失</h2>
+        </div>
+        <span class="ttl-chip">TTL · 24H</span>
+      </div>
+
+      <form id="clip-form" novalidate>
+        <label class="field-label" for="clip-text">文本</label>
+        <textarea id="clip-text" maxlength="20000" placeholder="粘贴文字、代码、日志……最多 10000 个 Unicode 字符"></textarea>
+        <div class="field-meta">
+          <span id="text-count">0 / 10000</span>
+          <span>保存后点击正文即可复制</span>
+        </div>
+
+        <label class="file-drop" for="clip-files">
+          <input id="clip-files" type="file" multiple>
+          <span class="file-drop-title">＋ 选择任意文件</span>
+          <span class="file-drop-help">最多 30 个 · 合计不超过 1 GiB</span>
+        </label>
+        <div id="file-summary" class="file-summary">尚未选择文件</div>
+
+        <div id="form-error" class="notice error" role="alert" hidden></div>
+        <div id="form-status" class="notice success" role="status" hidden></div>
+
+        <button id="save-button" class="save-button" type="submit">
+          <span>保存 24 小时</span>
+          <span aria-hidden="true">↗</span>
+        </button>
+      </form>
+    </section>
+
+    <section class="clips-panel" aria-labelledby="clips-title">
+      <div class="section-heading clips-heading">
+        <div>
+          <p class="section-kicker">LIVE BOARD</p>
+          <h2 id="clips-title">临时内容</h2>
+        </div>
+        <span id="clip-total" class="count-chip">0 条</span>
+      </div>
+
+      <div id="empty-state" class="empty-state">
+        <strong>这里还很干净。</strong>
+        <span>保存第一条文本或文件，它会在 24 小时后自动清理。</span>
+      </div>
+      <div id="clip-list" class="clip-list" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <template id="clip-template">
+    <article class="clip-card">
+      <header class="clip-card-header">
+        <div>
+          <span class="clip-type">DROP</span>
+          <time class="clip-created"></time>
+        </div>
+        <span class="clip-countdown"></span>
+      </header>
+      <button class="clip-text" type="button" title="复制完整文本"></button>
+      <ul class="clip-files"></ul>
+      <footer class="clip-actions">
+        <button class="copy-button" type="button">复制文本</button>
+        <button class="delete-button" type="button">立即焚毁</button>
+      </footer>
+    </article>
+  </template>
+
+  <script src="./storage.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
