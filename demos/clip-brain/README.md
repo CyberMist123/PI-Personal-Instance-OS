@@ -1,13 +1,13 @@
 # Clip Brain Demo
 
-当前仅验证一个产品切片：24 小时自动焚毁的文本与文件剪贴板。
+当前只验证一个产品切片：24 小时自动焚毁的文本与文件剪贴板。分支为 `demo/clip-brain-v0`，未部署、未开 PR、禁止合并。
 
 ## 本地打开
 
 在仓库根目录运行：
 
 ```powershell
-py -3 -m http.server 4173 --directory demos\clip-brain
+py -3 -m http.server 4173 --bind 127.0.0.1 --directory demos\clip-brain
 ```
 
 浏览器打开：
@@ -16,20 +16,43 @@ py -3 -m http.server 4173 --directory demos\clip-brain
 http://127.0.0.1:4173/clipboard/
 ```
 
-不要直接双击 `index.html`。`file://` 下 IndexedDB、下载和剪贴板权限可能表现不一致。
+不要直接双击 `index.html`。`file://` 下 IndexedDB、剪贴板和本地流式保存权限可能表现不一致。
 
-## Demo 能做什么
+## 当前功能
 
 - 一条记录包含文本、文件或两者；
 - 文本上限 10000 个 Unicode 字符；
-- 任意文件类型，每条最多 30 个文件、合计最多 1 GiB；
-- IndexedDB 保存，24 小时后自动删除；
-- 同浏览器标签页通过 BroadcastChannel 同步数据；
-- 点击正文复制，点击文件名下载，支持手动删除。
+- 任意文件类型，每条最多 30 个文件、文件合计最多 1 GiB；
+- 待保存和已保存文件均显示原始文件名、后缀标签与大小；
+- 支持移除待保存文件、删除单个已保存文件、焚毁整条记录；
+- IndexedDB 保存，创建 24 小时后自动删除；
+- 同一浏览器标签页同步数据，但不强制同步页面导航；
+- 每页最多 12 条，文本三行预览、文件默认只显示四个；
+- 支持单文件下载、单条 ZIP、多选条目 ZIP；
+- ZIP 在本地浏览器流式写入用户选择的文件，不上传服务器；
+- 参与打包的文字 UTF-8 字节与文件字节合计必须严格小于 1 GiB；
+- ZIP 功能要求支持 File System Access API 的最新版 Chrome 或 Edge。
+
+## 自动测试
+
+需要 Python 3 与 Node.js：
+
+```powershell
+py -3 -m unittest discover -s demos\clip-brain\tests -p "test_*.py" -v
+```
+
+测试覆盖：
+
+- 所有前端文件低于 300 行停止线；
+- JavaScript 语法；
+- HTML 双入口、分页和下载控件契约；
+- 无动画契约；
+- 真实生成 ZIP，并用 Python 校验 CRC、中文文本、文件内容和危险文件名清理；
+- 打包总量等于 1 GiB 时必须拒绝。
 
 ## Demo 不能证明什么
 
 - 不代表生产 `/clipboard` 已部署；
-- 不支持跨设备同步；
+- 不支持跨设备或跨浏览器同步；
 - 浏览器实际可用空间可能小于 1 GiB，配额不足会明确失败；
-- 不包含 AI、搜索、分类、预览、批量下载或永久保存。
+- 不包含公网分享、二维码、AI、搜索、分类、预览或永久保存。
