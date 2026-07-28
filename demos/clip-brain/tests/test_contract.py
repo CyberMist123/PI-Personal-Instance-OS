@@ -9,7 +9,14 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "clipboard"
-JS_FILES = ["storage.js", "archive.js", "view.js", "bulk.js", "app.js"]
+JS_FILES = [
+    "storage.js",
+    "archive.js",
+    "view.js",
+    "downloads.js",
+    "bulk.js",
+    "app.js",
+]
 FRONTEND_FILES = ["index.html", "styles.css", "components.css", *JS_FILES]
 
 
@@ -44,6 +51,7 @@ class ClipBrainContractTests(unittest.TestCase):
             'id="select-page"',
             'src="./archive.js"',
             'src="./view.js"',
+            'src="./downloads.js"',
             'src="./bulk.js"',
         ]:
             self.assertIn(marker, html)
