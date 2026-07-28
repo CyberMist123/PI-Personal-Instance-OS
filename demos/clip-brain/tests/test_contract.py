@@ -12,12 +12,14 @@ ROOT = Path(__file__).resolve().parents[1] / "clipboard"
 JS_FILES = [
     "storage.js",
     "archive.js",
-    "view.js",
     "downloads.js",
     "bulk.js",
+    "selection-menu.js",
+    "view.js",
     "app.js",
 ]
-FRONTEND_FILES = ["index.html", "styles.css", "components.css", *JS_FILES]
+CSS_FILES = ["styles.css", "components.css", "selection-menu.css"]
+FRONTEND_FILES = ["index.html", *CSS_FILES, *JS_FILES]
 
 
 class Parser(HTMLParser):
@@ -45,22 +47,39 @@ class ClipBrainContractTests(unittest.TestCase):
         for marker in [
             'href="/"',
             'href="/clipboard/"',
+            'id="selection-menu"',
+            'id="selection-trigger"',
             'id="bulk-actions"',
             'id="bulk-action"',
+            'id="bulk-copy-label"',
+            'id="bulk-download-label"',
             'id="bulk-destroy"',
             'id="select-page"',
-            'src="./archive.js"',
-            'src="./view.js"',
-            'src="./downloads.js"',
-            'src="./bulk.js"',
+            'href="./selection-menu.css"',
+            'src="./selection-menu.js"',
         ]:
             self.assertIn(marker, html)
+        action_start = html.index('<div id="bulk-actions"')
+        action_end = html.index("</div>", action_start)
+        self.assertEqual(html[action_start:action_end].count("<button"), 2)
         self.assertNotIn('id="download-selected"', html)
 
+    def test_delayed_selection_menu_contract(self) -> None:
+        script = (ROOT / "selection-menu.js").read_text(encoding="utf-8")
+        for marker in [
+            "OPEN_DELAY_MS = 260",
+            "CLOSE_DELAY_MS = 220",
+            'addEventListener("pointerenter"',
+            'addEventListener("pointerleave"',
+            "setProgress",
+            "clearProgress",
+            'downloadLabel.classList.add("is-active")',
+        ]:
+            self.assertIn(marker, script)
+
     def test_no_animation_contract(self) -> None:
-        css = (
-            (ROOT / "styles.css").read_text(encoding="utf-8")
-            + (ROOT / "components.css").read_text(encoding="utf-8")
+        css = "".join(
+            (ROOT / name).read_text(encoding="utf-8") for name in CSS_FILES
         ).lower()
         self.assertNotIn("transition:", css)
         self.assertNotIn("animation:", css)
