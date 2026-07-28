@@ -8,7 +8,6 @@
   const pageLabel = document.querySelector("#page-label");
   const prevPage = document.querySelector("#prev-page");
   const nextPage = document.querySelector("#next-page");
-  const selectPage = document.querySelector("#select-page");
   const draftList = document.querySelector("#draft-files");
   const fileSummary = document.querySelector("#file-summary");
   const template = document.querySelector("#clip-template");
@@ -154,18 +153,13 @@
     prevPage.disabled = page <= 1;
     nextPage.disabled = page >= pageCount;
 
-    const currentIds = current.map((clip) => clip.id);
-    const selectedHere = currentIds.filter((id) => state.selected.has(id)).length;
-    const overLimit = state.selectedBytes >= window.ClipArchive.MAX_ARCHIVE_BYTES;
-    selectPage.checked = currentIds.length > 0 && selectedHere === currentIds.length;
-    selectPage.indeterminate = selectedHere > 0 && selectedHere < currentIds.length;
     window.ClipSelectionMenu.update({
       count: state.selected.size,
       bytesLabel: formatBytes(state.selectedBytes),
       hasFiles: state.selectedHasFiles,
-      overLimit,
+      overLimit: state.selectedBytes >= window.ClipArchive.MAX_ARCHIVE_BYTES,
     });
-    return { page, pageCount, currentIds };
+    return { page, pageCount };
   }
 
   function updateCountdowns(clips) {
