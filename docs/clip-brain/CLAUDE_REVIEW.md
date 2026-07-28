@@ -47,9 +47,9 @@ py -3 -m unittest discover -s demos\clip-brain\tests -p "test_*.py" -v
 必须逐项确认：
 
 - 所有前端文件少于 300 行；
-- `storage.js`、`archive.js`、`view.js`、`bulk.js`、`app.js` 语法通过；
+- `storage.js`、`archive.js`、`view.js`、`downloads.js`、`bulk.js`、`app.js` 语法通过；
 - HTML 存在 Mastodon / Clipboard 双入口；
-- 选择区只有两个批量动作：自适应复制/下载、全部焚毁；
+- 未选择时批量动作隐藏；选择后只出现两个动作：自适应复制/下载、全部焚毁；
 - CSS 没有 transition 或 animation；
 - 测试生成的 ZIP 能被 Python 正常读取，CRC 与内容一致；
 - 危险文件名不会形成 ZIP 路径逃逸；
@@ -73,7 +73,7 @@ if (-not $listener) {
 
 $response = Invoke-WebRequest "http://127.0.0.1:4173/clipboard/" -UseBasicParsing
 $response.StatusCode
-$response.Content | Select-String 'bulk-actions|bulk-action|bulk-destroy|bulk.js'
+$response.Content | Select-String 'bulk-actions|bulk-action|bulk-destroy|downloads.js|bulk.js'
 ```
 
 如果本轮启动了 `$server`，检查结束后只停止该 PID：
