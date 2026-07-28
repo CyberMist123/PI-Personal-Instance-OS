@@ -68,6 +68,15 @@
     return run("readwrite", (store) => store.delete(id));
   }
 
+  async function removeMany(ids) {
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    if (!uniqueIds.length) return 0;
+    await run("readwrite", (store) => {
+      uniqueIds.forEach((id) => store.delete(id));
+    });
+    return uniqueIds.length;
+  }
+
   async function purgeExpired(now) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
@@ -93,6 +102,7 @@
     list,
     put,
     remove,
+    removeMany,
     purgeExpired,
   });
 }());
