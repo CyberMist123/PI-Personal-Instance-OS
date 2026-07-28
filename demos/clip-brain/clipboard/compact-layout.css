@@ -1,0 +1,39 @@
+.draft-files {
+  max-height: 210px;
+  margin-bottom: 18px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+
+.draft-files:empty {
+  display: none;
+}
+
+.draft-files::-webkit-scrollbar {
+  width: 8px;
+}
+
+.draft-files::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+
+.empty-state[hidden] {
+  display: none;
+}
+
+.delete-button.is-armed,
+.file-delete.is-armed {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+@media (min-width: 881px) {
+  .composer-panel {
+    align-self: start;
+  }
+}
