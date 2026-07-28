@@ -24,24 +24,6 @@
     return bytes;
   }
 
-  async function copyText(value) {
-    if (!value) throw new Error("所选条目没有可复制的文字。");
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-
-    const fallback = document.createElement("textarea");
-    fallback.value = value;
-    fallback.style.position = "fixed";
-    fallback.style.opacity = "0";
-    document.body.append(fallback);
-    fallback.select();
-    const copied = document.execCommand("copy");
-    fallback.remove();
-    if (!copied) throw new Error("浏览器拒绝复制。");
-  }
-
   async function downloadZip(clips, prefix, callbacks) {
     assertSelectionSize(clips);
     return window.ClipArchive.saveClipsAsZip(clips, {
@@ -64,7 +46,7 @@
       };
     }
 
-    await copyText(combineText(clips));
+    await window.ClipDownloads.copyText(combineText(clips));
     return {
       mode: "copy",
       message: `已复制 ${clips.length} 条文本。`,
