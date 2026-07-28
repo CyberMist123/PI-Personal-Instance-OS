@@ -8,6 +8,7 @@
   <title>Clip Brain · 24h Clipboard</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./components.css">
+  <link rel="stylesheet" href="./compact-layout.css">
   <link rel="stylesheet" href="./selection-menu.css">
 </head>
 <body>
@@ -90,28 +91,23 @@
           <p class="section-kicker">LIVE BOARD</p>
           <h2 id="clips-title">临时内容</h2>
         </div>
-        <span id="clip-total" class="count-chip">0 条</span>
-      </div>
-
-      <div class="selection-bar">
-        <label class="select-page-label">
-          <input id="select-page" type="checkbox">
-          <span>选择本页</span>
-        </label>
-        <div id="selection-menu" class="selection-menu" data-open="false" data-has-selection="false">
-          <button id="selection-trigger" class="selection-trigger" type="button" aria-expanded="false" aria-controls="bulk-actions" disabled>
-            <span id="selection-text">未选择条目</span>
-            <span class="selection-caret" aria-hidden="true">⌄</span>
-          </button>
-          <div id="bulk-actions" class="bulk-actions" hidden>
-            <button id="bulk-action" type="button">
-              <span class="bulk-prefix">全部</span>
-              <span id="bulk-copy-label" class="bulk-mode is-active">复制</span>
-              <span class="bulk-divider">/</span>
-              <span id="bulk-download-label" class="bulk-mode">下载</span>
+        <div class="board-tools">
+          <div id="selection-menu" class="selection-menu" data-open="false" hidden>
+            <button id="selection-trigger" class="selection-trigger" type="button" aria-expanded="false" aria-controls="bulk-actions">
+              <span id="selection-text">已选 0 条</span>
+              <span class="selection-caret" aria-hidden="true">⌄</span>
             </button>
-            <button id="bulk-destroy" type="button">全部焚毁</button>
+            <div id="bulk-actions" class="bulk-actions" hidden>
+              <button id="bulk-action" type="button">
+                <span class="bulk-prefix">全部</span>
+                <span id="bulk-copy-label" class="bulk-mode is-active">复制</span>
+                <span class="bulk-divider">/</span>
+                <span id="bulk-download-label" class="bulk-mode">下载</span>
+              </button>
+              <button id="bulk-destroy" type="button">全部焚毁</button>
+            </div>
           </div>
+          <span id="clip-total" class="count-chip">0 条</span>
         </div>
       </div>
 
@@ -151,7 +147,9 @@
 
   <script src="./storage.js"></script>
   <script src="./archive.js"></script>
+  <script src="./archive-output.js"></script>
   <script src="./downloads.js"></script>
+  <script src="./destructive.js"></script>
   <script src="./bulk.js"></script>
   <script src="./selection-menu.js"></script>
   <script src="./view.js"></script>
