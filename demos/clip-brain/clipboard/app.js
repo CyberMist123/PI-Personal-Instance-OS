@@ -105,6 +105,7 @@
   function zipCallbacks() {
     return {
       onProgress(percent) {
+        window.ClipSelectionMenu.setProgress(percent);
         showMessage(statusBox, `正在本地打包：${percent}%`);
       },
     };
@@ -112,7 +113,11 @@
   async function downloadEntry(clip) {
     clearMessages();
     try {
-      const result = await window.ClipBulk.downloadZip([clip], "clipbrain-entry", zipCallbacks());
+      const result = await window.ClipBulk.downloadZip([clip], "clipbrain-entry", {
+        onProgress(percent) {
+          showMessage(statusBox, `正在本地打包本条：${percent}%`);
+        },
+      });
       showMessage(statusBox, `ZIP 已保存：${result.fileCount} 个文件，${window.ClipView.formatBytes(result.totalBytes)}。`);
     } catch (error) {
       if (error && error.name === "AbortError") showMessage(statusBox, "已取消本地打包。");
@@ -137,12 +142,17 @@
   }
   async function runBulkAction() {
     clearMessages();
+    const clips = selectedClips();
+    const createsZip = window.ClipBulk.hasFiles(clips);
+    if (createsZip) window.ClipSelectionMenu.setProgress(0);
     try {
-      const result = await window.ClipBulk.copyOrDownload(selectedClips(), zipCallbacks());
+      const result = await window.ClipBulk.copyOrDownload(clips, zipCallbacks());
       showMessage(statusBox, result.message);
     } catch (error) {
       if (error && error.name === "AbortError") showMessage(statusBox, "已取消本地打包。");
       else showMessage(errorBox, `批量操作失败：${error.message || "未知错误"}`);
+    } finally {
+      if (createsZip) window.ClipSelectionMenu.clearProgress();
     }
   }
   async function runBulkDestroy() {
