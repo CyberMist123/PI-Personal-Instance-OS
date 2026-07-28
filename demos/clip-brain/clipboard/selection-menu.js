@@ -18,6 +18,7 @@
   let hasFiles = false;
   let overLimit = false;
   let busy = false;
+  let pointerInside = false;
 
   function clearOpenTimer() {
     if (openTimer) window.clearTimeout(openTimer);
@@ -99,12 +100,19 @@
     downloadLabel.textContent = "下载";
     destroyButton.disabled = !hasSelection;
     updateMode();
+    if (!pointerInside && !root.contains(document.activeElement)) scheduleClose();
   }
 
   trigger.addEventListener("pointerenter", scheduleOpen);
   trigger.addEventListener("focus", scheduleOpen);
-  root.addEventListener("pointerenter", clearCloseTimer);
-  root.addEventListener("pointerleave", scheduleClose);
+  root.addEventListener("pointerenter", () => {
+    pointerInside = true;
+    clearCloseTimer();
+  });
+  root.addEventListener("pointerleave", () => {
+    pointerInside = false;
+    scheduleClose();
+  });
   root.addEventListener("focusout", (event) => {
     if (!root.contains(event.relatedTarget)) scheduleClose();
   });
