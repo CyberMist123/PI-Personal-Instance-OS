@@ -98,7 +98,10 @@
           <span>选择本页</span>
         </label>
         <span id="selection-text">未选择条目</span>
-        <button id="download-selected" type="button" disabled>本地打包所选</button>
+        <div id="bulk-actions" class="bulk-actions" hidden>
+          <button id="bulk-action" type="button">复制所选文本</button>
+          <button id="bulk-destroy" type="button">全部焚毁</button>
+        </div>
       </div>
 
       <div id="empty-state" class="empty-state">
@@ -138,6 +141,7 @@
   <script src="./storage.js"></script>
   <script src="./archive.js"></script>
   <script src="./view.js"></script>
+  <script src="./bulk.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
