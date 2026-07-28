@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
-const root = path.resolve(import.meta.dirname, "../clipboard");
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "../clipboard");
 const removedIds = [];
 globalThis.window = globalThis;
 globalThis.confirm = () => true;
