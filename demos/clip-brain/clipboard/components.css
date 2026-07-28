@@ -82,7 +82,16 @@
   height: 17px;
   accent-color: var(--ink);
 }
-#download-selected,
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bulk-actions[hidden] { display: none; }
+#bulk-action,
+#bulk-destroy,
 .entry-download,
 .copy-button,
 .delete-button,
@@ -92,11 +101,16 @@
   border-radius: 9px;
   font-weight: 850;
 }
-#download-selected,
+#bulk-action,
 .entry-download {
   color: var(--bg);
   background: var(--ink);
   border: 0;
+}
+#bulk-destroy {
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
 }
 .clip-list {
   display: grid;
@@ -246,9 +260,12 @@
     grid-column: 1 / -1;
     grid-row: 2;
   }
-  .clip-card-header {
-    align-items: flex-start;
+  .bulk-actions {
+    grid-column: 1 / -1;
+    justify-content: stretch;
   }
+  .bulk-actions > button { flex: 1 1 140px; }
+  .clip-card-header { align-items: flex-start; }
 }
 @media (max-width: 520px) {
   .draft-file,
@@ -259,7 +276,5 @@
   .clip-file .file-size {
     display: none;
   }
-  .clip-actions > button {
-    flex: 1 1 120px;
-  }
+  .clip-actions > button { flex: 1 1 120px; }
 }
