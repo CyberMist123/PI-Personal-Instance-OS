@@ -25,7 +25,7 @@ git pull --ff-only origin fix/cmx-5000-char-limit
 docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { throw "Docker Compose configuration is invalid." }
 
-Select-String -LiteralPath ".\mastodon-overrides\v4.6.3\app\validators\status_length_validator.rb" -Pattern "MAX_CHARS = 5000"
+Select-String -LiteralPath ".\mastodon-overrides\v4.6.4\app\validators\status_length_validator.rb" -Pattern "MAX_CHARS = 5000"
 ```
 
 预期：Compose 检查无报错，并显示 `MAX_CHARS = 5000`。

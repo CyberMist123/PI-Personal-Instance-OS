@@ -37,7 +37,7 @@ services:
       retries: 10
 
   web:
-    image: ghcr.io/mastodon/mastodon:v4.6.3
+    image: ghcr.io/mastodon/mastodon:v4.6.4
     restart: unless-stopped
     env_file:
       - .env.production
@@ -53,7 +53,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data/media:/mastodon/public/system
-      - ./mastodon-overrides/v4.6.3/app/validators/status_length_validator.rb:/opt/mastodon/app/validators/status_length_validator.rb:ro
+      - ./mastodon-overrides/v4.6.4/app/validators/status_length_validator.rb:/opt/mastodon/app/validators/status_length_validator.rb:ro
     expose:
       - "3000"
     networks:
@@ -67,7 +67,7 @@ services:
       start_period: 60s
 
   streaming:
-    image: ghcr.io/mastodon/mastodon-streaming:v4.6.3
+    image: ghcr.io/mastodon/mastodon-streaming:v4.6.4
     restart: unless-stopped
     env_file:
       - .env.production
@@ -94,7 +94,7 @@ services:
       start_period: 30s
 
   sidekiq:
-    image: ghcr.io/mastodon/mastodon:v4.6.3
+    image: ghcr.io/mastodon/mastodon:v4.6.4
     restart: unless-stopped
     env_file:
       - .env.production
@@ -108,7 +108,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data/media:/mastodon/public/system
-      - ./mastodon-overrides/v4.6.3/app/validators/status_length_validator.rb:/opt/mastodon/app/validators/status_length_validator.rb:ro
+      - ./mastodon-overrides/v4.6.4/app/validators/status_length_validator.rb:/opt/mastodon/app/validators/status_length_validator.rb:ro
     networks:
       - app
       - data
