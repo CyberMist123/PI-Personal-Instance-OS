@@ -151,6 +151,9 @@
   document.addEventListener("pointerdown", (event) => {
     if (!root.contains(event.target)) close();
   });
+  document.addEventListener("change", (event) => {
+    if (event.target.matches(".clip-select")) resetDestroy();
+  });
 
   window.ClipSelectionMenu = Object.freeze({
     armDestroy,
