@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#f4d928">
   <title>Clip Brain · 24h Clipboard</title>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./components.css">
 </head>
 <body>
   <div class="ink ink-a" aria-hidden="true"></div>
@@ -15,10 +16,10 @@
   <header class="site-header">
     <div class="brand-lockup">
       <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 64 64" role="img">
-          <path d="M23 16h18v7h7v28H16V23h7z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
-          <path d="M26 13h12a4 4 0 0 1 4 4v6H22v-6a4 4 0 0 1 4-4z" fill="currentColor"/>
-          <path d="M25 34c2-5 12-5 14 0m-16 7c4 6 14 6 18 0" fill="none" stroke="#15141d" stroke-width="4" stroke-linecap="round"/>
+        <svg viewBox="0 0 64 64">
+          <path d="M18 17h28v34H18z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <path d="M25 12h14a4 4 0 0 1 4 4v6H21v-6a4 4 0 0 1 4-4z" fill="currentColor"/>
+          <path d="M25 34c3-5 11-5 14 0m-16 8c5 5 13 5 18 0" fill="none" stroke="#15141d" stroke-width="4" stroke-linecap="round"/>
         </svg>
       </div>
       <div>
@@ -28,14 +29,20 @@
       </div>
     </div>
 
-    <nav class="mode-switch" aria-label="站点入口">
-      <a class="mode-link mastodon-link" href="https://pi.ler428.xyz/" aria-label="返回 Mastodon">
-        <span class="mode-icon mastodon-icon" aria-hidden="true">M</span>
-        <span>Mastodon</span>
+    <nav class="site-switch" aria-label="网站入口">
+      <a class="wordmark mastodon-wordmark" href="/" aria-label="切换到 Mastodon">
+        <svg viewBox="0 0 56 56" aria-hidden="true">
+          <path d="M10 17c1-8 8-12 18-12s17 4 18 12v20c-1 9-9 13-18 13-8 0-14-2-17-6l1-8c4 4 9 6 15 6 7 0 10-3 10-7v-2c-3 2-6 3-10 3-10 0-17-4-17-13z" fill="currentColor"/>
+          <path d="M18 19v13m0-10c0-4 7-4 7 0v10m0-10c0-4 7-4 7 0v10" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+        <span>mastodon</span>
       </a>
-      <a class="mode-link clip-link" href="/clipboard" aria-current="page" aria-label="Clip Brain 当前页面">
-        <span class="mode-icon clip-icon" aria-hidden="true">CB</span>
-        <span>Clipboard</span>
+      <a class="wordmark clip-wordmark" href="/clipboard/" aria-current="page" aria-label="Clip Brain 当前页面">
+        <svg viewBox="0 0 56 56" aria-hidden="true">
+          <rect x="12" y="10" width="32" height="38" rx="10" fill="none" stroke="currentColor" stroke-width="4"/>
+          <path d="M21 20h14M21 28h14M21 36h9" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+        <span>clip brain</span>
       </a>
     </nav>
   </header>
@@ -61,9 +68,10 @@
         <label class="file-drop" for="clip-files">
           <input id="clip-files" type="file" multiple>
           <span class="file-drop-title">＋ 选择任意文件</span>
-          <span class="file-drop-help">最多 30 个 · 合计不超过 1 GiB</span>
+          <span class="file-drop-help">最多 30 个 · 文件合计不超过 1 GiB</span>
         </label>
         <div id="file-summary" class="file-summary">尚未选择文件</div>
+        <ul id="draft-files" class="draft-files" aria-label="待保存文件"></ul>
 
         <div id="form-error" class="notice error" role="alert" hidden></div>
         <div id="form-status" class="notice success" role="status" hidden></div>
@@ -84,33 +92,52 @@
         <span id="clip-total" class="count-chip">0 条</span>
       </div>
 
+      <div class="selection-bar">
+        <label class="select-page-label">
+          <input id="select-page" type="checkbox">
+          <span>选择本页</span>
+        </label>
+        <span id="selection-text">未选择条目</span>
+        <button id="download-selected" type="button" disabled>本地打包所选</button>
+      </div>
+
       <div id="empty-state" class="empty-state">
         <strong>这里还很干净。</strong>
         <span>保存第一条文本或文件，它会在 24 小时后自动清理。</span>
       </div>
       <div id="clip-list" class="clip-list" aria-live="polite"></div>
+
+      <nav class="pagination" aria-label="临时内容分页">
+        <button id="prev-page" type="button">上一页</button>
+        <span id="page-label">1 / 1</span>
+        <button id="next-page" type="button">下一页</button>
+      </nav>
     </section>
   </main>
 
   <template id="clip-template">
     <article class="clip-card">
       <header class="clip-card-header">
-        <div>
+        <label class="card-select-label">
+          <input class="clip-select" type="checkbox">
           <span class="clip-type">DROP</span>
           <time class="clip-created"></time>
-        </div>
+        </label>
         <span class="clip-countdown"></span>
       </header>
       <button class="clip-text" type="button" title="复制完整文本"></button>
       <ul class="clip-files"></ul>
       <footer class="clip-actions">
         <button class="copy-button" type="button">复制文本</button>
+        <button class="entry-download" type="button">下载本条 ZIP</button>
         <button class="delete-button" type="button">立即焚毁</button>
       </footer>
     </article>
   </template>
 
   <script src="./storage.js"></script>
+  <script src="./archive.js"></script>
+  <script src="./view.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
