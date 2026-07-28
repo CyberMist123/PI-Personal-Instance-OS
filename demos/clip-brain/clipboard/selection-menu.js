@@ -3,6 +3,7 @@
 
   const OPEN_DELAY_MS = 260;
   const CLOSE_DELAY_MS = 220;
+  const CONFIRM_DELAY_MS = 3500;
   const root = document.querySelector("#selection-menu");
   const trigger = document.querySelector("#selection-trigger");
   const selectionText = document.querySelector("#selection-text");
@@ -14,20 +15,19 @@
 
   let openTimer;
   let closeTimer;
+  let confirmTimer;
   let hasSelection = false;
   let hasFiles = false;
   let overLimit = false;
   let busy = false;
   let pointerInside = false;
+  let confirmArmed = false;
 
-  function clearOpenTimer() {
-    if (openTimer) window.clearTimeout(openTimer);
-    openTimer = undefined;
-  }
-
-  function clearCloseTimer() {
-    if (closeTimer) window.clearTimeout(closeTimer);
-    closeTimer = undefined;
+  function clearTimer(name) {
+    const timer = name === "open" ? openTimer : closeTimer;
+    if (timer) window.clearTimeout(timer);
+    if (name === "open") openTimer = undefined;
+    else closeTimer = undefined;
   }
 
   function setOpen(value) {
@@ -38,26 +38,46 @@
   }
 
   function open() {
-    clearCloseTimer();
+    clearTimer("close");
     setOpen(true);
   }
 
   function close() {
-    clearOpenTimer();
+    clearTimer("open");
     if (!busy) setOpen(false);
   }
 
   function scheduleOpen() {
-    clearCloseTimer();
-    clearOpenTimer();
+    clearTimer("close");
+    clearTimer("open");
     if (!hasSelection) return;
     openTimer = window.setTimeout(open, OPEN_DELAY_MS);
   }
 
   function scheduleClose() {
-    clearOpenTimer();
-    clearCloseTimer();
+    clearTimer("open");
+    clearTimer("close");
     closeTimer = window.setTimeout(close, CLOSE_DELAY_MS);
+  }
+
+  function resetDestroy() {
+    confirmArmed = false;
+    if (confirmTimer) window.clearTimeout(confirmTimer);
+    confirmTimer = undefined;
+    destroyButton.textContent = "全部焚毁";
+    destroyButton.classList.remove("is-armed");
+  }
+
+  function armDestroy(count) {
+    if (confirmArmed) {
+      resetDestroy();
+      return true;
+    }
+    confirmArmed = true;
+    destroyButton.textContent = `再点一次焚毁 ${count} 条`;
+    destroyButton.classList.add("is-armed");
+    confirmTimer = window.setTimeout(resetDestroy, CONFIRM_DELAY_MS);
+    return false;
   }
 
   function updateMode() {
@@ -71,14 +91,15 @@
   }
 
   function update(options) {
-    hasSelection = options.count > 0;
+    const nextHasSelection = options.count > 0;
+    if (hasSelection && (!nextHasSelection || options.count !== Number(root.dataset.count))) resetDestroy();
+    hasSelection = nextHasSelection;
     hasFiles = Boolean(options.hasFiles);
     overLimit = Boolean(options.overLimit);
-    root.dataset.hasSelection = String(hasSelection);
-    selectionText.textContent = hasSelection
-      ? `已选 ${options.count} 条 · ${options.bytesLabel}`
-      : "未选择条目";
-    trigger.disabled = !hasSelection;
+    root.dataset.count = String(options.count);
+    root.hidden = !hasSelection;
+    selectionText.textContent = `已选 ${options.count} 条`;
+    trigger.title = options.bytesLabel;
     destroyButton.disabled = !hasSelection || busy;
     actionButton.title = overLimit ? "选中内容必须严格小于 1 GiB" : "";
     updateMode();
@@ -107,7 +128,7 @@
   trigger.addEventListener("focus", scheduleOpen);
   root.addEventListener("pointerenter", () => {
     pointerInside = true;
-    clearCloseTimer();
+    clearTimer("close");
   });
   root.addEventListener("pointerleave", () => {
     pointerInside = false;
@@ -117,12 +138,13 @@
     if (!root.contains(event.relatedTarget)) scheduleClose();
   });
   trigger.addEventListener("click", () => {
-    clearOpenTimer();
+    clearTimer("open");
     if (root.dataset.open === "true") close();
     else open();
   });
   root.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    resetDestroy();
     setOpen(false);
     trigger.focus();
   });
@@ -131,9 +153,11 @@
   });
 
   window.ClipSelectionMenu = Object.freeze({
+    armDestroy,
     clearProgress,
     close,
     open,
+    resetDestroy,
     setProgress,
     update,
   });
