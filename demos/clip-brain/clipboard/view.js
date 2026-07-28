@@ -10,7 +10,9 @@
   const nextPage = document.querySelector("#next-page");
   const selectPage = document.querySelector("#select-page");
   const selectionText = document.querySelector("#selection-text");
-  const downloadSelected = document.querySelector("#download-selected");
+  const bulkActions = document.querySelector("#bulk-actions");
+  const bulkAction = document.querySelector("#bulk-action");
+  const bulkDestroy = document.querySelector("#bulk-destroy");
   const draftList = document.querySelector("#draft-files");
   const fileSummary = document.querySelector("#file-summary");
   const template = document.querySelector("#clip-template");
@@ -158,16 +160,19 @@
 
     const currentIds = current.map((clip) => clip.id);
     const selectedHere = currentIds.filter((id) => state.selected.has(id)).length;
+    const hasSelection = state.selected.size > 0;
+    const overLimit = state.selectedBytes >= window.ClipArchive.MAX_ARCHIVE_BYTES;
     selectPage.checked = currentIds.length > 0 && selectedHere === currentIds.length;
     selectPage.indeterminate = selectedHere > 0 && selectedHere < currentIds.length;
 
-    selectionText.textContent = state.selected.size
+    selectionText.textContent = hasSelection
       ? `已选 ${state.selected.size} 条 · ${formatBytes(state.selectedBytes)}`
       : "未选择条目";
-    downloadSelected.disabled = !state.selected.size || state.selectedBytes >= window.ClipArchive.MAX_ARCHIVE_BYTES;
-    downloadSelected.title = state.selectedBytes >= window.ClipArchive.MAX_ARCHIVE_BYTES
-      ? "选中内容必须严格小于 1 GiB"
-      : "";
+    bulkActions.hidden = !hasSelection;
+    bulkAction.textContent = state.selectedHasFiles ? "下载所选 ZIP" : "复制所选文本";
+    bulkAction.disabled = !hasSelection || overLimit;
+    bulkAction.title = overLimit ? "选中内容必须严格小于 1 GiB" : "";
+    bulkDestroy.disabled = !hasSelection;
     return { page, pageCount, currentIds };
   }
 
