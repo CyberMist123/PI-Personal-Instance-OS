@@ -15,6 +15,15 @@
       .join("\n\n");
   }
 
+  function assertSelectionSize(clips) {
+    if (!clips.length) throw new Error("请先选择至少一条内容。");
+    const bytes = window.ClipArchive.measureClips(clips);
+    if (bytes >= window.ClipArchive.MAX_ARCHIVE_BYTES) {
+      throw new RangeError("选中内容合计必须严格小于 1 GiB。");
+    }
+    return bytes;
+  }
+
   async function copyText(value) {
     if (!value) throw new Error("所选条目没有可复制的文字。");
     if (navigator.clipboard && window.isSecureContext) {
@@ -34,12 +43,7 @@
   }
 
   async function downloadZip(clips, prefix, callbacks) {
-    const bytes = window.ClipArchive.measureClips(clips);
-    if (!clips.length) throw new Error("请先选择至少一条内容。");
-    if (bytes >= window.ClipArchive.MAX_ARCHIVE_BYTES) {
-      throw new RangeError("选中内容合计必须严格小于 1 GiB。");
-    }
-
+    assertSelectionSize(clips);
     return window.ClipArchive.saveClipsAsZip(clips, {
       name: `${prefix}-${Date.now()}.zip`,
       onProgress(done, total) {
@@ -51,7 +55,7 @@
   }
 
   async function copyOrDownload(clips, callbacks) {
-    if (!clips.length) throw new Error("请先选择至少一条内容。");
+    assertSelectionSize(clips);
     if (hasFiles(clips)) {
       const result = await downloadZip(clips, "clipbrain-selected", callbacks);
       return {
@@ -76,6 +80,7 @@
   }
 
   window.ClipBulk = Object.freeze({
+    assertSelectionSize,
     combineText,
     copyOrDownload,
     destroy,
