@@ -24,9 +24,17 @@
     return bytes;
   }
 
+  function downloadMessage(result) {
+    const size = window.ClipView.formatBytes(result.totalBytes);
+    if (result.delivery === "browser") {
+      return `ZIP 已加入浏览器下载：${result.fileCount} 个文件，${size}。`;
+    }
+    return `ZIP 已直接保存到磁盘：${result.fileCount} 个文件，${size}；不会出现在浏览器下载栏。`;
+  }
+
   async function downloadZip(clips, prefix, callbacks) {
     assertSelectionSize(clips);
-    return window.ClipArchive.saveClipsAsZip(clips, {
+    return window.ClipArchiveOutput.saveClipsAsZip(clips, {
       name: `${prefix}-${Date.now()}.zip`,
       onProgress(done, total) {
         if (!callbacks || !callbacks.onProgress) return;
@@ -42,7 +50,8 @@
       const result = await downloadZip(clips, "clipbrain-selected", callbacks);
       return {
         mode: "download",
-        message: `ZIP 已保存：${result.fileCount} 个文件，${window.ClipView.formatBytes(result.totalBytes)}。`,
+        message: downloadMessage(result),
+        result,
       };
     }
 
@@ -55,10 +64,8 @@
 
   async function destroy(clips) {
     if (!clips.length) throw new Error("请先选择至少一条内容。");
-    const confirmed = window.confirm(`立即焚毁选中的 ${clips.length} 条记录？此操作无法撤销。`);
-    if (!confirmed) return { cancelled: true, removed: 0 };
     await window.ClipStore.removeMany(clips.map((clip) => clip.id));
-    return { cancelled: false, removed: clips.length };
+    return { removed: clips.length };
   }
 
   window.ClipBulk = Object.freeze({
@@ -66,6 +73,7 @@
     combineText,
     copyOrDownload,
     destroy,
+    downloadMessage,
     downloadZip,
     hasFiles,
   });
