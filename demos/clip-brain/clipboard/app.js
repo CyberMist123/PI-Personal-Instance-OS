@@ -17,7 +17,8 @@
   const prevPage = document.querySelector("#prev-page");
   const nextPage = document.querySelector("#next-page");
   const selectPage = document.querySelector("#select-page");
-  const downloadSelected = document.querySelector("#download-selected");
+  const bulkAction = document.querySelector("#bulk-action");
+  const bulkDestroy = document.querySelector("#bulk-destroy");
   const channel = "BroadcastChannel" in window ? new BroadcastChannel(CHANNEL_NAME) : null;
   const state = {
     clips: [],
@@ -81,13 +82,14 @@
     return state.clips.filter((clip) => state.selected.has(clip.id));
   }
   function render() {
-    const selectedBytes = window.ClipArchive.measureClips(selectedClips());
+    const selected = selectedClips();
     const result = window.ClipView.renderBoard({
       clips: state.clips,
       selected: state.selected,
       expanded: state.expanded,
       page: state.page,
-      selectedBytes,
+      selectedBytes: window.ClipArchive.measureClips(selected),
+      selectedHasFiles: window.ClipBulk.hasFiles(selected),
     });
     state.page = result.page;
     state.currentIds = result.currentIds;
@@ -130,27 +132,21 @@
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  async function downloadZip(clips, prefix) {
+  function zipCallbacks() {
+    return {
+      onProgress(percent) {
+        showMessage(statusBox, `正在本地打包：${percent}%`);
+      },
+    };
+  }
+  async function downloadEntry(clip) {
     clearMessages();
-    const bytes = window.ClipArchive.measureClips(clips);
-    if (bytes >= window.ClipArchive.MAX_ARCHIVE_BYTES) {
-      return showMessage(errorBox, "选中内容合计必须严格小于 1 GiB。");
-    }
     try {
-      const result = await window.ClipArchive.saveClipsAsZip(clips, {
-        name: `${prefix}-${Date.now()}.zip`,
-        onProgress: (done, total) => {
-          const percent = total ? Math.floor((done / total) * 100) : 100;
-          showMessage(statusBox, `正在本地打包：${percent}%`);
-        },
-      });
+      const result = await window.ClipBulk.downloadZip([clip], "clipbrain-entry", zipCallbacks());
       showMessage(statusBox, `ZIP 已保存：${result.fileCount} 个文件，${window.ClipView.formatBytes(result.totalBytes)}。`);
     } catch (error) {
-      if (error && error.name === "AbortError") {
-        showMessage(statusBox, "已取消本地打包。");
-      } else {
-        showMessage(errorBox, `打包失败：${error.message || "未知错误"}`);
-      }
+      if (error && error.name === "AbortError") showMessage(statusBox, "已取消本地打包。");
+      else showMessage(errorBox, `打包失败：${error.message || "未知错误"}`);
     }
   }
   async function deleteFile(clipId, fileIndex) {
@@ -168,6 +164,29 @@
     await window.ClipStore.remove(id);
     announceSync();
     await refresh();
+  }
+  async function runBulkAction() {
+    clearMessages();
+    try {
+      const result = await window.ClipBulk.copyOrDownload(selectedClips(), zipCallbacks());
+      showMessage(statusBox, result.message);
+    } catch (error) {
+      if (error && error.name === "AbortError") showMessage(statusBox, "已取消本地打包。");
+      else showMessage(errorBox, `批量操作失败：${error.message || "未知错误"}`);
+    }
+  }
+  async function runBulkDestroy() {
+    clearMessages();
+    try {
+      const result = await window.ClipBulk.destroy(selectedClips());
+      if (result.cancelled) return;
+      state.selected.clear();
+      announceSync();
+      await refresh();
+      showMessage(statusBox, `已焚毁 ${result.removed} 条记录。`);
+    } catch (error) {
+      showMessage(errorBox, `批量焚毁失败：${error.message || "未知错误"}`);
+    }
   }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -238,7 +257,7 @@
     const entryDownload = event.target.closest(".entry-download");
     if (entryDownload) {
       const clip = state.clips.find((item) => item.id === entryDownload.dataset.id);
-      return downloadZip(clip ? [clip] : [], "clipbrain-entry");
+      return clip ? downloadEntry(clip) : undefined;
     }
     const remove = event.target.closest(".delete-button");
     if (remove) return deleteEntry(remove.dataset.id);
@@ -250,7 +269,8 @@
     });
     render();
   });
-  downloadSelected.addEventListener("click", () => downloadZip(selectedClips(), "clipbrain-selected"));
+  bulkAction.addEventListener("click", runBulkAction);
+  bulkDestroy.addEventListener("click", runBulkDestroy);
   prevPage.addEventListener("click", () => { state.page -= 1; render(); });
   nextPage.addEventListener("click", () => { state.page += 1; render(); });
   textInput.addEventListener("input", updateDraft);
