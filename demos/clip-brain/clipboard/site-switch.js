@@ -3,6 +3,7 @@
 
   const TARGET = "/clipboard/";
   const MAX_WATCH_MS = 15000;
+  const BOUND_ATTRIBUTE = "data-clip-brain-linked";
 
   function hasSignedInSession() {
     const node = document.querySelector("#initial-state");
@@ -33,11 +34,11 @@
     if (!hasSignedInSession()) return false;
     const brand = Array.from(document.querySelectorAll("a[href]")).find(looksLikeBrand);
     if (!brand) return false;
-    if (brand.dataset.clipBrainLinked === "true") return true;
+    if (brand.getAttribute(BOUND_ATTRIBUTE) === "true") return true;
 
     brand.href = TARGET;
     brand.title = "打开 Clip Brain";
-    brand.dataset.clipBrainLinked = "true";
+    brand.setAttribute(BOUND_ATTRIBUTE, "true");
     brand.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
