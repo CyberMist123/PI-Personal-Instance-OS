@@ -79,7 +79,9 @@ def test_voice_js_is_served_as_a_plain_static_script(tmp_path, monkeypatch):
 
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("application/javascript")
-    assert response.headers["cache-control"] == "public, max-age=300"
+    # no-cache, not max-age: a version bump has to reach the browser on the next
+# load. Two fixes already sat invisible behind a stale copy of this script.
+    assert response.headers["cache-control"] == "no-cache"
     assert VOICE_WIDGET_VERSION in response.headers["etag"]
 
     body = response.text

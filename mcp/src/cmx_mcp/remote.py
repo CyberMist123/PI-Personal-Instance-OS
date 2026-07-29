@@ -443,7 +443,12 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             VOICE_WIDGET_JS,
             media_type="application/javascript",
             headers={
-                "Cache-Control": "public, max-age=300",
+                # no-cache, not no-store: the browser and Cloudflare may keep the
+                # copy but must revalidate against the ETag every time, so a
+                # version bump lands immediately. max-age let two separate fixes
+                # sit invisible behind a stale script for hours; a 304 on each
+                # page load is the cheaper trade on a single-user instance.
+                "Cache-Control": "no-cache",
                 "ETag": f'"voice-{VOICE_WIDGET_VERSION}"',
             },
         )
