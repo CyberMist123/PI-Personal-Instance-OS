@@ -50,7 +50,7 @@
   function scheduleOpen() {
     clearTimer("close");
     clearTimer("open");
-    if (!hasSelection) return;
+    if (!hasSelection || busy) return;
     openTimer = window.setTimeout(open, OPEN_DELAY_MS);
   }
 
@@ -58,6 +58,16 @@
     clearTimer("open");
     clearTimer("close");
     closeTimer = window.setTimeout(close, CLOSE_DELAY_MS);
+  }
+
+  function enterMenu() {
+    pointerInside = true;
+    scheduleOpen();
+  }
+
+  function leaveMenu() {
+    pointerInside = false;
+    scheduleClose();
   }
 
   function resetDestroy() {
@@ -92,11 +102,13 @@
 
   function update(options) {
     const nextHasSelection = options.count > 0;
-    if (hasSelection && (!nextHasSelection || options.count !== Number(root.dataset.count))) resetDestroy();
+    const nextSignature = options.selectedSignature || "";
+    if (root.dataset.signature !== nextSignature) resetDestroy();
     hasSelection = nextHasSelection;
     hasFiles = Boolean(options.hasFiles);
     overLimit = Boolean(options.overLimit);
     root.dataset.count = String(options.count);
+    root.dataset.signature = nextSignature;
     root.hidden = !hasSelection;
     selectionText.textContent = `已选 ${options.count} 条`;
     trigger.title = options.bytesLabel;
@@ -124,16 +136,10 @@
     if (!pointerInside && !root.contains(document.activeElement)) scheduleClose();
   }
 
-  trigger.addEventListener("pointerenter", scheduleOpen);
+  root.addEventListener("pointerenter", enterMenu);
+  root.addEventListener("pointerleave", leaveMenu);
   trigger.addEventListener("focus", scheduleOpen);
-  root.addEventListener("pointerenter", () => {
-    pointerInside = true;
-    clearTimer("close");
-  });
-  root.addEventListener("pointerleave", () => {
-    pointerInside = false;
-    scheduleClose();
-  });
+  root.addEventListener("focusin", () => clearTimer("close"));
   root.addEventListener("focusout", (event) => {
     if (!root.contains(event.relatedTarget)) scheduleClose();
   });
