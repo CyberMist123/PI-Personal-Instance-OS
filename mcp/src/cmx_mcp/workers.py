@@ -14,7 +14,7 @@ from .compact import strip_html
 from .config import _bounded_int
 from .mastodon_client import MastodonApiError
 from .server import Runtime
-from .transcribe import transcribe_file
+from .transcribe import model_dir_ready, transcribe_file
 
 TRANSCRIPT_PREFIX = "🎙️ 语音转写：\n"
 BATCH_LIMIT = 30
@@ -58,9 +58,12 @@ def main() -> None:
     args = parser.parse_args()
 
     config = WorkerConfig.load()
-    if not config.model_dir:
+    if not model_dir_ready(config.model_dir):
+        # Refuse at startup rather than per-item: a directory that exists but
+        # holds no model.bin used to start fine and then fail on every status.
         print(
-            "CMX_WHISPER_MODEL_DIR is required: set it to a local faster-whisper model directory",
+            "CMX_WHISPER_MODEL_DIR must point at a local faster-whisper model "
+            f"directory containing model.bin (got: {config.model_dir or '<unset>'})",
             file=sys.stderr,
         )
         raise SystemExit(2)

@@ -7,6 +7,19 @@ from typing import Any
 # Every transcript is produced by a local CTranslate2 model directory. The
 # worker never downloads a model and never sends audio to a cloud provider.
 
+# A CTranslate2 model directory is identified by its weights, not by existing.
+# Checking only is_dir() lets a plausible-but-wrong folder through and turns a
+# configuration mistake into a 502 at transcription time, which reads like an
+# intermittent fault instead of "this was never pointed at a model".
+MODEL_MARKER = "model.bin"
+
+
+def model_dir_ready(model_dir: str | Path | None) -> bool:
+    if not model_dir or not str(model_dir):
+        return False
+    directory = Path(model_dir)
+    return directory.is_dir() and (directory / MODEL_MARKER).is_file()
+
 
 def transcribe_file(
     path: str | Path,
@@ -20,9 +33,9 @@ def transcribe_file(
 ) -> dict[str, Any]:
     """Transcribe one local audio file with faster-whisper, or return an error dict."""
     started = time.monotonic()
-    directory = Path(model_dir) if str(model_dir) else None
-    if directory is None or not directory.is_dir():
+    if not model_dir_ready(model_dir):
         return {"error": "model_missing", "detail": str(model_dir)}
+    directory = Path(model_dir)
 
     try:
         from faster_whisper import WhisperModel

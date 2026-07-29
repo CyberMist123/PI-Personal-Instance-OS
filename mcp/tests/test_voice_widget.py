@@ -213,6 +213,7 @@ def test_transcribe_returns_the_transcript_off_the_event_loop(tmp_path, monkeypa
     paths = _paths(tmp_path)
     model_dir = tmp_path / "model"
     model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "model.bin").write_bytes(b"weights")
     monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
     monkeypatch.setenv("CMX_WHISPER_LANGUAGE", "zh")
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
@@ -258,6 +259,7 @@ def test_transcriber_error_becomes_502_and_oversize_audio_413(tmp_path, monkeypa
     app = _app(tmp_path, monkeypatch)
     model_dir = tmp_path / "model"
     model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "model.bin").write_bytes(b"weights")
     monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
     monkeypatch.setenv("CMX_WORKER_MAX_AUDIO_BYTES", str(1024 * 1024))
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)

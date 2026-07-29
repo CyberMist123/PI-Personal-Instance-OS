@@ -34,7 +34,7 @@ from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
-from .transcribe import transcribe_file
+from .transcribe import model_dir_ready, transcribe_file
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .web_auth import verify_web_bearer
 from .workers import WorkerConfig
@@ -491,9 +491,12 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 status_code=413,
                 headers={"Cache-Control": "no-store"},
             )
-        if not config.model_dir or not Path(config.model_dir).is_dir():
-            # No local model on this host: the widget degrades to a plain voice
-            # status and the worker's reply stays as the fallback.
+        if not model_dir_ready(config.model_dir):
+            # No usable local model on this host: the widget degrades to a plain
+            # voice status and the worker's reply stays as the fallback. This
+            # checks for the weights, not just the folder — CMX_WHISPER_MODEL_DIR
+            # once pointed at an unrelated directory that existed, which turned a
+            # misconfiguration into a 502 that looked like a flaky transcriber.
             return JSONResponse(
                 {"error": "transcriber_unavailable"},
                 status_code=503,
