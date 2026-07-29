@@ -45,3 +45,7 @@ desktop.ini
 *.local.bat
 *.local.ps1
 *.local.sh
+
+# Local scratch: pytest artefacts and diagnosis notes, never for the public repo
+work/
+gpt-diagnose.txt
