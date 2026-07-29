@@ -6,6 +6,7 @@ import vm from "node:vm";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../clipboard");
 const removedIds = [];
+let copied = "";
 globalThis.window = globalThis;
 globalThis.confirm = () => true;
 globalThis.ClipArchive = {
@@ -14,9 +15,15 @@ globalThis.ClipArchive = {
     return clips.reduce((sum, clip) => sum + Number(clip.bytes || 0), 0);
   },
 };
-globalThis.ClipStore = {
+globalThis.ClipClient = {
   async removeMany(ids) {
     removedIds.push(...ids);
+    return ids.length;
+  },
+};
+globalThis.ClipDownloads = {
+  async copyText(value) {
+    copied = value;
   },
 };
 globalThis.ClipView = {
@@ -33,7 +40,7 @@ const textOnly = [
   { id: "a", text: "alpha", files: [], bytes: 5 },
   { id: "b", text: "beta", files: [], bytes: 4 },
 ];
-const withFile = [{ id: "c", text: "", files: [{ name: "x.bin" }], bytes: 8 }];
+const withFile = [{ id: "c", text: "note", files: [{ name: "x.bin" }], bytes: 8 }];
 
 const combined = ClipBulk.combineText(textOnly);
 if (!combined.includes("alpha") || !combined.includes("beta")) {
@@ -51,6 +58,14 @@ try {
 }
 if (!strictLimitPassed) throw new Error("bulk 1 GiB strict limit was not enforced");
 
+// Copy is its own action now, and it must say so when it leaves files behind
+// rather than silently dropping them the way the merged button used to.
+const copyMessage = await ClipBulk.copyAll(withFile);
+if (copied !== "note") throw new Error("copyAll did not hand the text to the clipboard");
+if (!copyMessage.includes("全部下载")) {
+  throw new Error("copyAll did not warn that files were skipped");
+}
+
 const destroyed = await ClipBulk.destroy(textOnly);
 if (destroyed.removed !== 2 || removedIds.join(",") !== "a,b") {
   throw new Error("bulk destroy did not submit the selected ids once");
@@ -58,6 +73,7 @@ if (destroyed.removed !== 2 || removedIds.join(",") !== "a,b") {
 
 console.log(JSON.stringify({
   combined,
+  copyMessage,
   hasFilesTextOnly: ClipBulk.hasFiles(textOnly),
   hasFilesWithFile: ClipBulk.hasFiles(withFile),
   removedIds,
