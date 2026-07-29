@@ -1,6 +1,13 @@
 (function () {
   "use strict";
 
+  // The page reuses the browser's own Mastodon session. The access token is
+  // read once from the instance's own HTML and kept in a closure: it is never
+  // written to localStorage, IndexedDB, a cookie, or a URL.
+  let accessToken = "";
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+
   function isLocalDemo() {
     const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(window.location.hostname);
     return loopback && window.location.port === "4173";
@@ -22,9 +29,16 @@
     }
   }
 
+  function deny() {
+    document.documentElement.dataset.authState = "denied";
+    resolveReady(false);
+    window.location.replace("/auth/sign_in");
+  }
+
   async function authorize() {
     if (isLocalDemo()) {
       document.documentElement.dataset.authState = "ready";
+      resolveReady(true);
       return;
     }
 
@@ -37,18 +51,21 @@
       if (!response.ok) throw new Error(`Mastodon session check returned ${response.status}`);
 
       const token = readAccessToken(await response.text());
-      if (!token) {
-        document.documentElement.dataset.authState = "denied";
-        window.location.replace("/auth/sign_in");
-        return;
-      }
+      if (!token) return deny();
 
+      accessToken = token;
       document.documentElement.dataset.authState = "ready";
+      resolveReady(true);
     } catch (_) {
-      document.documentElement.dataset.authState = "denied";
-      window.location.replace("/auth/sign_in");
+      deny();
     }
   }
+
+  window.ClipAuth = Object.freeze({
+    isLocalDemo,
+    ready: () => ready,
+    token: () => accessToken,
+  });
 
   authorize();
 }());

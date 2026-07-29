@@ -1,159 +1,164 @@
 <!doctype html>
-<html lang="zh-CN" data-auth-state="pending">
+<html lang="zh-CN" data-auth-state="pending" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#f4d928">
-  <title>Clip Brain · 24h Clipboard</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#FFE21F">
+  <title>Clip Brain</title>
   <script src="./auth-gate.js"></script>
+  <link rel="stylesheet" href="./theme.css">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./components.css">
-  <link rel="stylesheet" href="./compact-layout.css">
-  <link rel="stylesheet" href="./selection-menu.css">
+  <link rel="stylesheet" href="./toolbar.css">
 </head>
 <body>
-  <div class="ink ink-a" aria-hidden="true"></div>
-  <div class="ink ink-b" aria-hidden="true"></div>
+  <div class="watermark" aria-hidden="true">
+    <svg viewBox="0 0 200 200">
+      <path d="M104 8c22-6 39 12 44 32 4 17 22 18 34 30 14 14 12 38-4 49-13 9-14 26-24 38-13 16-39 18-53 4-11-11-27-6-42-11C42 145 30 128 33 110c2-14-9-25-8-41C26 50 44 36 62 33c17-3 24-19 42-25z" fill="currentColor"/>
+      <circle cx="181" cy="41" r="8" fill="currentColor"/>
+    </svg>
+  </div>
 
-  <header class="site-header">
-    <div class="brand-lockup">
-      <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 64 64">
-          <path d="M18 17h28v34H18z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
-          <path d="M25 12h14a4 4 0 0 1 4 4v6H21v-6a4 4 0 0 1 4-4z" fill="currentColor"/>
-          <path d="M25 34c3-5 11-5 14 0m-16 8c5 5 13 5 18 0" fill="none" stroke="#15141d" stroke-width="4" stroke-linecap="round"/>
-        </svg>
-      </div>
-      <div>
-        <p class="eyebrow">TEMPORARY DROP ZONE</p>
-        <h1>CLIP BRAIN</h1>
-        <p class="subtitle">文字和文件在 24 小时后自动焚毁。</p>
+  <header class="topbar">
+    <button id="mode-plate" class="plate" type="button" aria-pressed="false"
+            title="临时 / 收藏，点一下翻面">临</button>
+
+    <div id="bulk" class="bulk">
+      <button id="bulk-trigger" class="count-chip" type="button"
+              aria-expanded="false" aria-controls="bulk-panel">0 条</button>
+      <div id="bulk-panel" class="bulk-panel" hidden>
+        <button id="bulk-copy" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          全部复制</button>
+        <button id="bulk-download" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>
+          全部下载</button>
+        <div class="sep"></div>
+        <button id="bulk-destroy" class="danger" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3 4 6 5 6 9a6 6 0 0 1-12 0c0-2 1-3.2 2-4.2 0 2 1 3.2 2 3.2 0-3 1-6 2-8Z"/></svg>
+          全部焚毁</button>
       </div>
     </div>
 
-    <nav class="site-switch" aria-label="网站入口">
-      <a class="wordmark mastodon-wordmark" href="/" aria-label="切换到 Mastodon">
-        <svg viewBox="0 0 56 56" aria-hidden="true">
-          <path d="M10 17c1-8 8-12 18-12s17 4 18 12v20c-1 9-9 13-18 13-8 0-14-2-17-6l1-8c4 4 9 6 15 6 7 0 10-3 10-7v-2c-3 2-6 3-10 3-10 0-17-4-17-13z" fill="currentColor"/>
-          <path d="M18 19v13m0-10c0-4 7-4 7 0v10m0-10c0-4 7-4 7 0v10" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2.6"/>
+        <path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+      <input id="search-input" aria-label="搜索">
+      <span class="kbd">Alt Space</span>
+    </label>
+
+    <a class="lockup" href="/" title="切换到长毛象">
+      <span class="lockup-mark">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <rect x="14" y="15" width="36" height="40" rx="9" fill="none" stroke="currentColor" stroke-width="4.5"/>
+          <path d="M26 9h12a5 5 0 0 1 5 5v6H21v-6a5 5 0 0 1 5-5z" fill="currentColor"/>
+          <path d="M24 33h16M24 43h10" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>
         </svg>
-        <span>mastodon</span>
-      </a>
-      <a class="wordmark clip-wordmark" href="/clipboard/" aria-current="page" aria-label="Clip Brain 当前页面">
-        <svg viewBox="0 0 56 56" aria-hidden="true">
-          <rect x="12" y="10" width="32" height="38" rx="10" fill="none" stroke="currentColor" stroke-width="4"/>
-          <path d="M21 20h14M21 28h14M21 36h9" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
-        </svg>
-        <span>clip brain</span>
-      </a>
-    </nav>
+      </span>
+      <span class="lockup-word">clip brain</span>
+    </a>
   </header>
 
-  <main class="layout">
-    <section class="composer-panel" aria-labelledby="drop-title">
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">NEW DROP</p>
-          <h2 id="drop-title">丢进来，明天自动消失</h2>
-        </div>
-        <span class="ttl-chip">TTL · 24H</span>
+  <main class="shell">
+    <section class="col-compose">
+      <div class="head">
+        <h2>丢进来</h2>
+        <p>24 小时后自动焚毁</p>
       </div>
 
       <form id="clip-form" novalidate>
-        <label class="field-label" for="clip-text">文本</label>
-        <textarea id="clip-text" maxlength="20000" placeholder="粘贴文字、代码、日志……最多 10000 个 Unicode 字符"></textarea>
-        <div class="field-meta">
-          <span id="text-count">0 / 10000</span>
-          <span>保存后点击正文即可复制</span>
+        <textarea id="clip-text" maxlength="20000"
+                  placeholder="粘贴文字、代码、日志……也可以直接拖文件进来"></textarea>
+
+        <div class="pick-row">
+          <button id="pick-files" class="pick" type="button"><span aria-hidden="true">＋</span>选择文件</button>
+          <input id="clip-files" type="file" multiple hidden>
+          <span class="pick-help">最多 20 个<br>合计 &lt; 1 GB</span>
+          <span id="text-count" class="count-text">0 / 10000</span>
         </div>
 
-        <label class="file-drop" for="clip-files">
-          <input id="clip-files" type="file" multiple>
-          <span class="file-drop-title">＋ 选择任意文件</span>
-          <span class="file-drop-help">最多 30 个 · 文件合计不超过 1 GiB</span>
-        </label>
-        <div id="file-summary" class="file-summary">尚未选择文件</div>
-        <ul id="draft-files" class="draft-files" aria-label="待保存文件"></ul>
+        <div id="draft-files" class="chips" aria-label="待上传文件"></div>
 
         <div id="form-error" class="notice error" role="alert" hidden></div>
         <div id="form-status" class="notice success" role="status" hidden></div>
 
-        <button id="save-button" class="save-button" type="submit">
-          <span>保存 24 小时</span>
-          <span aria-hidden="true">↗</span>
+        <button id="save-button" class="btn-primary" type="submit">
+          上传 <span aria-hidden="true">↗</span>
         </button>
       </form>
     </section>
 
-    <section class="clips-panel" aria-labelledby="clips-title">
-      <div class="section-heading clips-heading">
-        <div>
-          <p class="section-kicker">LIVE BOARD</p>
-          <h2 id="clips-title">临时内容</h2>
-        </div>
-        <div class="board-tools">
-          <div id="selection-menu" class="selection-menu" data-open="false" hidden>
-            <button id="selection-trigger" class="selection-trigger" type="button" aria-expanded="false" aria-controls="bulk-actions">
-              <span id="selection-text">已选 0 条</span>
-              <span class="selection-caret" aria-hidden="true">⌄</span>
-            </button>
-            <div id="bulk-actions" class="bulk-actions" hidden>
-              <button id="bulk-action" type="button">
-                <span class="bulk-prefix">全部</span>
-                <span id="bulk-copy-label" class="bulk-mode is-active">复制</span>
-                <span class="bulk-divider">/</span>
-                <span id="bulk-download-label" class="bulk-mode">下载</span>
-              </button>
-              <button id="bulk-destroy" type="button">全部焚毁</button>
-            </div>
-          </div>
-          <span id="clip-total" class="count-chip">0 条</span>
-        </div>
+    <section class="col-feed">
+      <div id="offline-state" class="offline" hidden>
+        <strong>后端未连接。</strong>
+        <span>刷新页面重试；在恢复之前不会保存任何内容。</span>
       </div>
-
-      <div id="empty-state" class="empty-state">
+      <div id="empty-state" class="empty-state" hidden>
         <strong>这里还很干净。</strong>
-        <span>保存第一条文本或文件，它会在 24 小时后自动清理。</span>
+        <span>丢进第一条文本或文件，它会在 24 小时后自动清理。</span>
       </div>
-      <div id="clip-list" class="clip-list" aria-live="polite"></div>
-
-      <nav class="pagination" aria-label="临时内容分页">
-        <button id="prev-page" type="button">上一页</button>
-        <span id="page-label">1 / 1</span>
-        <button id="next-page" type="button">下一页</button>
-      </nav>
+      <div id="clip-list" class="feed" aria-live="polite"></div>
     </section>
   </main>
 
+  <nav id="bottombar" class="bottombar" aria-label="主题与类型">
+    <div id="topic-nav" class="nav-group"></div>
+    <span class="vline"></span>
+    <div id="type-nav" class="nav-group">
+      <button data-type="" class="is-active" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+        全部</button>
+      <button data-type="text" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
+        文本</button>
+      <button data-type="image" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3.5 3.5 2.5-2.5L20 17"/></svg>
+        图片</button>
+    </div>
+    <span class="vline"></span>
+    <button id="theme-toggle" class="theme-row" type="button">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.4"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
+      <span id="theme-label">暗色</span>
+    </button>
+    <div id="quota" class="quota" hidden>
+      <span id="quota-num" class="quota-num"></span>
+      <div class="quota-bar"><div id="quota-fill" class="quota-fill"></div></div>
+      <span class="quota-warn">接近上限</span>
+    </div>
+  </nav>
+
   <template id="clip-template">
-    <article class="clip-card">
-      <header class="clip-card-header">
-        <label class="card-select-label">
-          <input class="clip-select" type="checkbox">
-          <span class="clip-type">DROP</span>
-          <time class="clip-created"></time>
-        </label>
-        <span class="clip-countdown"></span>
-      </header>
-      <button class="clip-text" type="button" title="复制完整文本"></button>
+    <article class="card">
+      <div class="card-head">
+        <button class="tick" type="button" role="checkbox" aria-checked="false">✓</button>
+        <span class="badge"></span>
+        <span class="countdown"></span>
+      </div>
+      <div class="ttl"><span></span></div>
+      <div class="clip-text" title="双击复制"></div>
       <ul class="clip-files"></ul>
-      <footer class="clip-actions">
-        <button class="copy-button" type="button">复制文本</button>
-        <button class="entry-download" type="button">下载本条 ZIP</button>
-        <button class="delete-button" type="button">立即焚毁</button>
-      </footer>
+      <div class="card-foot">
+        <button class="mini entry-download" type="button">下载</button>
+        <button class="mini mini-star" type="button" aria-pressed="false">★ 收藏</button>
+        <button class="mini mini-danger delete-button" type="button">焚毁</button>
+      </div>
     </article>
   </template>
 
-  <script src="./storage.js"></script>
+  <script src="./clipboard-client.js"></script>
+  <script src="./clipboard-client-local.js"></script>
   <script src="./archive.js"></script>
   <script src="./archive-output.js"></script>
   <script src="./downloads.js"></script>
   <script src="./destructive.js"></script>
   <script src="./bulk.js"></script>
-  <script src="./selection-menu.js"></script>
+  <script src="./toolbar.js"></script>
   <script src="./view.js"></script>
+  <script src="./compose.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

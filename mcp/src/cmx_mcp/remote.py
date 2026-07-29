@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import html
 import json
@@ -15,7 +16,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-import httpx
 import uvicorn
 from mcp.server.auth.routes import create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
@@ -29,13 +29,17 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from .clipboard_api import build_clipboard_routes
 from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 from .transcribe import transcribe_file
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
+from .web_auth import verify_web_bearer
 from .workers import WorkerConfig
+
+CLIPBOARD_SWEEP_SECONDS = 600
 
 
 _BOT_ID_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -49,24 +53,11 @@ VERIFY_TIMEOUT_SECONDS = 10.0
 def _verify_mastodon_bearer(base_url: str, token: str) -> bool:
     """Ask the instance itself whether this browser session token is valid.
 
-    The token belongs to the caller's own Mastodon web session, not to CMX. It
-    is used exactly once, in memory, for this one upstream call: it is never
-    written to SQLite, to disk or to any log line, and never returned.
+    Thin alias kept at this name because the voice-widget tests patch it here.
+    The implementation moved to web_auth so Clipboard can reuse it and get the
+    account identity back instead of just a boolean.
     """
-    try:
-        with httpx.Client(
-            base_url=base_url,
-            timeout=VERIFY_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            response = client.get(
-                "/api/v1/accounts/verify_credentials",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            )
-    except httpx.HTTPError:
-        return False
-    return response.status_code == 200
+    return verify_web_bearer(base_url, token)
 
 
 class _NoStoreResponse:
@@ -576,8 +567,18 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             route.app = _NoStoreResponse(route.app)
             break
 
+    # Clipboard is a same-origin browser feature, not an MCP surface: it
+    # authenticates with the caller's own Mastodon web session and keeps its
+    # own SQLite file and object directory.
+    clipboard_routes, clipboard = build_clipboard_routes(
+        runtime=paths.runtime,
+        base_url=instance_settings.public_base_url,
+        allowed_origins={settings.public_origin, *_loopback_origins(settings.port)},
+    )
+
     routes = [
         *oauth_routes,
+        *clipboard_routes,
         Route(
             "/.well-known/oauth-protected-resource/mcp/{bot_id}",
             protected_resource,
@@ -596,14 +597,26 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         *mcp_routes,
     ]
 
+    async def _clipboard_sweep() -> None:
+        while True:
+            try:
+                await run_in_threadpool(clipboard.sweep)
+            except Exception:
+                # A failed sweep must never kill the loop: the next tick retries,
+                # and expired rows stay invisible to readers meanwhile.
+                pass
+            await asyncio.sleep(CLIPBOARD_SWEEP_SECONDS)
+
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         async with AsyncExitStack() as stack:
             for server in servers:
                 await stack.enter_async_context(server.session_manager.run())
+            sweeper = asyncio.create_task(_clipboard_sweep())
             try:
                 yield
             finally:
+                sweeper.cancel()
                 for runtime in runtimes.values():
                     runtime.close()
 
@@ -633,8 +646,11 @@ class RequestSizeLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        # The filebox enforces its own (much larger) size and quota limits.
-        if scope.get("type") == "http" and not str(scope.get("path", "")).startswith("/files"):
+        # The filebox and Clipboard enforce their own (much larger) size and
+        # quota limits, so the blanket 1 MiB cap must not apply to them.
+        path = str(scope.get("path", ""))
+        exempt = path.startswith("/files") or path.startswith("/clipboard-api")
+        if scope.get("type") == "http" and not exempt:
             headers = {key.lower(): value for key, value in scope.get("headers", [])}
             try:
                 length = int(headers.get(b"content-length", b"0") or b"0")

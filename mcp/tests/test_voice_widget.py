@@ -15,10 +15,11 @@ from cmx_mcp.voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 NGINX_CONF = REPOSITORY_ROOT / "nginx" / "default.conf"
-SUB_FILTER = (
-    "sub_filter '</body>' "
-    "'<script src=\"/files/voice.js\" defer></script></body>';"
-)
+# Asserted as fragments rather than one exact directive: the same sub_filter
+# now injects the Clip Brain site-switch script alongside the voice widget, and
+# pinning the whole line makes this test break every time a widget is added.
+SUB_FILTER_START = "sub_filter '</body>' "
+VOICE_SCRIPT_TAG = '<script src="/files/voice.js" defer></script>'
 
 
 def _paths(tmp_path) -> Paths:
@@ -294,7 +295,8 @@ def test_transcriber_error_becomes_502_and_oversize_audio_413(tmp_path, monkeypa
 def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     conf = NGINX_CONF.read_text(encoding="utf-8")
 
-    assert SUB_FILTER in conf
+    assert SUB_FILTER_START in conf
+    assert VOICE_SCRIPT_TAG in conf
     assert 'proxy_set_header Accept-Encoding "";' in conf
     assert "sub_filter_once on;" in conf
     # Exactly one injection point, in exactly one location block.
@@ -304,8 +306,14 @@ def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     # that lets our same-origin script + inline styles run, while staying strict
     # everywhere else.
     assert "proxy_hide_header Content-Security-Policy;" in conf
+    # Take the policy from the Mastodon `location /` block specifically. The
+    # /clipboard/ block ships its own, much stricter CSP earlier in the file,
+    # and matching the first header in the file would silently test that one.
+    mastodon_block = conf[conf.rindex("location / {") :]
     csp_line = next(
-        line for line in conf.splitlines() if "add_header Content-Security-Policy" in line
+        line
+        for line in mastodon_block.splitlines()
+        if "add_header Content-Security-Policy" in line
     )
     assert "script-src" in csp_line and "'unsafe-inline'" in csp_line
     assert "style-src 'self' 'unsafe-inline'" in csp_line

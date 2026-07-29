@@ -1,5 +1,10 @@
 # Clip Brain 后端同步与视觉收口：Codex 施工单
 
+> **2026-07-29 修订。** 按 Owner 决策扩充范围：搜索、手动主题标签、★ 收藏由「禁止」
+> 改为 v1 正式功能；批量动作由两个改为三个；每条文件上限 30 → 20；新增 2 GiB 账户
+> 总配额与亮/暗双主题。范围见 [`V1_SCOPE.md`](./V1_SCOPE.md)，边界见
+> [`PRODUCT_BOUNDARY.md`](./PRODUCT_BOUNDARY.md)。原 `DEMO_SCOPE.md` 已作废删除。
+
 ## 0. 身份、分支与硬边界
 
 你是本轮实现者。目标分支：
@@ -16,8 +21,10 @@ feat/clip-brain-backend
 - 修改 `LOCAL_DOMAIN=pi.invalid`；
 - 把 Clipboard 内容写成 Mastodon status、media attachment 或写入 Mastodon PostgreSQL；
 - 公网分享码、二维码、匿名下载和无需登录的链接；
-- AI、搜索、分类、预览、永久保存和转嘟文；
-- 把 Mastodon Session Token 写入磁盘、SQLite、localStorage、日志或错误正文；
+- AI、语义/向量检索、自动分类、自动打标、自动总结、文件预览和转嘟文；
+- 无上限的永久保存：★ 收藏免于 24h 焚毁，但仍受 2 GiB 账户总配额硬顶约束；
+- 把 Mastodon Session Token 或文件 Blob 写入磁盘、SQLite、localStorage、日志或错误正文
+  （只有主题偏好这一项标量允许存 localStorage）；
 - 继续把功能塞进 `remote.py` 或单一前端巨型文件；
 - 使用斯普拉遁现成角色、Logo、字体、贴图或受版权保护素材。
 
@@ -32,12 +39,17 @@ Clip Brain 是 CMX 的影子网站：
 - Clipboard 位于 `/clipboard/`；
 - 复用当前 Owner 的 Mastodon 登录身份；
 - Clipboard 数据不进入时间线，也不进入联邦；
-- 每条创建后固定 24 小时自动焚毁；
+- 每条创建后默认 24 小时自动焚毁；**★ 收藏的条目清除 `expires_at`，不进焚毁队列**，
+  取消收藏则按当时时间重新起算 24 小时；
 - PC、Mac、手机通过后端读取同一批数据；
 - 单条可含文本、文件或两者；
 - 文本最多 10000 个 Unicode code point；
-- 每条最多 30 个文件；
+- 每条最多 **20** 个文件；
 - 文本 UTF-8 字节与文件字节合计必须严格小于 1 GiB；
+- 每账户总量上限 **2 GiB**（收藏一并计入）；用量 > 1.5 GiB 才显示容量计；达上限拒绝新建，
+  不自动删除旧内容；
+- 主题标签由 Owner **手动**指定；类型筛选（文本/图片）按已有元数据判定；
+- 关键词检索限当前账号、覆盖当前视图内的正文与文件名；
 - 任意文件类型允许上传，但一律下载，不做浏览器内执行或预览。
 
 ## 2. 可以复用的 CMX 基础设施
@@ -61,7 +73,8 @@ Clip Brain 是 CMX 的影子网站：
 ```text
 mcp/src/cmx_mcp/
 ├─ web_auth.py          # Mastodon 网页 Bearer 验证，返回最小 account identity
-├─ clipboard_store.py   # 独立 SQLite 元数据、事务和过期清理
+├─ clipboard_store.py   # 独立 SQLite 元数据、事务、收藏与过期清理
+├─ clipboard_search.py  # FTS 索引维护与关键词查询
 ├─ clipboard_files.py   # staging、原子落盘、安全文件名和删除
 ├─ clipboard_api.py     # Starlette routes、输入校验和响应
 └─ remote.py            # 仅调用 build_clipboard_routes(...) 并加入 lifespan
@@ -84,9 +97,18 @@ clipboard_entries(
   owner_account_id TEXT NOT NULL,
   text TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
+  expires_at INTEGER,              -- NULL = 已收藏，不焚毁
+  favorited_at INTEGER,            -- NULL = 临时
+  topic TEXT,                      -- 手动主题标签，NULL = 未归类
   total_bytes INTEGER NOT NULL,
   file_count INTEGER NOT NULL
+)
+
+-- 关键词检索：正文 + 文件名，contentless FTS5，按 entry_id 关联
+clipboard_fts USING fts5(
+  body,
+  entry_id UNINDEXED,
+  owner_account_id UNINDEXED
 )
 
 clipboard_files(
@@ -102,8 +124,17 @@ clipboard_files(
 
 要求：
 
-- SQLite 开启 WAL、foreign_keys 和 busy_timeout；
+- SQLite 开启 WAL、foreign_keys、busy_timeout 和 `auto_vacuum = INCREMENTAL`；
+  每轮过期清理后执行 `PRAGMA incremental_vacuum`。Clipboard 每天焚毁大量行，
+  不回收就会让库文件单调增长（PicoShare 踩过同一个坑，只能让用户手动 VACUUM）；
 - `expires_at` 只由服务器计算为 `created_at + 86400`，忽略客户端传值；
+- 收藏时把 `expires_at` 置 NULL 并写入 `favorited_at`；取消收藏时按**当时**时间重新计算
+  `expires_at = now + 86400`，不沿用原始 `created_at`（否则旧条目一取消收藏就立刻消失）；
+- 过期清理必须跳过 `expires_at IS NULL` 的行；
+- 账户用量为该 `owner_account_id` 全部条目 `total_bytes` 之和，**含收藏**；
+  新建前校验 `已用 + 本次 <= 2 GiB`，超出即拒绝，不自动删除旧内容；
+- FTS 行随条目创建/删除同步维护；`body` 为正文与全部 `original_name` 的拼接；
+  检索必须同时按 `owner_account_id` 过滤，不能只靠 FTS 匹配；
 - 列表和文件读取都必须绑定 `owner_account_id`；
 - 多文件上传先写 staging；全部校验和写入成功后再原子 rename；任一步失败必须回滚 SQLite 并删除 staging；
 - 删除条目、删除单文件和过期清理必须同时删除元数据与磁盘对象；
@@ -149,26 +180,40 @@ Authorization: Bearer <current Mastodon web token>
 最小路由：
 
 ```text
-GET    /clipboard-api/entries
+GET    /clipboard-api/entries?view=&topic=&type=&q=
 POST   /clipboard-api/entries
+PATCH  /clipboard-api/entries/{entry_id}
 DELETE /clipboard-api/entries/{entry_id}
 DELETE /clipboard-api/entries/{entry_id}/files/{file_id}
 POST   /clipboard-api/entries/delete-many
 GET    /clipboard-api/entries/{entry_id}/files/{file_id}
+GET    /clipboard-api/usage
 ```
 
 `POST /entries` 使用 multipart：
 
 - `text`：可空；
-- `files`：0..30；
+- `files`：0..20；
 - 文本和文件不能同时为空；
-- 总字节严格 `< 1073741824`；
+- 单条总字节严格 `< 1073741824`；
+- 账户累计超过 `2147483648` 时拒绝，错误码与单条超限区分开；
 - 超限在写入正式目录前拒绝；
 - 成功返回完整 entry JSON。
 
+`PATCH /entries/{entry_id}`：
+
+- 仅接受 `favorite`（bool）与 `topic`（string 或 null）两个字段；
+- 只能改当前 account 自己的条目；
+- 收藏语义按 §4；
+- 返回更新后的完整 entry JSON。
+
+`GET /usage`：返回 `{used_bytes, quota_bytes, warn_bytes}`；前端仅在
+`used_bytes > warn_bytes`（1.5 GiB）时渲染容量计。
+
 `GET /entries`：
 
-- 只返回未过期内容；
+- `view=temporary`（默认）只返回未过期且未收藏的；`view=favorite` 只返回已收藏的；
+- `topic` 与 `type` 为可选筛选；`q` 为可选关键词，限当前账号、当前视图；
 - 最新在前；
 - 不分页，第一版最多返回 100 条；超过时返回明确 `truncated: true`，但前端仍采用单一滚动区；
 - 文件响应只含 ID、原始名、类型、大小和下载 URL，不把 Blob 放进 JSON。
@@ -210,20 +255,35 @@ clipboard-client-local.js
 
 行为：
 
-- 没有勾选时显示 `4 条`；悬停约 260ms 或点击后展开两个按钮，作用目标为当前全部 4 条；
+- 没有勾选时显示 `4 条`；悬停约 260ms 或点击后展开，作用目标为当前视图全部 4 条；
 - 勾选后显示 `已选 2 / 4`；批量动作只作用于勾选项；
+- 胶囊在展开态与静止态必须**在亮暗两套下都有明显色差**：静止为描边态，
+  悬停/展开转实心墨黄。不得出现某一套配色下两态同色（暗色版曾踩过这个坑）；
 - 触屏通过点击开合；
 - 鼠标移入浮层不消失；
 - 无 transition、animation 或浏览器原生 confirm；
 - “全部焚毁”仍为按钮内二次确认；
 - 改变勾选集合后立即解除已武装的焚毁确认。
 
-两个动作仍只有：
+**三个动作**（复制与下载不再合并成一个自适应按钮）：
 
 ```text
-全部复制 / 下载
-全部焚毁
+全部复制
+全部下载
+———
+全部焚毁      危险色，与前两项之间有分隔线
 ```
+
+### 8.3 临时 / 收藏门牌
+
+顶栏「临 / ★」是门牌的正反面，**同时只渲染一个字**：
+
+- `临` 为墨黄态，`★` 为青绿态；
+- 悬停变色，**单击翻面**并切换列表视图；
+- 不做分段器、不并排显示两个选项。
+
+站点标识同理：右上角只出现本站那一面，位置对应长毛象论坛标识位，点一下切到对面站点，
+不显示任何「翻面」提示文案。
 
 ### 8.2 滚动而非分页
 
@@ -235,27 +295,43 @@ clipboard-client-local.js
 
 ## 9. 视觉方向：斯普拉遁式，不是赛博朋克
 
-保留原创，不复制任何游戏资产。视觉关键词：
-
-- 喷墨、贴纸、斜切块面、粗黑描边、不规则圆角；
-- 暖白/墨黑作为主体；
-- 主强调色为墨黄；
-- 辅助色只留一种低饱和青绿；
-- 红色只用于危险操作；
-- 移除紫红霓虹、发光、终端黑客感和多色竞争；
-- 允许 CSS 制作少量半调网点、墨滴剪影和胶带形状；
-- 文本与文件卡片先保证可读性，装饰不能盖过内容；
-- 无动画仍是硬约束。
-
-建议颜色预算：
+保留原创，不复制任何游戏资产。已定稿的视觉参考：
 
 ```text
-背景：暖灰黑 / 暖白
-主色：墨黄
-辅色：低饱和青绿
-危险：珊瑚红
-其余均为灰阶
+demos/clip-brain/design/mockup.html
 ```
+
+该稿是设计参考，不是上线代码，不受 300 行停止线约束；其中包含的搜索框与主题标签
+按 §1 已进入 v1 范围。落地时取其配色令牌、描边、圆角、硬阴影与半调语言。
+
+**亮 / 暗两套都要交付**，令牌集中在 `theme.css`：
+
+```text
+             亮色              暗色
+正文         #262336          #F2EFE6   暖白，不用纯白
+背景         #FFFDF6          #1B1826   暖墨，不用纯黑
+描边         #262336          #3E3752
+主色         #FFE21F          #FFE21F   墨黄，两套共用
+辅色         #22C9B6          #3FBFB0   青绿，暗色下降饱和
+危险         #FF5C42          #FF6B54   仅危险操作
+黄不可读时   #B8930A          #FFE21F   图标与强调字的深色替身
+```
+
+硬性要求：
+
+- **同一层级只框一次**：面板不描边，只有卡片与小贴纸描边；卡片内部零边框，用留白与发丝线；
+- 描边 2px，实心硬阴影只留给标识、上传键、批量胶囊三处；
+- 卡片左侧 6px 色条区分状态：临时墨黄、收藏青绿；
+- 倒计时醒目：等宽加粗，配一条 24h 消耗线，剩余不足时转珊瑚红；
+- 卡片不显示创建日期；
+- 滚动条隐形（宽度 0），条目区与文件区仍可滚动；
+- 检索框不显示提示文案，只显示 `Alt Space`；
+- 布局两栏：左投递、右内容流；主题导航横排于底部；标识锁右上角；
+- 不设大块拖放虚线框，改为正文下一行的细「＋ 选择文件」按钮，拖拽落在正文框上；
+- 文件名显示时**去掉后缀**，类型由前置徽章表示；
+- 移除紫红霓虹、发光、终端黑客感和多色竞争；
+- 文本与文件卡片先保证可读性，装饰不能盖过内容；
+- 无 transition、无 animation 仍是硬约束，hover 为瞬时切换。
 
 ## 10. ZIP 与浏览器兼容
 
@@ -280,8 +356,13 @@ clipboard-client-local.js
 - 两个独立客户端以同一 account 登录时看到相同条目；
 - 不同 account 互相不可见；
 - 10000 字允许、10001 字拒绝；
-- 30 文件允许、31 文件拒绝；
-- 总量 `1 GiB - 1 byte` 允许，`1 GiB` 拒绝；
+- **20 文件允许、21 文件拒绝**；
+- 单条总量 `1 GiB - 1 byte` 允许，`1 GiB` 拒绝；
+- **账户累计超过 2 GiB 拒绝新建，且错误码与单条超限可区分**；
+- **收藏条目不被过期清理删除；取消收藏后按当时时间重新计时，不立即消失**；
+- **`view=favorite` 与 `view=temporary` 互斥且都按 account 隔离**；
+- **关键词检索限本账号、覆盖正文与文件名；跨账号关键词命中必须为空**；
+- **`PATCH` 只接受 `favorite` / `topic`，改他人条目返回 404 或 403**；
 - 任意扩展名上传；路径穿越文件名安全；
 - staging 失败完整回滚；
 - 单文件删除不误删正文或其他文件；
@@ -293,8 +374,13 @@ clipboard-client-local.js
 前端契约至少覆盖：
 
 - 无分页 DOM；
-- 总数胶囊就是批量入口；
+- 总数胶囊就是批量入口，且展开后**恰好三个**动作按钮；
 - 无勾选时目标为全部，勾选后只作用于选择；
+- **临 / ★ 门牌同时只渲染一个字，不存在并排分段器**；
+- **站点标识只渲染一面，页面不同时出现两个站名**；
+- **亮暗两套令牌齐备，且批量胶囊静止态与展开态在两套下都不同色**；
+- **检索框无提示文案，只有快捷键文本**；
+- **卡片不渲染创建日期**；
 - 条目区和条目文件区都有滚动边界；
 - 无 `window.confirm`、transition、animation；
 - 正式模式不使用 IndexedDB 作为事实源；

@@ -1,0 +1,71 @@
+/* Light and dark are both first-class. Everything downstream reads tokens
+   only, so a component never needs to know which theme is active. */
+
+:root {
+  --text: #262336;
+  --text-2: #5B5570;
+  --text-3: #918BA6;
+  --text-4: #C6C0D4;
+
+  --bg: #FFFDF6;
+  --surface: #FFFFFF;
+  --surface-2: #FFF8E3;
+  --input: #FFFDF6;
+
+  --line: #262336;
+  --line-soft: rgba(38, 35, 54, .10);
+
+  --wash-y: #FFF6C2;
+  --wash-t: #D9F7F2;
+
+  --kind-bg: #262336;
+  --kind-fg: #FFE21F;
+
+  --accent-ink: #B8930A;
+  --pop: 3px 3px 0 #262336;
+  --soft: 0 3px 0 rgba(38, 35, 54, .09);
+  --glow-y: .42;
+  --glow-t: .20;
+  --mark-op: .42;
+
+  --yellow: #FFE21F;
+  --yellow-2: #FFD100;
+  --teal: #22C9B6;
+  --coral: #FF5C42;
+  --on-accent: #262336;
+
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SF Mono", "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+}
+
+/* Warm ink, not pure black; off-white text, not pure white; the teal drops in
+   saturation. Together those are what keep dark mode out of neon territory. */
+:root[data-theme="dark"] {
+  --text: #F2EFE6;
+  --text-2: #BDB6C9;
+  --text-3: #8F88A0;
+  --text-4: #645D76;
+
+  --bg: #1B1826;
+  --surface: #252132;
+  --surface-2: #2E2839;
+  --input: #201C2C;
+
+  --line: #3E3752;
+  --line-soft: rgba(255, 255, 255, .09);
+
+  --wash-y: rgba(255, 226, 31, .13);
+  --wash-t: rgba(63, 191, 176, .15);
+
+  --kind-bg: #FFE21F;
+  --kind-fg: #1B1826;
+
+  --accent-ink: #FFE21F;
+  --teal: #3FBFB0;
+  --coral: #FF6B54;
+  --pop: 3px 3px 0 #100E18;
+  --soft: 0 3px 0 rgba(0, 0, 0, .34);
+  --glow-y: .10;
+  --glow-t: .07;
+  --mark-op: .10;
+}

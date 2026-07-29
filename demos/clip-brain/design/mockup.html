@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Brain · 视觉方案 1 修订版 5</title>
+<style>
+/* ============================================================
+   Clip Brain 视觉方案 1「轻框明快」· 修订 5
+   本轮按 Owner 反馈：
+     · 定为两栏（左投递 / 右内容流），导航移到底部横排，
+       顶部让出位置：clip brain 标识回到右上角，对应长毛象论坛标识位。
+     · 「4 条」在亮暗两套下都真变色（默认描边态 → 悬停/展开转实心黄），
+       鼠标移上即自动弹出，不必点击。
+     · 「临 / ★」改成门牌正反面：只出现一个字，悬停变色，单击翻面。
+     · 搜索框去掉「搜索或输入网址」文案，只留 Alt Space。
+     · 卡片去掉创建日期，只留倒计时。
+   硬约束不变：无 transition、无 animation，hover 瞬时切换。
+   全部为原创 CSS + 内联 SVG，无外部字体/图片/网络请求。
+   注：隐藏 checkbox + :has() 仅为让设计稿可真实点击；
+       上线由 JS 控制（含 §8.1 要求的 260ms 悬停延时），不依赖 :has()。
+   ============================================================ */
+
+:root{
+  --text:      #262336;
+  --text-2:    #5B5570;
+  --text-3:    #918BA6;
+  --text-4:    #C6C0D4;
+
+  --bg:        #FFFDF6;
+  --surface:   #FFFFFF;
+  --surface-2: #FFF8E3;
+  --input:     #FFFDF6;
+
+  --line:      #262336;
+  --line-soft: rgba(38,35,54,.10);
+
+  --wash-y:    #FFF6C2;
+  --wash-t:    #D9F7F2;
+
+  --kind-bg:   #262336;
+  --kind-fg:   #FFE21F;
+
+  --accent-ink:#B8930A;
+  --pop:       3px 3px 0 #262336;
+  --soft:      0 3px 0 rgba(38,35,54,.09);
+  --glow-y:    .42;
+  --glow-t:    .20;
+  --mark-op:   .42;
+
+  --yellow:    #FFE21F;
+  --yellow-2:  #FFD100;
+  --teal:      #22C9B6;
+  --coral:     #FF5C42;
+  --on-accent: #262336;          /* 黄/青底上的字色，两套通用 */
+
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SF Mono", "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+}
+
+body:has(#theme-dark:checked){
+  --text:      #F2EFE6;
+  --text-2:    #BDB6C9;
+  --text-3:    #8F88A0;
+  --text-4:    #645D76;
+
+  --bg:        #1B1826;
+  --surface:   #252132;
+  --surface-2: #2E2839;
+  --input:     #201C2C;
+
+  --line:      #3E3752;
+  --line-soft: rgba(255,255,255,.09);
+
+  --wash-y:    rgba(255,226,31,.13);
+  --wash-t:    rgba(63,191,176,.15);
+
+  --kind-bg:   #FFE21F;
+  --kind-fg:   #1B1826;
+
+  --accent-ink:#FFE21F;
+  --teal:      #3FBFB0;
+  --coral:     #FF6B54;
+  --pop:       3px 3px 0 #100E18;
+  --soft:      0 3px 0 rgba(0,0,0,.34);
+  --glow-y:    .10;
+  --glow-t:    .07;
+  --mark-op:   .10;
+}
+
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; }
+
+body{
+  font-family:var(--sans); font-size:14px; line-height:1.6; color:var(--text);
+  background:
+    radial-gradient(720px 500px at 4% -10%, rgba(255,226,31,var(--glow-y)), transparent 60%),
+    radial-gradient(660px 520px at 103% 104%, rgba(34,201,182,var(--glow-t)), transparent 58%),
+    var(--bg);
+  background-attachment:fixed;
+  -webkit-font-smoothing:antialiased;
+}
+
+*{ scrollbar-width:none; -ms-overflow-style:none; }
+::-webkit-scrollbar{ width:0; height:0; display:none; }
+
+.watermark{
+  position:fixed; top:-150px; left:-170px; width:600px; height:600px;
+  z-index:0; pointer-events:none; color:var(--yellow); opacity:var(--mark-op);
+}
+.watermark svg{ width:100%; height:100%; display:block; }
+
+/* ================= 顶栏：控件靠左成组，标识锁右上角 ================= */
+.topbar{
+  position:relative; z-index:3;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  max-width:1420px; margin:0 auto; padding:22px 32px 16px;
+}
+
+/* 临 / ★ 门牌：只出现一个字，悬停变色，单击翻面 */
+.plate{
+  flex:none; width:42px; height:42px; display:grid; place-items:center;
+  border:2px solid var(--line); border-radius:13px; box-shadow:var(--pop);
+  background:var(--input); color:var(--text);
+  font-size:19px; font-weight:900; cursor:pointer; user-select:none;
+}
+.plate:hover{ background:var(--yellow); border-color:var(--yellow); color:var(--on-accent); }
+.plate .fav{ display:none; }
+body:has(#mode-fav:checked) .plate{ background:var(--teal); border-color:var(--teal); color:var(--on-accent); }
+body:has(#mode-fav:checked) .plate:hover{ background:var(--wash-t); border-color:var(--teal); color:var(--text); }
+body:has(#mode-fav:checked) .plate .tmp{ display:none; }
+body:has(#mode-fav:checked) .plate .fav{ display:block; }
+
+/* 唯一批量入口：默认描边态 → 悬停/展开转实心黄（亮暗都真变色） */
+.bulk{ position:relative; flex:none; }
+.count-chip{
+  display:flex; align-items:center; height:42px; padding:0 17px;
+  border:2px solid var(--line); border-radius:13px; box-shadow:var(--pop);
+  background:var(--input); color:var(--text);
+  font-family:inherit; font-size:13.5px; font-weight:900; cursor:pointer; user-select:none;
+}
+.bulk:hover .count-chip,
+body:has(#bulk-open:checked) .count-chip{
+  background:var(--yellow); border-color:var(--yellow); color:var(--on-accent);
+}
+.bulk-panel{
+  display:none; position:absolute; left:0; top:calc(100% + 7px); z-index:9;
+  padding:7px; gap:3px; flex-direction:column; min-width:178px;
+  background:var(--surface); border:2px solid var(--line); border-radius:14px; box-shadow:var(--pop);
+}
+.bulk:hover .bulk-panel,
+body:has(#bulk-open:checked) .bulk-panel{ display:flex; }
+.bulk-panel button{
+  display:flex; align-items:center; gap:10px; width:100%; padding:9px 11px;
+  border:0; border-radius:9px; background:none; color:var(--text);
+  font-family:inherit; font-size:13px; font-weight:800; cursor:pointer; text-align:left;
+}
+.bulk-panel button svg{ width:17px; height:17px; flex:none; color:var(--text-3); }
+.bulk-panel button:hover{ background:var(--wash-y); }
+.bulk-panel button:hover svg{ color:var(--accent-ink); }
+.bulk-panel .sep{ height:1px; margin:3px 6px; background:var(--line-soft); }
+.bulk-panel .danger{ color:var(--coral); }
+.bulk-panel .danger svg{ color:var(--coral); }
+.bulk-panel .danger:hover{ background:var(--coral); color:#fff; }
+.bulk-panel .danger:hover svg{ color:#fff; }
+
+/* 搜索：无文案，只留 Alt Space */
+.search{
+  flex:1 1 240px; display:flex; align-items:center; gap:10px; min-width:0; height:42px;
+  padding:0 17px; border:2px solid var(--line); border-radius:13px; background:var(--input);
+}
+.search:focus-within{ background:var(--surface); box-shadow:var(--soft); }
+.search svg{ width:16px; height:16px; flex:none; color:var(--text-3); }
+.search input{ flex:1; min-width:0; border:0; background:none; font:inherit; font-size:13.5px; font-weight:700; color:var(--text); }
+.search input:focus{ outline:none; }
+.kbd{ flex:none; font-size:11.5px; font-weight:800; color:var(--text-4); letter-spacing:.4px; }
+
+/* 标识：右上角，对应长毛象论坛标识位 */
+.lockup{ flex:none; margin-left:auto; display:flex; align-items:center; gap:11px; text-decoration:none; color:var(--text); }
+.lockup-mark{
+  width:42px; height:42px; flex:none; display:grid; place-items:center;
+  background:var(--yellow); border-radius:12px; color:#262336;
+}
+.lockup:hover .lockup-mark{ background:var(--yellow-2); }
+.lockup-mark svg{ width:24px; height:24px; }
+.lockup-word{ font-size:22px; font-weight:800; letter-spacing:-.5px; line-height:1; }
+
+/* ================= 两栏 ================= */
+.shell{
+  position:relative; z-index:1;
+  display:grid; grid-template-columns:330px minmax(0,1fr);
+  gap:26px; max-width:1420px; margin:0 auto; padding:0 32px 26px;
+  align-items:start;
+}
+
+.head{ padding:0 4px 14px; }
+.head h2{
+  margin:0; display:inline; font-size:17px; font-weight:900; letter-spacing:-.2px;
+  box-shadow:inset 0 -.42em 0 var(--yellow);
+}
+body:has(#theme-dark:checked) .head h2{ box-shadow:inset 0 -.42em 0 rgba(255,226,31,.30); }
+.head p{ margin:9px 0 0; font-size:11.5px; font-weight:700; color:var(--text-3); }
+
+/* ---------- 左栏 ---------- */
+textarea.compose-text{
+  width:100%; min-height:172px; resize:vertical; padding:13px 14px;
+  font:inherit; font-size:13.5px; line-height:1.65; color:var(--text);
+  background:var(--input); border:2px solid var(--line); border-radius:14px;
+}
+textarea.compose-text:focus{ outline:none; background:var(--surface); box-shadow:var(--soft); }
+textarea.compose-text::placeholder{ color:var(--text-4); }
+
+.pick-row{ display:flex; align-items:center; gap:11px; margin-top:10px; }
+.pick{
+  display:flex; align-items:center; gap:7px; padding:7px 13px;
+  background:var(--surface-2); color:var(--text); cursor:pointer;
+  border:2px solid var(--line); border-radius:11px;
+  font-family:inherit; font-size:12.5px; font-weight:900;
+}
+.pick:hover{ background:var(--wash-y); }
+.pick-help{ font-size:11px; font-weight:700; color:var(--text-3); line-height:1.35; }
+.count-text{ margin-left:auto; font-size:11.5px; font-weight:700; color:var(--text-3); white-space:nowrap; }
+
+.chips{ display:grid; gap:9px; margin-top:14px; }
+.chip{
+  display:flex; align-items:center; gap:10px; padding:8px 12px;
+  background:var(--surface-2); border:2px solid var(--line); border-radius:14px; box-shadow:var(--soft);
+}
+.chip:hover{ background:var(--wash-y); }
+.kind{
+  flex:none; min-width:44px; text-align:center; padding:3px 9px; border-radius:8px;
+  background:var(--kind-bg); color:var(--kind-fg);
+  font-size:11px; font-weight:900; letter-spacing:.6px;
+}
+.chip .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; font-weight:800; }
+.chip .size{ color:var(--text-3); font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; }
+.chip-x{ border:0; background:none; padding:0 1px; font-size:16px; font-weight:900; line-height:1; color:var(--text-2); cursor:pointer; }
+.chip-x:hover{ color:var(--coral); }
+
+.btn-primary{
+  width:100%; margin-top:16px; padding:13px;
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  background:var(--yellow); color:#262336;
+  border:2px solid var(--line); border-radius:14px; box-shadow:var(--pop);
+  font-family:inherit; font-size:16px; font-weight:900; cursor:pointer;
+}
+.btn-primary:hover{ background:var(--yellow-2); }
+
+/* ---------- 右栏内容流 ---------- */
+.feed{ max-height:min(78vh,900px); overflow-y:auto; display:grid; gap:13px; padding:2px 4px 4px 2px; }
+
+.card{
+  background:var(--surface); border:2px solid var(--line); border-left:6px solid var(--yellow);
+  border-radius:16px; box-shadow:var(--soft);
+}
+.card-fav{ background:var(--wash-t); border-left-color:var(--teal); }
+
+.card-head{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:12px 15px 0; }
+.tick{
+  width:18px; height:18px; flex:none; padding:0; border:2px solid var(--line); border-radius:6px;
+  background:var(--input); cursor:pointer; display:grid; place-items:center;
+  font-size:11px; font-weight:900; line-height:1; color:transparent;
+}
+.tick:hover{ background:var(--wash-y); }
+.tick[aria-checked="true"]{ background:var(--yellow); border-color:var(--yellow); color:var(--on-accent); }
+
+.badge{ font-size:12px; font-weight:900; color:var(--text-3); }
+.badge-fav{ color:var(--teal); }
+
+.countdown{
+  margin-left:auto; font-family:var(--mono); font-size:15.5px; font-weight:800;
+  letter-spacing:.4px; color:var(--accent-ink); font-variant-numeric:tabular-nums;
+}
+.countdown-off{ font-size:12px; font-weight:800; color:var(--teal); letter-spacing:.6px; }
+.ttl{ height:3px; margin:9px 15px 0; border-radius:999px; background:var(--line-soft); overflow:hidden; }
+.ttl span{ display:block; height:100%; border-radius:999px; background:var(--yellow); }
+.ttl-low span{ background:var(--coral); }
+
+.code{
+  margin:11px 15px 0; padding:12px 14px; max-height:240px; overflow:auto; cursor:copy;
+  background:var(--surface-2); border-radius:12px;
+  font-family:var(--mono); font-size:12.2px; line-height:1.76; color:var(--text-2);
+}
+.code:hover{ background:var(--wash-y); }
+.code .ln{ display:inline-block; width:2.2em; color:var(--text-4); user-select:none; }
+.code .hl{ color:var(--text); font-weight:800; }
+
+.card-text{ margin:11px 15px 0; padding:9px 11px; border-radius:11px; cursor:copy; font-size:13.5px; line-height:1.7; }
+.card-text:hover{ background:var(--wash-y); }
+
+.filelist{ list-style:none; margin:9px 15px 0; padding:0; max-height:168px; overflow-y:auto; }
+.filerow{ display:flex; align-items:center; gap:10px; padding:8px 7px; cursor:pointer; border-bottom:1px solid var(--line-soft); }
+.filerow:hover{ background:var(--wash-y); border-radius:9px; }
+.filerow .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:800; }
+.filerow .size{ color:var(--text-3); font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; }
+.more{ border:0; background:none; color:var(--text-2); padding:9px 7px; font-family:inherit; font-size:12px; font-weight:900; cursor:pointer; }
+.more:hover{ color:var(--text); }
+
+.card-foot{ display:flex; align-items:center; gap:3px; flex-wrap:wrap; padding:9px 11px 11px; }
+.mini{
+  border:0; background:none; color:var(--text-2); border-radius:9px;
+  font-family:inherit; font-size:12px; font-weight:800; cursor:pointer; padding:7px 11px;
+}
+.mini:hover{ background:var(--wash-y); color:var(--text); }
+.mini-star:hover{ background:var(--teal); color:var(--on-accent); }
+.mini-star[aria-pressed="true"]{ color:var(--teal); }
+.mini-danger{ margin-left:auto; color:var(--text-3); }
+.mini-danger:hover{ background:var(--coral); color:#fff; }
+
+/* ================= 底部导航：论坛式，横排 ================= */
+.bottombar{
+  position:relative; z-index:1;
+  display:flex; align-items:center; gap:3px; flex-wrap:wrap;
+  max-width:1420px; margin:0 auto; padding:14px 28px 34px;
+  border-top:1px solid var(--line-soft);
+}
+.bottombar a, .bottombar label{
+  display:flex; align-items:center; gap:9px; padding:9px 13px; border-radius:11px;
+  text-decoration:none; color:var(--text-2); font-size:13.5px; font-weight:700;
+  cursor:pointer; user-select:none;
+}
+.bottombar svg{ width:19px; height:19px; flex:none; color:var(--text-3); }
+.bottombar a:hover, .bottombar label:hover{ background:var(--wash-y); color:var(--text); }
+.bottombar a:hover svg, .bottombar label:hover svg{ color:var(--accent-ink); }
+.bottombar a[aria-current]{ background:var(--wash-y); color:var(--text); font-weight:900; }
+.bottombar a[aria-current] svg{ color:var(--accent-ink); }
+.bottombar .n{ font-size:11px; font-weight:800; color:var(--text-4); font-variant-numeric:tabular-nums; }
+.vline{ width:1px; height:22px; margin:0 9px; background:var(--line-soft); }
+
+.theme-row .on, .theme-row .moon{ display:none; }
+body:has(#theme-dark:checked) .theme-row .on{ display:inline; }
+body:has(#theme-dark:checked) .theme-row .off{ display:none; }
+body:has(#theme-dark:checked) .theme-row .moon{ display:block; }
+body:has(#theme-dark:checked) .theme-row .sun{ display:none; }
+
+.quota{ display:none; margin-left:auto; align-items:center; gap:10px; padding:0 6px; }
+.quota.is-visible{ display:flex; }
+.quota-num{ font-size:11.5px; font-weight:800; color:var(--text-3); font-variant-numeric:tabular-nums; }
+.quota-warn{ font-size:11.5px; font-weight:800; color:var(--coral); }
+.quota-bar{ width:104px; height:7px; border:2px solid var(--line); border-radius:999px; background:var(--input); overflow:hidden; }
+.quota-fill{ height:100%; width:84%; background:var(--coral); }
+
+/* ---------- 说明 ---------- */
+.note-wrap{ max-width:1420px; margin:0 auto; padding:0 32px 56px; display:grid; gap:11px; }
+.note{
+  padding:15px 18px; border-radius:14px; font-size:12px; line-height:1.75; color:var(--text-2);
+  background:var(--surface); border:1px solid var(--line-soft);
+}
+.note-warn{ background:rgba(255,92,66,.09); border-color:rgba(255,92,66,.26); }
+.note b{ font-weight:900; color:var(--text); }
+.note code{ font-family:var(--mono); font-size:11.5px; background:var(--surface-2); padding:1px 5px; border-radius:4px; }
+
+@media (max-width:900px){
+  .shell{ grid-template-columns:minmax(0,1fr); padding:0 16px 20px; gap:22px; }
+  .topbar{ padding:16px 16px 14px; }
+  .lockup{ order:-1; margin-left:0; width:100%; }
+  .search{ flex:1 1 140px; }
+  .bottombar{ padding:12px 12px 30px; overflow-x:auto; flex-wrap:nowrap; }
+  .quota{ margin-left:12px; }
+  .note-wrap{ padding:0 16px 40px; }
+}
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="theme-dark" hidden>
+<input type="checkbox" id="bulk-open" hidden>
+<input type="checkbox" id="mode-fav" hidden>
+
+<div class="watermark" aria-hidden="true">
+  <svg viewBox="0 0 200 200">
+    <path d="M104 8c22-6 39 12 44 32 4 17 22 18 34 30 14 14 12 38-4 49-13 9-14 26-24 38-13 16-39 18-53 4-11-11-27-6-42-11C42 145 30 128 33 110c2-14-9-25-8-41C26 50 44 36 62 33c17-3 24-19 42-25z" fill="currentColor"/>
+    <circle cx="181" cy="41" r="8" fill="currentColor"/>
+    <circle cx="166" cy="17" r="4" fill="currentColor"/>
+  </svg>
+</div>
+
+<!-- ============ 顶栏 ============ -->
+<div class="topbar">
+
+  <!-- 门牌正反面：只出现一个字，悬停变色，单击翻面 -->
+  <label class="plate" for="mode-fav" title="临时 / 收藏，点一下翻面">
+    <span class="tmp">临</span><span class="fav">★</span>
+  </label>
+
+  <div class="bulk">
+    <label class="count-chip" for="bulk-open">4 条</label>
+    <div class="bulk-panel">
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+        全部复制</button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>
+        全部下载</button>
+      <div class="sep"></div>
+      <button class="danger">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3 4 6 5 6 9a6 6 0 0 1-12 0c0-2 1-3.2 2-4.2 0 2 1 3.2 2 3.2 0-3 1-6 2-8Z"/></svg>
+        全部焚毁</button>
+    </div>
+  </div>
+
+  <label class="search">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2.6"/>
+      <path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+    </svg>
+    <input aria-label="搜索">
+    <span class="kbd">Alt Space</span>
+  </label>
+
+  <a class="lockup" href="/" title="切换到长毛象">
+    <span class="lockup-mark">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="14" y="15" width="36" height="40" rx="9" fill="none" stroke="currentColor" stroke-width="4.5"/>
+        <path d="M26 9h12a5 5 0 0 1 5 5v6H21v-6a5 5 0 0 1 5-5z" fill="currentColor"/>
+        <path d="M24 33h16M24 43h10" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <span class="lockup-word">clip brain</span>
+  </a>
+</div>
+
+<div class="shell">
+
+  <!-- ============ 左栏 ============ -->
+  <section class="col-compose">
+    <div class="head">
+      <h2>丢进来</h2>
+      <p>24 小时后自动焚毁</p>
+    </div>
+
+    <textarea class="compose-text" placeholder="粘贴文字、代码、日志……也可以直接拖文件进来"></textarea>
+
+    <div class="pick-row">
+      <button class="pick"><span aria-hidden="true">＋</span>选择文件</button>
+      <span class="pick-help">最多 20 个<br>合计 &lt; 1 GB</span>
+      <span class="count-text">0 / 10000</span>
+    </div>
+
+    <div class="chips">
+      <span class="chip"><span class="kind">PNG</span><span class="name">截图-01</span><span class="size">2.1 MB</span><button class="chip-x" aria-label="移除">×</button></span>
+      <span class="chip"><span class="kind">PDF</span><span class="name">合同终稿</span><span class="size">840 KB</span><button class="chip-x" aria-label="移除">×</button></span>
+      <span class="chip"><span class="kind">ZIP</span><span class="name">素材包</span><span class="size">96 MB</span><button class="chip-x" aria-label="移除">×</button></span>
+    </div>
+
+    <button class="btn-primary">上传 <span aria-hidden="true">↗</span></button>
+  </section>
+
+  <!-- ============ 右栏 ============ -->
+  <section class="col-feed">
+    <div class="feed">
+
+      <article class="card">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="false" tabindex="0">✓</span>
+          <span class="badge">临时</span>
+          <span class="countdown">21:47:11</span>
+        </div>
+        <div class="ttl"><span style="width:90.6%"></span></div>
+        <pre class="code"><span class="ln">1</span><span class="hl">溏心蛋 SOP</span>
+<span class="ln">2</span>1. 大锅装水，开中大火煮沸。
+<span class="ln">3</span>2. 水滚的同时，从冰箱取出冷藏的鸡蛋十颗。
+<span class="ln">4</span>3. 水沸腾后，放入鸡蛋并开始计时 6 分钟。
+<span class="ln">5</span>   ※ 放入鸡蛋后水温会降低，保持火力继续煮。
+<span class="ln">6</span>4. 先备好降温用的冷开水，另取一锅装冷开水。
+<span class="ln">7</span>5. 6 分钟到时关火，盖上锅盖，用余温焖熟。
+<span class="ln">8</span>6. 8 分钟到时捞起鸡蛋，放入步骤 4 的冰开水冷却。
+<span class="ln">9</span>
+<span class="ln">10</span><span class="hl">保存期限</span>
+<span class="ln">11</span>每次从冰箱取出后只取要吃的分量，可保存十天。</pre>
+        <div class="card-foot">
+          <button class="mini">下载</button>
+          <button class="mini mini-star" aria-pressed="false">★ 收藏</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="false" tabindex="0">✓</span>
+          <span class="badge">临时</span>
+          <span class="countdown">01:12:04</span>
+        </div>
+        <div class="ttl ttl-low"><span style="width:5%"></span></div>
+        <div class="card-text">周五发布用的全部素材，Mac 上传、PC 取。</div>
+        <ul class="filelist">
+          <li class="filerow"><span class="kind">PNG</span><span class="name">主视觉-横版-4k</span><span class="size">7.2 MB</span></li>
+          <li class="filerow"><span class="kind">MP4</span><span class="name">片头-30s-h264</span><span class="size">148 MB</span></li>
+          <li class="filerow"><span class="kind">AI</span><span class="name">logo-源文件</span><span class="size">23 MB</span></li>
+          <li class="filerow"><span class="kind">TTF</span><span class="name">标题字重-900</span><span class="size">4.8 MB</span></li>
+          <li><button class="more">还有 16 个文件 ↓</button></li>
+        </ul>
+        <div class="card-foot">
+          <button class="mini">下载本条 ZIP</button>
+          <button class="mini mini-star" aria-pressed="false">★ 收藏</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+      <article class="card card-fav">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="false" tabindex="0">✓</span>
+          <span class="badge badge-fav">★ 收藏</span>
+          <span class="countdown countdown-off">不焚毁</span>
+        </div>
+        <div class="card-text">常用命令：重启 cmx-mcp-http、看 nginx 日志、跑 smoke。收藏后不进 24 小时队列。</div>
+        <ul class="filelist">
+          <li class="filerow"><span class="kind">SH</span><span class="name">常用命令</span><span class="size">1.4 KB</span></li>
+        </ul>
+        <div class="card-foot">
+          <button class="mini">下载</button>
+          <button class="mini mini-star" aria-pressed="true">★ 已收藏</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+</div>
+
+<!-- ============ 底部论坛式导航 ============ -->
+<nav class="bottombar" aria-label="主题与类型">
+  <a href="#" aria-current="page">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+    全部<span class="n">128</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v15H6a2 2 0 0 0-2 2Z"/><path d="M4 20a2 2 0 0 1 2-2h13"/></svg>
+    学习<span class="n">31</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3 4 6 5 6 9a6 6 0 0 1-12 0c0-2 1-3.2 2-4.2 0 2 1 3.2 2 3.2 0-3 1-6 2-8Z"/></svg>
+    烧菜<span class="n">12</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2.6 2.6a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
+    网址<span class="n">44</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 6-5 6 5 6"/><path d="m16 6 5 6-5 6"/></svg>
+    AI 编程<span class="n">27</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 1 4 10.4V16H8v-2.6A6 6 0 0 1 12 3Z"/></svg>
+    灵感<span class="n">14</span></a>
+
+  <span class="vline"></span>
+
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
+    文本<span class="n">72</span></a>
+  <a href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3.5 3.5 2.5-2.5L20 17"/></svg>
+    图片<span class="n">56</span></a>
+
+  <span class="vline"></span>
+
+  <label class="theme-row" for="theme-dark">
+    <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.4"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+    <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
+    <span class="off">暗色</span><span class="on">亮色</span>
+  </label>
+
+  <div class="quota is-visible">
+    <span class="quota-num">1.68 GB / 2 GB</span>
+    <div class="quota-bar"><div class="quota-fill"></div></div>
+    <span class="quota-warn">接近上限</span>
+  </div>
+</nav>
+
+<div class="note-wrap">
+  <p class="note note-warn">
+    <b>⚠ 本稿已大幅超出 <code>CODEX_BACKEND_HANDOFF.md</code> 的施工范围，落地前必须先做一次文档同步。</b>
+    与现有文档冲突项：搜索、主题分类、★ 收藏（＝永久保存）三项被
+    <code>HANDOFF §0</code>、<code>DEMO_SCOPE「明确不做」</code>、<code>PRODUCT_BOUNDARY「明确不是」</code>、Issue #24、Issue #27 同时禁止；
+    批量三个动作与 <code>HANDOFF §8.1</code>、<code>DEMO_SCOPE #14</code>「只允许两个动作」冲突；
+    每条 20 个文件与四处文档记载的 30 个冲突；2 GB 总配额与亮/暗双主题为全新概念，任何文档均未记载。
+  </p>
+
+  <p class="note">
+    <b>修订 5。</b>
+    ① <b>定为两栏</b>（左投递 / 右内容流），导航移到底部横排，顶部因此让出位置：
+    <b>clip brain 标识回到右上角</b>，对应长毛象论坛标识位；点一下切到长毛象。
+    ② <b>「4 条」在亮暗两套下都真变色</b>——上一版暗色下默认就是黄底，点了等于没变；现改为默认描边态，
+    <b>鼠标移上即变实心黄并自动弹出</b>面板，无需点击（上线补 §8.1 要求的 260ms 悬停延时）。
+    ③ <b>「临 / ★」改成门牌正反面</b>：只出现一个字，悬停变色，单击翻面；临＝黄，★＝青。
+    ④ 搜索框<b>去掉全部文案</b>，只留放大镜与 <code>Alt Space</code>。
+    ⑤ 卡片<b>去掉创建日期</b>，只留倒计时与 24h 消耗线。
+    ⑥ 批量面板确定为<b>三个动作</b>：全部复制 / 全部下载 ／分隔线／ 全部焚毁。
+    其余沿用：滚动条隐形、双击复制无提示、无拖放大框、卡片左侧色条、容量计 &gt; 1.5 GB 才出现。
+    下载／打包沿用现有 <code>archive.js</code> / <code>archive-output.js</code> / <code>bulk.js</code> / <code>downloads.js</code>。
+    依旧<b>无 transition、无 animation</b>。
+  </p>
+</div>
+
+</body>
+</html>

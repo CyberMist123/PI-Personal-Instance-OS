@@ -19,16 +19,20 @@
     if (!copied) throw new Error("浏览器拒绝复制。");
   }
 
-  function downloadFile(file) {
-    if (!file || !file.blob) throw new Error("文件不存在或已经被删除。");
-    const url = URL.createObjectURL(file.blob);
+  // A plain <a href> cannot carry the Authorization header the download route
+  // requires, so a single file is fetched with the session bearer and handed to
+  // the browser as an object URL. Bulk ZIPs still stream (see clipboard-client).
+  async function downloadFile(file) {
+    if (!file) throw new Error("文件不存在或已经被删除。");
+    const blob = await window.ClipClient.fileBlob(file);
+    const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = file.name || "unnamed-file";
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   window.ClipDownloads = Object.freeze({
