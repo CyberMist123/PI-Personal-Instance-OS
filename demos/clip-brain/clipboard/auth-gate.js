@@ -1,6 +1,11 @@
 (function () {
   "use strict";
 
+  function isLocalDemo() {
+    const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(window.location.hostname);
+    return loopback && window.location.port === "4173";
+  }
+
   function readAccessToken(html) {
     const documentCopy = new DOMParser().parseFromString(html, "text/html");
     const stateNode = documentCopy.querySelector("#initial-state");
@@ -18,6 +23,11 @@
   }
 
   async function authorize() {
+    if (isLocalDemo()) {
+      document.documentElement.dataset.authState = "ready";
+      return;
+    }
+
     try {
       const response = await fetch("/", {
         cache: "no-store",
