@@ -149,7 +149,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "5" and "voice widget v5" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "6" and "voice widget v6" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -325,3 +325,55 @@ def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     # object-src is intentionally omitted so it inherits default-src 'none'.
     assert "form-action 'none'" in csp_line
     assert "object-src" not in csp_line
+
+
+def test_webm_is_preferred_over_mp4_for_recording() -> None:
+    """Regression: an .m4a shares its container with MP4 video, so Mastodon
+    detects video/quicktime, the extension stops matching, and Paperclip's
+    spoof check rejects the upload with 422. Desktop Chrome supports audio/mp4,
+    so listing it first broke every desktop recording."""
+    line = next(
+        line for line in VOICE_WIDGET_JS.splitlines() if "MIME_CANDIDATES" in line and "=" in line
+    )
+    candidates = [part.strip().strip('"') for part in line.split("[", 1)[1].split("]")[0].split(",")]
+    assert candidates[0].startswith("audio/webm")
+    assert candidates[-1] == "audio/mp4", "MP4 must stay last: it is the iOS Safari fallback only"
+    assert "audio/mp4" in candidates, "iOS Safari records nothing else"
+
+
+def test_widget_rewraps_the_recording_before_uploading_to_mastodon() -> None:
+    """Regression for the 422: MediaRecorder only emits WebM or MP4, whose magic
+    bytes read as video, so Mastodon either trips Paperclip's spoof check or
+    types the upload as a video with no video stream."""
+    assert '/files/voice-remux' in VOICE_WIDGET_JS
+    remux_at = VOICE_WIDGET_JS.index("return toOgg(recorded")
+    upload_at = VOICE_WIDGET_JS.index("return upload(clipBlob")
+    assert remux_at < upload_at, "the remux must happen before /api/v2/media"
+    assert 'clipName = OGG_NAME' in VOICE_WIDGET_JS
+    assert 'var OGG_NAME = "voice.ogg"' in VOICE_WIDGET_JS
+
+
+def test_remux_route_is_registered_and_needs_a_session(monkeypatch, tmp_path) -> None:
+    app = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: False)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/voice-remux",
+            files={"file": ("voice.webm", b"not really audio", "audio/webm")},
+        )
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_remux_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None:
+    app = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/voice-remux",
+            files={"file": ("voice.webm", b"not really audio", "audio/webm")},
+            headers={"Authorization": "Bearer page-token"},
+        )
+    # 422, not 500: the upload was understood and refused, not a server fault.
+    assert response.status_code == 422
+    assert response.json()["error"] == "remux_failed"

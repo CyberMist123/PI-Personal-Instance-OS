@@ -35,6 +35,7 @@ from .db import Database
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 from .transcribe import model_dir_ready, transcribe_file
+from .voice_media import OGG_MIME, OGG_SUFFIX, VoiceMediaError, to_ogg_opus
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .web_auth import verify_web_bearer
 from .workers import WorkerConfig
@@ -535,6 +536,72 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             {"text": str(result.get("text") or "").strip()}, headers={"Cache-Control": "no-store"}
         )
 
+    async def voice_remux(request: Request) -> Response:
+        # MediaRecorder can only emit WebM or MP4, and Mastodon rejects both as
+        # audio (see voice_media). The widget therefore sends the recording here
+        # first and uploads the Ogg it gets back. Same credential rule as
+        # transcribe: the caller's own page token, verified then dropped.
+        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+        verified = bool(bearer) and await run_in_threadpool(
+            _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+        )
+        if not verified:
+            return JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
+            )
+
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return JSONResponse(
+                {"error": "multipart field 'file' is required"},
+                status_code=400, headers={"Cache-Control": "no-store"},
+            )
+        stream = upload.file
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(0)
+        if size < 1:
+            return JSONResponse(
+                {"error": "empty_file"}, status_code=400, headers={"Cache-Control": "no-store"}
+            )
+        try:
+            max_bytes = WorkerConfig.load().max_audio_bytes
+        except RuntimeError:
+            max_bytes = 32 * 1024 * 1024
+        if size > max_bytes:
+            return JSONResponse(
+                {"error": "file_too_large", "max_bytes": max_bytes},
+                status_code=413, headers={"Cache-Control": "no-store"},
+            )
+
+        temp_dir = paths.runtime / "voice-tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        stem = secrets.token_urlsafe(12)
+        source = temp_dir / f"{stem}{_audio_suffix(upload.filename)}"
+        target = temp_dir / f"{stem}{OGG_SUFFIX}"
+        try:
+            with open(source, "wb") as out:
+                shutil.copyfileobj(stream, out)
+            await run_in_threadpool(to_ogg_opus, source, target)
+            payload = target.read_bytes()
+        except VoiceMediaError as exc:
+            return JSONResponse(
+                {"error": "remux_failed", "detail": str(exc)[:120]},
+                status_code=422, headers={"Cache-Control": "no-store"},
+            )
+        finally:
+            for path in (source, target):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return Response(
+            payload,
+            media_type=OGG_MIME,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
     async def health(_request: Request) -> Response:
         social_enabled = any(
             bot.enabled and bot.remote_profile in {"social", "social_plus"}
@@ -595,6 +662,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # never match "voice.js" but would shadow future single-segment files.
         Route("/files/voice.js", voice_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
+        Route("/files/voice-remux", voice_remux, methods=["POST"]),
         Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
         Route("/_cmx/mcp-health", health, methods=["GET"]),
         *mcp_routes,

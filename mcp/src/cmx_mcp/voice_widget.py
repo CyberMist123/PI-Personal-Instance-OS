@@ -40,9 +40,9 @@ must stay safe to embed in any HTML or config context).
 
 from __future__ import annotations
 
-VOICE_WIDGET_VERSION = "5"
+VOICE_WIDGET_VERSION = "6"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v6 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -52,10 +52,18 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
   window.__piVoiceWidget = "1";
 
   var LOG = "[pi-voice]";
-  var MIME_CANDIDATES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+  /* WebM/Opus first, MP4 last. An .m4a shares its container with MP4 video, so
+     Mastodon's magic-byte detection reports video/quicktime, the extension no
+     longer matches the contents, and Paperclip's spoof check rejects the upload
+     with a 422. Desktop Chrome supports audio/mp4, so listing it first sent
+     every desktop recording down that path. MP4 stays as the last resort
+     because iOS Safari records nothing else. */
+  var MIME_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
   var POLL_INTERVAL_MS = 1000;
   var POLL_MAX_TRIES = 30;
   var TRANSCRIBE_PATH = "/files/transcribe";
+  var REMUX_PATH = "/files/voice-remux";
+  var OGG_NAME = "voice.ogg";
   var TRANSCRIBE_TIMEOUT_MS = 90000;
   var STATUS_MAX_CHARS = 4900;
   var ALT_MAX_CHARS = 1500;
@@ -512,6 +520,26 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
         });
     }
 
+    /* MediaRecorder only emits WebM or MP4, and Mastodon rejects both as audio:
+       their magic bytes read as video, so the upload either trips Paperclip's
+       spoof check or is typed as a video with no video stream. CMX rewraps the
+       recording as Ogg/Opus first — a container swap, not a re-encode, unless
+       the source is iOS Safari's AAC. */
+    function toOgg(blob, filename) {
+      var form = new FormData();
+      form.append("file", blob, filename);
+      return fetch(REMUX_PATH, {
+        method: "POST",
+        headers: { Authorization: authHeader },
+        body: form
+      }).then(function (response) {
+        if (response.status !== 200) {
+          throw new Error("remux HTTP " + response.status);
+        }
+        return response.blob();
+      });
+    }
+
     function upload(blob, filename) {
       var form = new FormData();
       form.append("file", blob, filename);
@@ -656,8 +684,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v5 - same-origin, relative API, page se
           if (!parts.length) {
             throw new Error("empty recording");
           }
-          clipBlob = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
-          clipName = blobName(clipBlob, clipMime);
+          var recorded = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
+          return toOgg(recorded, blobName(recorded, clipMime));
+        })
+        .then(function (ogg) {
+          /* From here on the Ogg is the recording: Mastodon accepts it and
+             whisper reads it just as happily as the original. */
+          clipBlob = ogg;
+          clipName = OGG_NAME;
           return upload(clipBlob, clipName);
         })
         .then(function (media) {

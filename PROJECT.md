@@ -258,6 +258,7 @@ OAuth 路由      /register /authorize /token /revoke
 Owner 上传页    https://pi.ler428.xyz/files/up（cmx-admin filebox-pass 设置口令）
 文件下载        /files/<bot>/<file_id>/<文件名>（不可猜测能力链接）
 录音键脚本      GET /files/voice.js（静态，无凭据）
+录音容器转换    POST /files/voice-remux（网页登录态 bearer；WebM/MP4 → Ogg/Opus）
 网页录音转写    POST /files/transcribe（调用者自己的网页登录态 bearer，只临时校验不存不记；转写回来后由网页 PUT /api/v1/statuses/<id> 补正文与 alt）
 ```
 
