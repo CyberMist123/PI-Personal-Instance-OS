@@ -9,7 +9,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "clipboard"
+REPO = Path(__file__).resolve().parents[3]
 JS_FILES = [
+    "auth-gate.js",
+    "site-switch.js",
     "storage.js",
     "archive.js",
     "archive-output.js",
@@ -52,6 +55,8 @@ class ClipBrainContractTests(unittest.TestCase):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         Parser().feed(html)
         for marker in [
+            'data-auth-state="pending"',
+            'src="./auth-gate.js"',
             'href="/"',
             'href="/clipboard/"',
             'id="selection-menu"',
@@ -76,35 +81,53 @@ class ClipBrainContractTests(unittest.TestCase):
 
     def test_delayed_selection_menu_contract(self) -> None:
         script = (ROOT / "selection-menu.js").read_text(encoding="utf-8")
+        css = (ROOT / "selection-menu.css").read_text(encoding="utf-8")
         for marker in [
             "OPEN_DELAY_MS = 260",
             "CLOSE_DELAY_MS = 220",
             "CONFIRM_DELAY_MS = 3500",
-            'addEventListener("pointerenter"',
-            'addEventListener("pointerleave"',
+            'root.addEventListener("pointerenter", enterMenu)',
+            'root.addEventListener("pointerleave", leaveMenu)',
             "armDestroy",
             "setProgress",
             "clearProgress",
             'downloadLabel.classList.add("is-active")',
         ]:
             self.assertIn(marker, script)
+        self.assertIn("position: absolute", css)
+        self.assertIn("z-index: 20", css)
 
     def test_no_native_confirm_or_animation(self) -> None:
-        scripts = "".join(
-            (ROOT / name).read_text(encoding="utf-8") for name in JS_FILES
-        )
-        css = "".join(
-            (ROOT / name).read_text(encoding="utf-8") for name in CSS_FILES
-        ).lower()
+        scripts = "".join((ROOT / name).read_text(encoding="utf-8") for name in JS_FILES)
+        css = "".join((ROOT / name).read_text(encoding="utf-8") for name in CSS_FILES).lower()
         self.assertNotIn("window.confirm", scripts)
         self.assertNotIn("transition:", css)
         self.assertNotIn("animation:", css)
 
-    def test_compact_file_tray_and_hidden_empty_state(self) -> None:
+    def test_compact_scroll_contract(self) -> None:
         css = (ROOT / "compact-layout.css").read_text(encoding="utf-8")
         self.assertIn("max-height: 210px", css)
+        self.assertIn("max-height: clamp(340px, 56vh, 640px)", css)
+        self.assertIn(".draft-files,\n.clip-list", css)
         self.assertIn("overflow-y: auto", css)
         self.assertIn(".empty-state[hidden]", css)
+
+    def test_mastodon_session_and_route_contract(self) -> None:
+        gate = (ROOT / "auth-gate.js").read_text(encoding="utf-8")
+        switch = (ROOT / "site-switch.js").read_text(encoding="utf-8")
+        compose = (REPO / "compose.yml").read_text(encoding="utf-8")
+        nginx = (REPO / "nginx" / "default.conf").read_text(encoding="utf-8")
+        self.assertIn('fetch("/",', gate)
+        self.assertIn('window.location.replace("/auth/sign_in")', gate)
+        self.assertIn('window.location.port === "4173"', gate)
+        self.assertIn('const TARGET = "/clipboard/"', switch)
+        self.assertIn("data-clip-brain", switch.replace("ClipBrain", "clip-brain"))
+        self.assertIn("./demos/clip-brain/clipboard:/srv/clip-brain:ro", compose)
+        self.assertIn("location = /clipboard", nginx)
+        self.assertIn("location ^~ /clipboard/", nginx)
+        self.assertIn("/clipboard-site-switch.js", nginx)
+        self.assertIn("frame-ancestors 'none'", nginx)
+        self.assertNotIn("/clipboard/share", nginx)
 
     def test_streaming_zip_is_readable_and_sanitized(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
