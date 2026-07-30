@@ -1,9 +1,9 @@
 ﻿[CmdletBinding()]
 param()
 
-# One-stop console for the things an owner actually does: connect a client,
-# create a resident, hand out authorization, check health. Everything here is
-# a wrapper around the same scripts and cmx-admin commands that would
+# Two doors, not a wall of switches: "接入一个新 AI" runs as one pipeline from
+# channel to a working connection, and everything else lives under 设置.
+# Every action here wraps the same scripts and cmx-admin commands that would
 # otherwise be typed by hand; no new privilege, no new storage, and no domain
 # hard-coded in the repository.
 
@@ -60,6 +60,14 @@ function Get-Bots {
     return @(($lines -join "`n") | ConvertFrom-Json)
 }
 
+function Get-Bot {
+    param([string]$BotId)
+    $bots = Get-Bots
+    $match = @($bots | Where-Object { $_.id -eq $BotId })
+    if ($match.Count -eq 0) { return $null }
+    return $match[0]
+}
+
 function Get-PublicOrigin {
     # Resolved by the same code path the service uses, so the public address
     # always comes from .env / .env.production and never from this script.
@@ -79,20 +87,20 @@ function Select-Bot {
     }
     if ($bots.Count -eq 0) {
         if ($RemoteOnly) {
-            Write-Host "没有开启远程权限的居民。回主菜单用「新建 AI 居民」建一个。" -ForegroundColor Yellow
+            Write-Host "没有开启公网权限的居民。回主菜单用「接入一个新 AI」建一个，或到 设置 → 居民管理 改权限。" -ForegroundColor Yellow
         } else {
-            Write-Host "还没有可用居民。回主菜单用「新建 AI 居民」建一个。" -ForegroundColor Yellow
+            Write-Host "还没有可用居民。回主菜单用「接入一个新 AI」建一个。" -ForegroundColor Yellow
         }
         return $null
     }
     if ($bots.Count -eq 1) {
-        Write-Host ("居民：" + $bots[0].id + "（" + $bots[0].display_name + "，远程权限=" + $bots[0].remote_profile + "）") -ForegroundColor DarkGray
+        Write-Host ("居民：" + $bots[0].id + "（" + $bots[0].display_name + "，公网权限=" + $bots[0].remote_profile + "）") -ForegroundColor DarkGray
         return $bots[0]
     }
     Write-Host ""
     Write-Host "选择居民：" -ForegroundColor Cyan
     for ($i = 0; $i -lt $bots.Count; $i++) {
-        Write-Host ("  [" + ($i + 1) + "] " + $bots[$i].id + "  " + $bots[$i].display_name + "  远程权限=" + $bots[$i].remote_profile)
+        Write-Host ("  [" + ($i + 1) + "] " + $bots[$i].id + "  " + $bots[$i].display_name + "  公网权限=" + $bots[$i].remote_profile)
     }
     $answer = Read-Host "输入编号"
     $index = 0
@@ -174,12 +182,13 @@ function Get-ExistingClients {
     return @(($lines -join "`n") | ConvertFrom-Json)
 }
 
-# ------------------------------------------------------------ 连接 AI 客户端
+# ------------------------------------------------------------ 接客户端
 
 function Invoke-WebConnect {
-    Write-Section "网页端 MCP 授权（ChatGPT / 其他支持 MCP 的网页客户端）"
-    $bot = Select-Bot -RemoteOnly
-    if ($null -eq $bot) { return }
+    param($Bot = $null)
+    Write-Section "网页端接入（ChatGPT 等）"
+    if ($null -eq $Bot) { $Bot = Select-Bot -RemoteOnly }
+    if ($null -eq $Bot) { return }
     if (-not (Confirm-RemoteService)) { return }
 
     $origin = Get-PublicOrigin
@@ -190,20 +199,20 @@ function Invoke-WebConnect {
     }
 
     $scopes = "read"
-    if ($bot.remote_profile -eq "social" -or $bot.remote_profile -eq "social_plus") {
+    if ($Bot.remote_profile -eq "social" -or $Bot.remote_profile -eq "social_plus") {
         $scopes = "read,social"
     } else {
-        Write-Host ("提示：" + $bot.id + " 的远程权限是 " + $bot.remote_profile + "，只能拿到只读。要让它能发帖，先在「居民管理」里改成可发帖。") -ForegroundColor Yellow
+        Write-Host ("提示：" + $Bot.id + " 的公网权限是 " + $Bot.remote_profile + "，只能拿到只读。要让它能发帖，去 设置 → 居民管理 → 修改公网权限。") -ForegroundColor Yellow
     }
 
-    $existing = Get-ExistingClients -BotId $bot.id
+    $existing = Get-ExistingClients -BotId $Bot.id
     if ($existing.Count -gt 0) {
         Write-Host ""
         Write-Host ("这个居民已有 " + $existing.Count + " 个网页端授权记录。") -ForegroundColor DarkGray
         Write-Host "注意：已经连上的旧授权不能靠刷新扩权。如果它现在只能读，必须重新走一次授权。" -ForegroundColor Yellow
     }
 
-    $lines = & $Admin invite-new --bot $bot.id --scopes $scopes
+    $lines = & $Admin invite-new --bot $Bot.id --scopes $scopes
     if ($LASTEXITCODE -ne 0) { throw "邀请码生成失败。" }
     $invite = ($lines -join "`n") | ConvertFrom-Json
 
@@ -228,33 +237,36 @@ function Invoke-WebConnect {
     Write-Host "如果客户端提示工具 schema 是旧的，把 connector 删掉重加，不要只点刷新。" -ForegroundColor DarkGray
 }
 
-function Invoke-ClaudeCodeConnect {
-    Write-Section "Claude Code 本机接入（STDIO，不走公网）"
-    $bot = Select-Bot
-    if ($null -eq $bot) { return }
+function Invoke-LocalConnect {
+    param($Bot = $null)
+    Write-Section "本地客户端接入（Claude Code / Codex 等，STDIO，不走公网）"
+    if ($null -eq $Bot) { $Bot = Select-Bot }
+    if ($null -eq $Bot) { return }
     if (-not (Test-Path -LiteralPath $McpExe)) {
         throw "找不到 $McpExe，请先运行 mcp\install.ps1。"
     }
 
-    $name = "cmx-" + $bot.id
+    $name = "cmx-" + $Bot.id
     Write-Host ""
-    Write-Host "本机接入用的是居民自己的 DPAPI Token，不需要邀请码，也不经过公网。" -ForegroundColor DarkGray
+    Write-Host "本地接入用的是居民自己的 DPAPI Token，不需要邀请码，也不经过公网。" -ForegroundColor DarkGray
     Write-Host ("MCP 名称：" + $name) -ForegroundColor DarkGray
 
+    Write-Host ""
+    Write-Host "任何支持 STDIO MCP 的本地客户端（Codex、自建 client 等）都用这份配置：" -ForegroundColor Cyan
+    & $Admin print-config --bot $Bot.id
+
     $claude = Get-Command claude -ErrorAction SilentlyContinue
-    $command = "claude mcp add " + $name + " --scope user -e CMX_MCP_HOME=" + $Root + " -- " + $McpExe + " --bot " + $bot.id
+    $command = "claude mcp add " + $name + " --scope user -e CMX_MCP_HOME=" + $Root + " -- " + $McpExe + " --bot " + $Bot.id
     if ($null -eq $claude) {
         Write-Host ""
-        Write-Host "没在 PATH 里找到 claude 命令。在装了 Claude Code 的机器上执行这一条：" -ForegroundColor Yellow
+        Write-Host "没在 PATH 里找到 claude 命令。装了 Claude Code 的话执行这一条：" -ForegroundColor Yellow
         Write-Host ("  " + $command)
         Copy-ToClipboard -Text $command -Label "claude mcp add 命令"
-        Write-Host ""
-        Write-Host "或者用 JSON 手动配置：" -ForegroundColor DarkGray
-        & $Admin print-config --bot $bot.id
         return
     }
 
     $exists = $false
+    Write-Host ""
     Write-Host "正在检查 Claude Code 里是否已经配置过（下面如果出现 No MCP server named，说明还没配，属于正常）..." -ForegroundColor DarkGray
     # No stderr redirection here: in Windows PowerShell 5.1, redirecting a
     # native command's stderr turns each line into an ErrorRecord, which
@@ -280,7 +292,7 @@ function Invoke-ClaudeCodeConnect {
         }
     }
 
-    & $claude.Source mcp add $name --scope user -e ("CMX_MCP_HOME=" + $Root) -- $McpExe --bot $bot.id
+    & $claude.Source mcp add $name --scope user -e ("CMX_MCP_HOME=" + $Root) -- $McpExe --bot $Bot.id
     if ($LASTEXITCODE -ne 0) {
         Write-Host "自动添加失败，手动执行这一条：" -ForegroundColor Yellow
         Write-Host ("  " + $command)
@@ -291,87 +303,93 @@ function Invoke-ClaudeCodeConnect {
     Write-Host ("已加入 Claude Code。重开一个 Claude Code 会话，/mcp 里应该能看到 " + $name + " 是 connected。") -ForegroundColor Green
 }
 
-# ------------------------------------------------------------ 新建 AI 居民
+# --------------------------------------------------------- 接入一个新 AI
 
-function New-Resident {
-    Write-Section "新建 AI 居民（引导）"
-    Write-Host "这个流程会："
-    Write-Host "  · 在 Mastodon 里建一个属于这个 AI 的独立账号（可选：用已有账号）"
-    Write-Host "  · 打开浏览器让这个账号授权，Token 用 Windows DPAPI 加密存本机"
-    Write-Host "  · 跑一次独立 smoke 验证"
-    Write-Host "  · 可选：顺手铸一张邀请码，给网页端用"
-    Write-Host ""
-    Write-Host "全程不需要你复制粘贴 Token。" -ForegroundColor DarkGray
+function New-Onboarding {
+    Write-Section "接入一个新 AI"
 
+    # 1. 渠道决定了后面所有问题：只走本地就不必开公网，只走网页就不必问本机能力。
+    Write-Host "第 1 步 / 共 5 步：这个 AI 从哪里连进来？" -ForegroundColor Cyan
+    Write-Host "  [1] 网页端（ChatGPT 网页版等，走公网 OAuth）"
+    Write-Host "  [2] 本地客户端（Claude Code、Codex 等，走本机 STDIO）"
+    Write-Host "  [3] 两个都要"
+    $channel = Read-Host "输入编号（回车=1）"
+    if (-not $channel) { $channel = "1" }
+    if ($channel -notmatch '^[123]$') { Write-Host "取消。" -ForegroundColor Yellow; return }
+    $wantWeb = ($channel -eq "1" -or $channel -eq "3")
+    $wantLocal = ($channel -eq "2" -or $channel -eq "3")
+
+    # 2. 账号来源。
     Write-Host ""
-    Write-Host "账号从哪来？" -ForegroundColor Cyan
-    Write-Host "  [1] 新建一个 Mastodon 账号（需要 Docker 在跑，和一个能收信的真实邮箱）"
-    Write-Host "  [2] 用一个已经存在的账号"
+    Write-Host "第 2 步 / 共 5 步：这个 AI 在 CMX 里有账号了吗？" -ForegroundColor Cyan
+    Write-Host "  [1] 还没有，现在建一个（需要 Docker 在跑，和一个能收信的邮箱）"
+    Write-Host "  [2] 已经有了（之前建过、邮箱也绑过），这次只做授权"
     $source = Read-Host "输入编号（回车=1）"
     if (-not $source) { $source = "1" }
-    if ($source -ne "1" -and $source -ne "2") { Write-Host "取消。" -ForegroundColor Yellow; return }
+    if ($source -notmatch '^[12]$') { Write-Host "取消。" -ForegroundColor Yellow; return }
     $useExisting = ($source -eq "2")
 
+    # 3. 身份。
     Write-Host ""
-    $botId = (Read-Host "居民用户名（小写字母、数字、下划线，例如 shijiu）").Trim().ToLowerInvariant()
+    Write-Host "第 3 步 / 共 5 步：身份" -ForegroundColor Cyan
+    $botId = (Read-Host "  用户名（小写字母、数字、下划线，例如 chatgptweb）").Trim().ToLowerInvariant()
     if ($botId -notmatch '^[a-z0-9_]+$') {
         Write-Host "用户名只能用小写字母、数字和下划线。" -ForegroundColor Red
         return
     }
-    $existingBots = Get-Bots
-    if (@($existingBots | Where-Object { $_.id -eq $botId }).Count -gt 0) {
-        Write-Host ("已经有一个叫 " + $botId + " 的居民了。要重新授权它，请走「居民管理」。") -ForegroundColor Yellow
+    if ($null -ne (Get-Bot -BotId $botId)) {
+        Write-Host ("已经有一个叫 " + $botId + " 的居民了。") -ForegroundColor Yellow
+        Write-Host "要给它接客户端，走 设置 → 给已有居民接客户端；要换 Token，走 设置 → 居民管理。" -ForegroundColor Yellow
         return
     }
-    $displayName = (Read-Host "显示名（回车=和用户名一样）").Trim()
+    $displayName = (Read-Host "  显示名（回车=和用户名一样）").Trim()
     if (-not $displayName) { $displayName = $botId }
 
     $email = ""
     if (-not $useExisting) {
-        $email = (Read-Host "这个 AI 用的真实邮箱（能收信；不能用 .invalid）").Trim()
+        $email = (Read-Host "  这个 AI 用的真实邮箱（能收信，不能用 .invalid）").Trim()
         if ($email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$' -or $email.EndsWith(".invalid")) {
             Write-Host "需要一个能收信的邮箱地址。" -ForegroundColor Red
             return
         }
     }
 
+    # 4. 权限，只问这个渠道用得上的那部分。
     Write-Host ""
-    Write-Host "这个居民在本机（Claude Code 等）能做什么？" -ForegroundColor Cyan
-    Write-Host "  [1] 完整居民：读 + 发布 + 回复 + 点赞收藏 + 改资料（推荐）"
-    Write-Host "  [2] 只读"
-    $localChoice = Read-Host "输入编号（回车=1）"
-    if (-not $localChoice) { $localChoice = "1" }
-    $profile = "resident"
-    if ($localChoice -eq "2") { $profile = "reader" }
-
-    Write-Host ""
-    Write-Host "这个居民从公网（ChatGPT 网页端等）能做什么？" -ForegroundColor Cyan
-    Write-Host "  [1] 不开放公网（最安全，之后随时可以改）"
-    Write-Host "  [2] 公网只读：看时间线、读动态、搜自己读过的缓存"
-    Write-Host "  [3] 公网可发帖：在只读之上加发布、回复、点赞收藏"
-    $remoteChoice = Read-Host "输入编号（回车=1）"
-    if (-not $remoteChoice) { $remoteChoice = "1" }
+    Write-Host "第 4 步 / 共 5 步：权限" -ForegroundColor Cyan
+    $localProfile = "resident"
+    if ($wantLocal) {
+        Write-Host "  本地客户端能做什么？"
+        Write-Host "    [1] 完整居民：读 + 发布 + 回复 + 点赞收藏 + 改资料（推荐）"
+        Write-Host "    [2] 只读"
+        $answer = Read-Host "  输入编号（回车=1）"
+        if ($answer -eq "2") { $localProfile = "reader" }
+    }
     $remoteProfile = "disabled"
-    if ($remoteChoice -eq "2") { $remoteProfile = "reader" }
-    if ($remoteChoice -eq "3") { $remoteProfile = "social" }
-
-    $mintInvite = $false
-    if ($remoteProfile -ne "disabled") {
-        $answer = Read-Host "建好之后顺手铸一张网页端邀请码吗？(Y/n)"
-        $mintInvite = -not ($answer -eq "n" -or $answer -eq "N")
+    if ($wantWeb) {
+        Write-Host "  网页端能做什么？"
+        Write-Host "    [1] 只读：看时间线、读动态、搜自己读过的缓存"
+        Write-Host "    [2] 可发帖：在只读之上加发布、回复、点赞收藏（推荐）"
+        $answer = Read-Host "  输入编号（回车=2）"
+        if ($answer -eq "1") { $remoteProfile = "reader" } else { $remoteProfile = "social" }
     }
 
-    Write-Section "确认"
+    # 5. 确认。
+    Write-Host ""
+    Write-Host "第 5 步 / 共 5 步：确认" -ForegroundColor Cyan
+    $channelText = "网页端"
+    if ($channel -eq "2") { $channelText = "本地客户端" }
+    if ($channel -eq "3") { $channelText = "网页端 + 本地客户端" }
+    Write-Host ("  渠道      " + $channelText)
     Write-Host ("  用户名    " + $botId)
     Write-Host ("  显示名    " + $displayName)
     if ($useExisting) {
-        Write-Host "  账号      使用已有账号"
+        Write-Host "  账号      用已有账号，只做授权"
     } else {
         Write-Host ("  账号      新建，邮箱 " + $email)
     }
-    Write-Host ("  本机权限  " + $profile)
+    Write-Host ("  本机权限  " + $localProfile)
     Write-Host ("  公网权限  " + $remoteProfile)
-    Write-Host ("  铸邀请码  " + $(if ($mintInvite) { "是" } else { "否" }))
     Write-Host ""
     $go = Read-Host "开始？(Y/n)"
     if ($go -eq "n" -or $go -eq "N") { Write-Host "已取消。" -ForegroundColor Yellow; return }
@@ -383,29 +401,36 @@ function New-Resident {
     }
     Write-Host ""
 
-    $arguments = @(
-        "-BotId", $botId,
-        "-DisplayName", $displayName,
-        "-Profile", $profile,
-        "-RemoteProfile", $remoteProfile
-    )
-    if ($useExisting) { $arguments += "-UseExistingAccount" } else { $arguments += @("-Email", $email) }
-    if ($mintInvite) { $arguments += "-Invite" }
+    # Hashtable splatting, not an array: `& script.ps1 @array` binds
+    # positionally, so "-Profile" itself lands in $BotId and the username ends
+    # up in $Profile, failing its ValidateSet. A hashtable binds by name.
+    $parameters = @{
+        BotId         = $botId
+        DisplayName   = $displayName
+        Profile       = $localProfile
+        RemoteProfile = $remoteProfile
+    }
+    if ($useExisting) { $parameters["UseExistingAccount"] = $true } else { $parameters["Email"] = $email }
+    # No -Invite here: if this AI needs a web connection we mint the code below,
+    # after the health checks, so the owner never juggles two codes.
+    & (Join-Path $Root "setup-ai.ps1") @parameters
 
-    & (Join-Path $Root "setup-ai.ps1") @arguments
+    $bot = Get-Bot -BotId $botId
+    if ($null -eq $bot) {
+        Write-Host "居民没有建成功，后面的接入步骤跳过。" -ForegroundColor Red
+        return
+    }
+    Write-Host ""
+    Write-Host ("居民 " + $botId + " 建好了，继续接客户端。") -ForegroundColor Green
+
+    if ($wantLocal) { Invoke-LocalConnect -Bot $bot }
+    if ($wantWeb) { Invoke-WebConnect -Bot $bot }
 
     Write-Host ""
-    Write-Host ("居民 " + $botId + " 建好了。") -ForegroundColor Green
-    Write-Host "下一步：" -ForegroundColor Cyan
-    Write-Step 1 "要给 Claude Code 用 → 主菜单 1 → Claude Code 本机接入。"
-    if ($remoteProfile -ne "disabled") {
-        Write-Step 2 "要给网页端用 → 主菜单 1 → 网页端 MCP 授权（会再铸一张新邀请码，旧的没用掉也没关系）。"
-    } else {
-        Write-Step 2 "以后想开放公网 → 主菜单 3 → 修改公网权限。"
-    }
+    Write-Host ("完成。" + $botId + " 的接入流程已经走完。") -ForegroundColor Green
 }
 
-# ------------------------------------------------------------ 居民管理
+# ------------------------------------------------------------ 设置：居民
 
 function Show-BotDetail {
     Write-Section "居民详情"
@@ -452,7 +477,7 @@ function Set-RemoteProfile {
         "token_ref=b.token_ref, default_audience=b.default_audience, allow_public=b.allow_public, " +
         "remote_profile='" + $target + "', remote_polls=b.remote_polls, remote_boosts=b.remote_boosts, " +
         "remote_notifications=b.remote_notifications); print('ok')"
-    $result = & $Python -c $script
+    & $Python -c $script | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "修改失败。" }
     Write-Host ($bot.id + " 的公网权限已改为 " + $target + "。") -ForegroundColor Green
     Write-Host "远程服务需要重启才会生效（工具集是启动时按权限装配的）。" -ForegroundColor Yellow
@@ -473,19 +498,20 @@ function Invoke-ResidentReauth {
     $answer = Read-Host "继续？(Y/n)"
     if ($answer -eq "n" -or $answer -eq "N") { return }
 
-    $arguments = @(
-        "-BotId", $bot.id,
-        "-DisplayName", $bot.display_name,
-        "-Profile", $bot.profile,
-        "-MediaRoot", $bot.media_root,
-        "-DefaultAudience", $bot.default_audience,
-        "-RemoteProfile", $bot.remote_profile
-    )
-    if ($bot.allow_public) { $arguments += "-AllowPublic" }
-    if ($bot.remote_capabilities.boosts) { $arguments += "-RemoteBoosts" }
-    if ($bot.remote_capabilities.notifications) { $arguments += "-RemoteNotifications" }
+    # Hashtable, not array: see the note in New-Onboarding.
+    $parameters = @{
+        BotId           = $bot.id
+        DisplayName     = $bot.display_name
+        Profile         = $bot.profile
+        MediaRoot       = $bot.media_root
+        DefaultAudience = $bot.default_audience
+        RemoteProfile   = $bot.remote_profile
+    }
+    if ($bot.allow_public) { $parameters["AllowPublic"] = $true }
+    if ($bot.remote_capabilities.boosts) { $parameters["RemoteBoosts"] = $true }
+    if ($bot.remote_capabilities.notifications) { $parameters["RemoteNotifications"] = $true }
 
-    & (Join-Path $Root "authorize-bot.ps1") @arguments
+    & (Join-Path $Root "authorize-bot.ps1") @parameters
     Write-Host ""
     Write-Host "正在跑一次独立 STDIO smoke 验证这枚 Token..." -ForegroundColor Cyan
     & (Join-Path $Root "smoke.ps1") -BotId $bot.id
@@ -504,21 +530,21 @@ function Show-Invites {
     $active = @($invites | Where-Object { $_.status -eq "active" })
     if ($active.Count -eq 0) {
         Write-Host "没有还没用掉的邀请码。" -ForegroundColor DarkGray
-    } else {
-        Write-Host "还没用掉的：" -ForegroundColor Cyan
-        foreach ($item in $active) {
-            Write-Host ("  " + $item.bot_id + "  " + ($item.scopes -join " "))
-        }
-        Write-Host ""
-        Write-Host "邀请码本身只存哈希，这里看不到原文；不确定去向就直接作废重发。" -ForegroundColor DarkGray
-        $answer = Read-Host "要作废某个居民的全部未用邀请码吗？输入居民 id（回车跳过）"
-        if ($answer) {
-            & $Admin invite-revoke --bot $answer.Trim()
-        }
+        return
+    }
+    Write-Host "还没用掉的：" -ForegroundColor Cyan
+    foreach ($item in $active) {
+        Write-Host ("  " + $item.bot_id + "  " + ($item.scopes -join " "))
+    }
+    Write-Host ""
+    Write-Host "邀请码本身只存哈希，这里看不到原文；不确定去向就直接作废重发。" -ForegroundColor DarkGray
+    $answer = Read-Host "要作废某个居民的全部未用邀请码吗？输入居民 id（回车跳过）"
+    if ($answer) {
+        & $Admin invite-revoke --bot $answer.Trim()
     }
 }
 
-# ------------------------------------------------------------ 服务与状态
+# ------------------------------------------------------------ 设置：服务
 
 function Show-Status {
     Write-Section "状态体检"
@@ -572,8 +598,6 @@ function Set-AutoStart {
     }
 }
 
-# ------------------------------------------------------------ 其他设置
-
 function Invoke-FileboxPass {
     Write-Section "Owner 文件柜上传口令"
     Write-Host "这条口令只用于网页上传页 /files/up，数据库只存 PBKDF2 哈希。" -ForegroundColor DarkGray
@@ -594,7 +618,7 @@ function Invoke-FileboxPass {
 
 # ------------------------------------------------------------ 菜单
 
-function Invoke-SubMenu {
+function Invoke-Menu {
     param([string]$Title, [array]$Items)
     # $Items: @(@{ Key = "1"; Text = "..."; Action = { ... } }, ...)
     while ($true) {
@@ -620,15 +644,15 @@ function Invoke-SubMenu {
     }
 }
 
-function Show-ConnectMenu {
-    Invoke-SubMenu -Title "连接 AI 客户端" -Items @(
-        @{ Key = "1"; Text = "网页端 MCP（ChatGPT 等）：铸邀请码 + 分步指南"; Action = { Invoke-WebConnect } },
-        @{ Key = "2"; Text = "Claude Code 本机接入"; Action = { Invoke-ClaudeCodeConnect } }
+function Show-ClientMenu {
+    Invoke-Menu -Title "给已有居民接客户端" -Items @(
+        @{ Key = "1"; Text = "网页端（ChatGPT 等）：铸邀请码 + 分步指南"; Action = { Invoke-WebConnect } },
+        @{ Key = "2"; Text = "本地客户端（Claude Code / Codex 等）"; Action = { Invoke-LocalConnect } }
     )
 }
 
 function Show-ResidentMenu {
-    Invoke-SubMenu -Title "居民管理" -Items @(
+    Invoke-Menu -Title "居民管理" -Items @(
         @{ Key = "1"; Text = "查看居民详情"; Action = { Show-BotDetail } },
         @{ Key = "2"; Text = "修改公网权限（不开放 / 只读 / 可发帖）"; Action = { Set-RemoteProfile } },
         @{ Key = "3"; Text = "重新授权 Mastodon Token"; Action = { Invoke-ResidentReauth } },
@@ -637,42 +661,35 @@ function Show-ResidentMenu {
 }
 
 function Show-ServiceMenu {
-    Invoke-SubMenu -Title "服务与状态" -Items @(
+    Invoke-Menu -Title "服务与状态" -Items @(
         @{ Key = "1"; Text = "状态体检"; Action = { Show-Status } },
         @{ Key = "2"; Text = "重启远程 MCP 服务（需管理员）"; Action = { Restart-RemoteService } },
         @{ Key = "3"; Text = "随 PI OS 自动启动：开 / 关"; Action = { Set-AutoStart } }
     )
 }
 
-function Show-OtherMenu {
-    Invoke-SubMenu -Title "其他设置" -Items @(
-        @{ Key = "1"; Text = "Owner 文件柜上传口令"; Action = { Invoke-FileboxPass } }
+function Show-SettingsMenu {
+    Invoke-Menu -Title "设置" -Items @(
+        @{ Key = "1"; Text = "给已有居民接客户端"; Action = { Show-ClientMenu } },
+        @{ Key = "2"; Text = "居民管理"; Action = { Show-ResidentMenu } },
+        @{ Key = "3"; Text = "服务与状态"; Action = { Show-ServiceMenu } },
+        @{ Key = "4"; Text = "Owner 文件柜上传口令"; Action = { Invoke-FileboxPass } }
     )
 }
 
-function Show-MainMenu {
+while ($true) {
     Write-Host ""
     Write-Host "================ CMX 连接中心 ================" -ForegroundColor Cyan
-    Write-Host "  1  连接 AI 客户端"
-    Write-Host "  2  新建 AI 居民（引导）"
-    Write-Host "  3  居民管理"
-    Write-Host "  4  服务与状态"
-    Write-Host "  5  其他设置"
+    Write-Host "  1  接入一个新 AI（一条流水线走完）"
+    Write-Host "  2  设置"
     Write-Host "  0  退出"
     Write-Host "=============================================" -ForegroundColor Cyan
-}
-
-while ($true) {
-    Show-MainMenu
     $choice = Read-Host "输入编号"
     if ($choice -eq "0") { break }
     try {
         switch ($choice) {
-            "1" { Show-ConnectMenu }
-            "2" { New-Resident }
-            "3" { Show-ResidentMenu }
-            "4" { Show-ServiceMenu }
-            "5" { Show-OtherMenu }
+            "1" { New-Onboarding }
+            "2" { Show-SettingsMenu }
             default { Write-Host "没有这个编号。" -ForegroundColor Yellow }
         }
     } catch {
