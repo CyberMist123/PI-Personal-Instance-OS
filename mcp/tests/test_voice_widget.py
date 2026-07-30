@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "10" and "voice widget v10" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "11" and "voice widget v11" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -423,12 +423,14 @@ def test_kai_is_self_hosted_for_phones(tmp_path, monkeypatch) -> None:
     # so it does not depend on style-src being relaxed for it.
     assert "new window.FontFace(" in VOICE_WIDGET_JS
     assert "document.fonts.add(loaded)" in VOICE_WIDGET_JS
-    assert "/files/fonts/lxgw-wenkai-gb2312.woff2" in VOICE_WIDGET_JS
+    assert "/files/fonts/lxgw-wenkai-screen-gb2312.woff2" in VOICE_WIDGET_JS
     assert 'display: "swap"' in VOICE_WIDGET_JS
-    # System Kai must still win where it exists: no reason to fetch 1.6 MB.
-    assert VOICE_WIDGET_JS.index('"Kaiti SC"') < VOICE_WIDGET_JS.index("LXGW WenKai GB")
+    # System Kai must still win where it exists: no reason to fetch 1.9 MB.
+    # Sliced from the declaration — the tier comment above it names the families too.
+    stack = VOICE_WIDGET_JS[VOICE_WIDGET_JS.index("var KAI ="):]
+    assert stack.index('"Kaiti SC"') < stack.index("LXGW WenKai GB")
 
-    font = REPOSITORY_ROOT / "mcp" / "assets" / "fonts" / "lxgw-wenkai-gb2312.woff2"
+    font = REPOSITORY_ROOT / "mcp" / "assets" / "fonts" / "lxgw-wenkai-screen-gb2312.woff2"
     assert font.is_file()
     assert font.stat().st_size < 3 * 1024**2, "subset regressed towards the 25 MB full face"
     # SIL OFL requires the licence to travel with the font.
@@ -436,7 +438,7 @@ def test_kai_is_self_hosted_for_phones(tmp_path, monkeypatch) -> None:
 
     app = _app(tmp_path, monkeypatch)
     with TestClient(app, base_url="https://pi.example") as client:
-        ok = client.get("/files/fonts/lxgw-wenkai-gb2312.woff2")
+        ok = client.get("/files/fonts/lxgw-wenkai-screen-gb2312.woff2")
         traversal = client.get("/files/fonts/..%2F..%2Fsecrets.woff2")
         wrong_type = client.get("/files/fonts/evil.js")
     assert ok.status_code == 200
@@ -503,3 +505,26 @@ def test_transcripts_are_biased_to_simplified_chinese() -> None:
     source = inspect.getsource(module.transcribe_file)
     assert "initial_prompt=SIMPLIFIED_PROMPT" in source
     assert "简体" in SIMPLIFIED_PROMPT
+
+
+def test_the_licensed_kai_never_reaches_the_repository() -> None:
+    """Every commercial Kai grant excludes webfont embedding, so the licensed
+    face is generated on the machine and must stay off GitHub. The open-source
+    face ships so a fresh clone still renders Kai on phones."""
+    import subprocess
+
+    ignore = (REPOSITORY_ROOT / "mcp" / ".gitignore").read_text(encoding="utf-8")
+    assert "assets/fonts/*-private.woff2" in ignore
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "mcp/assets/fonts"],
+        cwd=REPOSITORY_ROOT, capture_output=True, text=True, encoding="utf-8",
+    ).stdout
+    assert "lxgw-wenkai-screen-gb2312.woff2" in tracked
+    assert "-private.woff2" not in tracked, "a licensed font is staged for commit"
+
+    # Preference order: system Kai, then the licensed local face, then open source.
+    stack = VOICE_WIDGET_JS[VOICE_WIDGET_JS.index("var KAI ="):]
+    assert stack.index("KaiTi") < stack.index("PI Kai Local") < stack.index("LXGW WenKai GB")
+    # A machine without the private face must degrade silently, not warn.
+    assert "kai-private.woff2" in VOICE_WIDGET_JS

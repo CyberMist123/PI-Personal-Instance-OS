@@ -18,8 +18,20 @@ VOICE_WAVEFORM_JS = """
   /* System Kai first — Windows and macOS already have one and it costs nothing.
      The self-hosted subset is the fallback for iOS and Android, which ship no
      Kai at all and would otherwise land on a plain serif. */
-  var KAI = '"Kaiti SC","STKaiti",KaiTi,"\\u6977\\u4f53","TW-Kai","LXGW WenKai GB",serif';
-  var KAI_FONT_URL = "/files/fonts/lxgw-wenkai-gb2312.woff2";
+  /* Three tiers, in the order they should win:
+       1. the system Kai on Windows and macOS — free, already installed;
+       2. "PI Kai Local", the licensed system face subset for this instance. It
+          is served only if the operator generated it; every commercial Kai
+          grant (Founder, Zhongyi, DynaComware) excludes webfont embedding, so
+          that file is gitignored and never leaves the machine;
+       3. "LXGW WenKai GB", the open-source face that ships with the repo, so a
+          fresh checkout still renders Kai on iOS and Android. */
+  var KAI = '"Kaiti SC","STKaiti",KaiTi,"\\u6977\\u4f53","TW-Kai",'
+    + '"PI Kai Local","LXGW WenKai GB",serif';
+  var KAI_FACES = [
+    { family: "PI Kai Local", url: "/files/fonts/kai-private.woff2" },
+    { family: "LXGW WenKai GB", url: "/files/fonts/lxgw-wenkai-screen-gb2312.woff2" }
+  ];
   var kaiRequested = false;
 
   function applyKai(root) {
@@ -48,20 +60,23 @@ VOICE_WAVEFORM_JS = """
       return;
     }
     kaiRequested = true;
-    try {
-      var face = new window.FontFace(
-        "LXGW WenKai GB",
-        "url(" + KAI_FONT_URL + ") format('woff2')",
-        { display: "swap" }
-      );
-      face.load().then(function (loaded) {
-        document.fonts.add(loaded);
-      }).catch(function (error) {
-        warn("Kai webfont unavailable; falling back to the platform serif", error);
-      });
-    } catch (error) {
-      warn("Kai webfont could not be registered", error);
-    }
+    KAI_FACES.forEach(function (entry) {
+      try {
+        var face = new window.FontFace(
+          entry.family,
+          "url(" + entry.url + ") format('woff2')",
+          { display: "swap" }
+        );
+        face.load().then(function (loaded) {
+          document.fonts.add(loaded);
+        }).catch(function () {
+          /* Expected for the private face on any machine that has not generated
+             one: the stack simply falls through to the next family. */
+        });
+      } catch (error) {
+        warn("could not register " + entry.family, error);
+      }
+    });
   }
 
   function isDarkTheme() {
