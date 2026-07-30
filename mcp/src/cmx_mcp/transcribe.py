@@ -13,6 +13,9 @@ from typing import Any
 # intermittent fault instead of "this was never pointed at a model".
 MODEL_MARKER = "model.bin"
 
+# Written in Simplified on purpose — see the transcribe() call below.
+SIMPLIFIED_PROMPT = "以下是普通话的句子，请使用简体中文转写。"
+
 
 def model_dir_ready(model_dir: str | Path | None) -> bool:
     if not model_dir or not str(model_dir):
@@ -55,6 +58,12 @@ def transcribe_file(
             str(Path(path)),
             language=language or None,
             vad_filter=True,
+            # Whisper transcribes Mandarin into Traditional characters about as
+            # often as Simplified, and there is no flag for it. The decoder
+            # conditions on the prompt, so a Simplified sentence biases the whole
+            # transcript that way. Harmless for other languages: it is only ever
+            # a prior, never inserted into the output.
+            initial_prompt=SIMPLIFIED_PROMPT,
         )
         for segment in segments:
             end = float(getattr(segment, "end", 0.0) or 0.0)

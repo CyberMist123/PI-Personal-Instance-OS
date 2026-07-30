@@ -236,11 +236,42 @@ VOICE_PLAYER_JS = """
     }
   }
 
-  function watchTimeline(state) {
+  function resolveAcct(state) {
     var acct = ownAccount(state);
-    if (!acct) {
-      return;
+    if (acct) {
+      return Promise.resolve(acct);
     }
+    /* #initial-state does not always carry the full account object — it is
+       populated differently across views, which is why this worked on the phone
+       and not on the desktop timeline. Ask the instance instead of giving up:
+       one request, the page's own token, nothing stored. */
+    var token = pickToken(state);
+    if (!token) {
+      return Promise.resolve("");
+    }
+    return fetch("/api/v1/accounts/verify_credentials", {
+      cache: "no-store",
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" }
+    }).then(function (response) {
+      return response.ok ? response.json() : null;
+    }).then(function (payload) {
+      return payload && payload.acct ? String(payload.acct) : "";
+    }).catch(function (error) {
+      warn("could not resolve the signed-in account", error);
+      return "";
+    });
+  }
+
+  function watchTimeline(state) {
+    resolveAcct(state).then(function (acct) {
+      if (!acct) {
+        return;
+      }
+      startWatching(acct);
+    });
+  }
+
+  function startWatching(acct) {
     ensureKaiFont();
     scanForVoice(acct);
     var pending = 0;

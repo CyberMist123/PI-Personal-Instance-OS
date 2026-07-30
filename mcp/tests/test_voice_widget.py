@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "9" and "voice widget v9" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "10" and "voice widget v10" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -481,3 +481,25 @@ def test_the_upload_format_plays_on_ios() -> None:
     assert ".ogg" not in VOICE_WIDGET_JS
     assert "audio/ogg" not in VOICE_WIDGET_JS
     assert "toOgg" not in VOICE_WIDGET_JS
+
+
+def test_a_missing_account_object_does_not_disable_the_player() -> None:
+    """#initial-state carries the account on some views and not others, which is
+    why the player worked on the phone and not on the desktop timeline."""
+    assert "function resolveAcct(state)" in VOICE_WIDGET_JS
+    assert "/api/v1/accounts/verify_credentials" in VOICE_WIDGET_JS
+    assert "startWatching(acct)" in VOICE_WIDGET_JS
+
+
+def test_transcripts_are_biased_to_simplified_chinese() -> None:
+    """Whisper renders Mandarin in Traditional about as often as Simplified and
+    offers no flag; the decoder conditions on the prompt instead."""
+    from cmx_mcp.transcribe import SIMPLIFIED_PROMPT
+
+    import inspect
+
+    from cmx_mcp import transcribe as module
+
+    source = inspect.getsource(module.transcribe_file)
+    assert "initial_prompt=SIMPLIFIED_PROMPT" in source
+    assert "简体" in SIMPLIFIED_PROMPT

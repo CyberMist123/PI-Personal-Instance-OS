@@ -43,9 +43,9 @@ from __future__ import annotations
 from .voice_player import VOICE_PLAYER_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "9"
+VOICE_WIDGET_VERSION = "10"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v9 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v10 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
