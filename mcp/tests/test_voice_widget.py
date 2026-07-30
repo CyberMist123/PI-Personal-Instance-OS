@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "12" and "voice widget v12" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "13" and "voice widget v13" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -382,12 +382,15 @@ def test_convert_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None
 
 
 def test_player_only_touches_the_owners_own_statuses() -> None:
+    from cmx_mcp.voice_owner import VOICE_OWNER_JS
     from cmx_mcp.voice_player import VOICE_PLAYER_JS
 
     # The gate: a status is only restyled when it links to the logged-in acct.
-    assert "function isOwn(status, acct)" in VOICE_PLAYER_JS
-    assert "if (!isOwn(status, acct)) {" in VOICE_PLAYER_JS
-    assert "return;" in VOICE_PLAYER_JS
+    # Asserted against the composed script — the check is declared in the owner
+    # half and consumed by the wiring half.
+    assert "function isOwn(status, acct)" in VOICE_WIDGET_JS
+    assert "if (!isOwn(status, acct)) {" in VOICE_WIDGET_JS
+    assert VOICE_OWNER_JS.strip() in VOICE_WIDGET_JS
     assert VOICE_PLAYER_JS.strip() in VOICE_WIDGET_JS
 
 
@@ -457,10 +460,13 @@ def test_the_mic_is_released_before_the_upload_finishes() -> None:
     assert released < remux < upload
 
 
-def test_player_sits_where_mastodons_player_was() -> None:
-    """Appending to the status pushed the player below the reply/boost row."""
-    assert "original.parentElement.insertBefore(host, original.nextSibling)" in VOICE_WIDGET_JS
+def test_player_sits_above_the_transcript_not_at_the_end() -> None:
+    """Appending to the status pushed the player below the reply/boost row; the
+    first fix moved the text instead, which fought React. Inserting the player
+    before the text gets the same reading order and moves nothing."""
+    assert "anchor.parentElement.insertBefore(host, anchor)" in VOICE_WIDGET_JS
     assert "anchor.appendChild(host)" not in VOICE_WIDGET_JS
+    assert "original.nextSibling" not in VOICE_WIDGET_JS
 
 
 def test_kai_beats_mastodons_own_font_rule() -> None:
@@ -542,3 +548,27 @@ def test_the_clock_shows_one_value_so_the_bars_keep_their_width() -> None:
     assert "clock.textContent = mmssClock(showing)" in VOICE_WIDGET_JS
     assert '" / "' not in VOICE_WIDGET_JS
     assert 'minWidth: "42px"' in VOICE_WIDGET_JS
+
+
+def test_no_react_owned_node_is_ever_relocated() -> None:
+    """Moving .status__content under the player made React put it back, which
+    tripped the observer, which moved it again: the timeline strobed."""
+    assert "host.appendChild(content)" not in VOICE_WIDGET_JS
+    assert "anchor.parentElement.insertBefore(host, anchor)" in VOICE_WIDGET_JS
+    # Attributes must stay unobserved, or our own restyling re-enters the loop.
+    assert "{ childList: true, subtree: true }" in VOICE_WIDGET_JS
+    assert "attributes: true" not in VOICE_WIDGET_JS
+
+
+def test_the_swap_happens_on_the_next_frame() -> None:
+    """A 120 ms coalescing window was long enough to watch Mastodon's own player
+    appear and then be replaced."""
+    assert "window.requestAnimationFrame" in VOICE_WIDGET_JS
+    assert "}, 120);" not in VOICE_WIDGET_JS
+
+
+def test_a_dropped_host_is_put_back() -> None:
+    """React can discard our node mid-render; the status would then show a
+    hidden player and nothing else."""
+    assert "audio._piHost && audio._piHost.isConnected" in VOICE_WIDGET_JS
+    assert "audio.removeAttribute(PLAYER_MARK)" in VOICE_WIDGET_JS

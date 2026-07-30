@@ -13,6 +13,12 @@ Three things make this safe to do to someone else's SPA:
 * React re-renders the timeline constantly, so every insertion is marked and a
   MutationObserver re-applies it. Running twice over the same status is a no-op.
 
+And one thing it must never do: relocate a node React owns. Moving
+``.status__content`` under the player made React put it back, which tripped the
+observer, which moved it again — the timeline strobed. The player is inserted
+*before* the text instead, so the reading order is the same and no node ever
+changes parent.
+
 Colours are a single ink that flips with the theme — the light value is the
 slate the Owner picked, deliberately softer than black. The transcript is set in
 Kai where the platform has it.
@@ -23,48 +29,17 @@ from __future__ import annotations
 VOICE_PLAYER_JS = """
   /* ---------------- voice player: DOM wiring ---------------- */
 
-  function ownAccount(state) {
-    try {
-      var me = state && state.meta && state.meta.me;
-      var account = me && state.accounts && state.accounts[me];
-      return account && account.acct ? String(account.acct) : "";
-    } catch (ignored) {
-      return "";
-    }
-  }
-
-  function statusOf(node) {
-    var current = node;
-    while (current && current !== document.body) {
-      if (current.classList &&
-          (current.classList.contains("status") || current.tagName === "ARTICLE")) {
-        return current;
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  function isOwn(status, acct) {
-    if (!status || !acct) {
-      return false;
-    }
-    var links = status.querySelectorAll('a[href*="/@"]');
-    for (var i = 0; i < links.length; i += 1) {
-      var path = "";
-      try {
-        path = new URL(links[i].href, window.location.href).pathname;
-      } catch (ignored) {
-        path = "";
-      }
-      if (path === "/@" + acct || path.indexOf("/@" + acct + "/") === 0) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   function decorate(audio, acct) {
+    /* Done already *and* still on the page. React can drop our host during a
+       re-render; when it does, fall through and put it back rather than leaving
+       the status with a hidden player and nothing in its place. */
+    if (audio.getAttribute(PLAYER_MARK) === "1" && audio._piHost && audio._piHost.isConnected) {
+      return;
+    }
+    if (audio._piHost && !audio._piHost.isConnected) {
+      audio.removeAttribute(PLAYER_MARK);
+      audio._piHost = null;
+    }
     if (audio.getAttribute(PLAYER_MARK) === "1") {
       return;
     }
@@ -120,13 +95,13 @@ VOICE_PLAYER_JS = """
     row.appendChild(clock);
     host.appendChild(row);
 
-    /* Move Mastodon's own status text below the player and set it in Kai: the
-       transcript belongs to the recording, so it reads as one block. */
+    /* Style Mastodon's text where it stands. Never relocate it: that node
+       belongs to React, React puts it back, the observer sees the change and we
+       move it again — which is exactly what made the timeline strobe. Styles are
+       safe because only childList is observed, so restyling cannot re-trigger a
+       pass. */
     var content = status ? status.querySelector(".status__content") : null;
-    if (content && !content.getAttribute(PLAYER_MARK)) {
-      content.setAttribute(PLAYER_MARK, "1");
-      /* No rule between player and transcript: the two are one utterance, and
-         spacing already says so. */
+    if (content) {
       setStyle(content, {
         paddingTop: "2px",
         marginTop: "0",
@@ -134,16 +109,17 @@ VOICE_PLAYER_JS = """
         lineHeight: "1.85"
       });
       applyKai(content);
-      host.appendChild(content);
     }
 
-    /* Put the player exactly where Mastodon's was, not at the end of the
-       status: appending pushed it below the reply/boost row. */
-    if (original && original.parentElement) {
-      original.parentElement.insertBefore(host, original.nextSibling);
+    /* Sit above the text instead: player, then transcript, with Mastodon's own
+       player hidden below. One sibling insert, and no node changes parent. */
+    var anchor = content && content.parentElement ? content : original;
+    if (anchor && anchor.parentElement) {
+      anchor.parentElement.insertBefore(host, anchor);
     } else if (status) {
       status.appendChild(host);
     }
+    audio._piHost = host;
 
     var peaks = null;
     function paint() {
@@ -243,32 +219,6 @@ VOICE_PLAYER_JS = """
     }
   }
 
-  function resolveAcct(state) {
-    var acct = ownAccount(state);
-    if (acct) {
-      return Promise.resolve(acct);
-    }
-    /* #initial-state does not always carry the full account object — it is
-       populated differently across views, which is why this worked on the phone
-       and not on the desktop timeline. Ask the instance instead of giving up:
-       one request, the page's own token, nothing stored. */
-    var token = pickToken(state);
-    if (!token) {
-      return Promise.resolve("");
-    }
-    return fetch("/api/v1/accounts/verify_credentials", {
-      cache: "no-store",
-      headers: { Authorization: "Bearer " + token, Accept: "application/json" }
-    }).then(function (response) {
-      return response.ok ? response.json() : null;
-    }).then(function (payload) {
-      return payload && payload.acct ? String(payload.acct) : "";
-    }).catch(function (error) {
-      warn("could not resolve the signed-in account", error);
-      return "";
-    });
-  }
-
   function watchTimeline(state) {
     resolveAcct(state).then(function (acct) {
       if (!acct) {
@@ -281,17 +231,25 @@ VOICE_PLAYER_JS = """
   function startWatching(acct) {
     ensureKaiFont();
     scanForVoice(acct);
-    var pending = 0;
+    var pending = false;
+    var schedule = window.requestAnimationFrame
+      ? function (fn) { window.requestAnimationFrame(fn); }
+      : function (fn) { window.setTimeout(fn, 16); };
     var observer = new MutationObserver(function () {
-      /* React re-renders in bursts; coalesce so we scan once per frame. */
+      /* React re-renders in bursts, so coalesce — but to the next frame, not to
+         a timer. A 120 ms window was long enough to see Mastodon's own player
+         appear and then get swapped out. */
       if (pending) {
         return;
       }
-      pending = window.setTimeout(function () {
-        pending = 0;
+      pending = true;
+      schedule(function () {
+        pending = false;
         scanForVoice(acct);
-      }, 120);
+      });
     });
+    /* childList only. Observing attributes would make our own restyling
+       re-trigger the observer, which is the loop this feature has to avoid. */
     observer.observe(document.body, { childList: true, subtree: true });
   }
 """

@@ -40,12 +40,13 @@ must stay safe to embed in any HTML or config context).
 
 from __future__ import annotations
 
+from .voice_owner import VOICE_OWNER_JS
 from .voice_player import VOICE_PLAYER_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "12"
+VOICE_WIDGET_VERSION = "13"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v12 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v13 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -755,7 +756,12 @@ VOICE_WIDGET_JS = """/* CMX voice widget v12 - same-origin, relative API, page s
 })();
 """
 
-# The served script is one file; the source is three, so no module carries the
-# whole widget. Drawing comes first: its helpers are called during wiring.
-_PLAYER_SOURCE = VOICE_WAVEFORM_JS.strip("\n") + "\n" + VOICE_PLAYER_JS.strip("\n")
+# The served script is one file; the source is four, so no module carries the
+# whole widget. Order is only cosmetic — function declarations hoist — but it
+# reads as the pipeline does: draw, decide whose status it is, then wire it up.
+_PLAYER_SOURCE = "\n".join([
+    VOICE_WAVEFORM_JS.strip("\n"),
+    VOICE_OWNER_JS.strip("\n"),
+    VOICE_PLAYER_JS.strip("\n"),
+])
 VOICE_WIDGET_JS = VOICE_WIDGET_JS.replace("/*__VOICE_PLAYER__*/", _PLAYER_SOURCE)

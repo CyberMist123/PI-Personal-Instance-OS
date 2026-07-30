@@ -32,7 +32,7 @@ VOICE_WAVEFORM_JS = """
   var kaiRequested = false;
   /* So "window.__piVoicePlayer" in the console answers "which build is
      this?" without guessing at cache state. */
-  window.__piVoicePlayer = "v12";
+  window.__piVoicePlayer = "v13";
 
   function applyKai(root) {
     /* The visible text lives in the <p> children, and Mastodon sets a
