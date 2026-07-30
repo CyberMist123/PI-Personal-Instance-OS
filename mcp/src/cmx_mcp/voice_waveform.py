@@ -15,7 +15,40 @@ VOICE_WAVEFORM_JS = """
   var BAR_GAP = 2;
   var WAVE_HEIGHT = 32;
   var MIN_BAR = 3;
-  var KAI = '"Kaiti SC","STKaiti",KaiTi,"\\u6977\\u4f53","TW-Kai","LXGW WenKai","AR PL UKai CN",serif';
+  /* System Kai first — Windows and macOS already have one and it costs nothing.
+     The self-hosted subset is the fallback for iOS and Android, which ship no
+     Kai at all and would otherwise land on a plain serif. */
+  var KAI = '"Kaiti SC","STKaiti",KaiTi,"\\u6977\\u4f53","TW-Kai","LXGW WenKai GB",serif';
+  var KAI_FONT_URL = "/files/fonts/lxgw-wenkai-gb2312.woff2";
+  var kaiRequested = false;
+
+  function ensureKaiFont() {
+    /* Registered through the CSS Font Loading API rather than an injected
+       @font-face rule. A stylesheet would need style-src to allow inline, and
+       the widget has been style-element-free since v4 precisely so it does not
+       depend on how the CSP happens to be configured. font-src 'self' is all
+       this needs. display:swap keeps the transcript readable while 1.6 MB
+       arrives — and on Windows and macOS the system Kai wins before the stack
+       ever reaches this face, so nothing is fetched at all. */
+    if (kaiRequested || !window.FontFace || !document.fonts) {
+      return;
+    }
+    kaiRequested = true;
+    try {
+      var face = new window.FontFace(
+        "LXGW WenKai GB",
+        "url(" + KAI_FONT_URL + ") format('woff2')",
+        { display: "swap" }
+      );
+      face.load().then(function (loaded) {
+        document.fonts.add(loaded);
+      }).catch(function (error) {
+        warn("Kai webfont unavailable; falling back to the platform serif", error);
+      });
+    } catch (error) {
+      warn("Kai webfont could not be registered", error);
+    }
+  }
 
   function isDarkTheme() {
     try {

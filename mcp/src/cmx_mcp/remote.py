@@ -47,6 +47,10 @@ _BOT_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 _MCP_PATH_RE = re.compile(r"^/mcp/([a-z0-9_-]+)$")
 _BEARER_RE = re.compile(r"^Bearer\s+([^\s]+)$", re.IGNORECASE)
 _AUDIO_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+_FONT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\.woff2$")
+# Fonts ship with the code, not with the runtime directory: CMX_MCP_HOME
+# points at mutable state, while this is a versioned build artefact.
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 MAX_REQUEST_BYTES = 1024 * 1024
 VERIFY_TIMEOUT_SECONDS = 10.0
 
@@ -541,6 +545,26 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             {"text": str(result.get("text") or "").strip()}, headers={"Cache-Control": "no-store"}
         )
 
+    async def voice_font(request: Request) -> Response:
+        # Kai ships with Windows and macOS but not with iOS or Android, so the
+        # transcript would silently fall back to a serif on exactly the devices
+        # the recordings are made on. The file name carries the version: it is
+        # immutable, so a new subset means a new name, never an overwrite.
+        name = str(request.path_params.get("name") or "")
+        if not _FONT_NAME_RE.fullmatch(name):
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        path = ASSETS_DIR / "fonts" / name
+        if not path.is_file():
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return FileResponse(
+            path,
+            media_type="font/woff2",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     async def voice_remux(request: Request) -> Response:
         # MediaRecorder can only emit WebM or MP4, and Mastodon rejects both as
         # audio (see voice_media). The widget therefore sends the recording here
@@ -675,6 +699,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         Route("/files/voice.js", voice_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
         Route("/files/voice-remux", voice_remux, methods=["POST"]),
+        Route("/files/fonts/{name}", voice_font, methods=["GET"]),
         Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
         Route("/_cmx/mcp-health", health, methods=["GET"]),
         *mcp_routes,

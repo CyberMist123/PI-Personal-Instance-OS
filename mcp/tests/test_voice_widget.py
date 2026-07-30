@@ -414,3 +414,33 @@ def test_player_uses_one_ink_that_flips_with_the_theme() -> None:
     assert "#4d535f" in VOICE_WIDGET_JS      # light theme ink: slate, not black
     assert "#6364ff" not in VOICE_WIDGET_JS  # no accent hue anywhere
     assert "KaiTi" in VOICE_WIDGET_JS
+
+
+def test_kai_is_self_hosted_for_phones(tmp_path, monkeypatch) -> None:
+    """iOS and Android ship no Kai, so the transcript would quietly fall back to
+    a serif on exactly the devices the recordings are made on."""
+    # Registered via the Font Loading API: the widget stays style-element-free,
+    # so it does not depend on style-src being relaxed for it.
+    assert "new window.FontFace(" in VOICE_WIDGET_JS
+    assert "document.fonts.add(loaded)" in VOICE_WIDGET_JS
+    assert "/files/fonts/lxgw-wenkai-gb2312.woff2" in VOICE_WIDGET_JS
+    assert 'display: "swap"' in VOICE_WIDGET_JS
+    # System Kai must still win where it exists: no reason to fetch 1.6 MB.
+    assert VOICE_WIDGET_JS.index('"Kaiti SC"') < VOICE_WIDGET_JS.index("LXGW WenKai GB")
+
+    font = REPOSITORY_ROOT / "mcp" / "assets" / "fonts" / "lxgw-wenkai-gb2312.woff2"
+    assert font.is_file()
+    assert font.stat().st_size < 3 * 1024**2, "subset regressed towards the 25 MB full face"
+    # SIL OFL requires the licence to travel with the font.
+    assert (font.parent / "LXGW-WenKai-OFL.txt").is_file()
+
+    app = _app(tmp_path, monkeypatch)
+    with TestClient(app, base_url="https://pi.example") as client:
+        ok = client.get("/files/fonts/lxgw-wenkai-gb2312.woff2")
+        traversal = client.get("/files/fonts/..%2F..%2Fsecrets.woff2")
+        wrong_type = client.get("/files/fonts/evil.js")
+    assert ok.status_code == 200
+    assert ok.headers["content-type"] == "font/woff2"
+    assert "immutable" in ok.headers["cache-control"]
+    assert traversal.status_code == 404
+    assert wrong_type.status_code == 404

@@ -237,6 +237,7 @@ VOICE_PLAYER_JS = """
     if (!acct) {
       return;
     }
+    ensureKaiFont();
     scanForVoice(acct);
     var pending = 0;
     var observer = new MutationObserver(function () {
