@@ -58,6 +58,7 @@ VOICE_PLAYER_JS = """
     }
 
     var host = document.createElement("div");
+    host.setAttribute("data-pi-host", "1");
     setStyle(host, { color: colours.ink, margin: "6px 0 0" });
 
     var row = document.createElement("div");
@@ -152,7 +153,7 @@ VOICE_PLAYER_JS = """
     }
 
     layout();
-    window.addEventListener("resize", layout);
+    audio._piLayout = layout;
 
     /* Real amplitudes, fetched same-origin and decoded once. If anything fails
        the flat placeholder bars stay and playback still works. */
@@ -201,55 +202,5 @@ VOICE_PLAYER_JS = """
       play.innerHTML = playGlyph(true);
     });
     paint();
-  }
-
-  function scanForVoice(acct) {
-    /* audio *and* video: Mastodon files an ambiguous container as video,
-       and the element still exposes the same play/seek surface. */
-    if (!acct) {
-      return;
-    }
-    var players = document.querySelectorAll("audio, video");
-    for (var i = 0; i < players.length; i += 1) {
-      try {
-        decorate(players[i], acct);
-      } catch (error) {
-        warn("could not restyle a voice status", error);
-      }
-    }
-  }
-
-  function watchTimeline(state) {
-    resolveAcct(state).then(function (acct) {
-      if (!acct) {
-        return;
-      }
-      startWatching(acct);
-    });
-  }
-
-  function startWatching(acct) {
-    ensureKaiFont();
-    scanForVoice(acct);
-    var pending = false;
-    var schedule = window.requestAnimationFrame
-      ? function (fn) { window.requestAnimationFrame(fn); }
-      : function (fn) { window.setTimeout(fn, 16); };
-    var observer = new MutationObserver(function () {
-      /* React re-renders in bursts, so coalesce — but to the next frame, not to
-         a timer. A 120 ms window was long enough to see Mastodon's own player
-         appear and then get swapped out. */
-      if (pending) {
-        return;
-      }
-      pending = true;
-      schedule(function () {
-        pending = false;
-        scanForVoice(acct);
-      });
-    });
-    /* childList only. Observing attributes would make our own restyling
-       re-trigger the observer, which is the loop this feature has to avoid. */
-    observer.observe(document.body, { childList: true, subtree: true });
   }
 """

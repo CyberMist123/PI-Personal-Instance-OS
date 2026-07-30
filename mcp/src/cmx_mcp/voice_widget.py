@@ -42,11 +42,12 @@ from __future__ import annotations
 
 from .voice_owner import VOICE_OWNER_JS
 from .voice_player import VOICE_PLAYER_JS
+from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "13"
+VOICE_WIDGET_VERSION = "14"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v13 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v14 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -756,12 +757,14 @@ VOICE_WIDGET_JS = """/* CMX voice widget v13 - same-origin, relative API, page s
 })();
 """
 
-# The served script is one file; the source is four, so no module carries the
+# The served script is one file; the source is five, so no module carries the
 # whole widget. Order is only cosmetic — function declarations hoist — but it
-# reads as the pipeline does: draw, decide whose status it is, then wire it up.
+# reads as the pipeline does: draw, decide whose status it is, build the player,
+# then keep it applied while the SPA rebuilds underneath.
 _PLAYER_SOURCE = "\n".join([
     VOICE_WAVEFORM_JS.strip("\n"),
     VOICE_OWNER_JS.strip("\n"),
     VOICE_PLAYER_JS.strip("\n"),
+    VOICE_SCAN_JS.strip("\n"),
 ])
 VOICE_WIDGET_JS = VOICE_WIDGET_JS.replace("/*__VOICE_PLAYER__*/", _PLAYER_SOURCE)

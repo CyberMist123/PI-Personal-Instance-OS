@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>voice player flicker harness</title>
+<style>
+  body { font: 14px system-ui; background: #191b22; color: #e9edf2; margin: 0; padding: 16px; }
+  #metrics { position: fixed; top: 0; right: 0; background: #000; padding: 12px 16px;
+             font: 12px/1.7 monospace; white-space: pre; z-index: 99; border-left: 2px solid #333; }
+  .status { border-bottom: 1px solid #2a2e39; padding: 12px 16px; max-width: 560px; }
+  .status__content { font-size: 15px; margin: 8px 0; }
+  .audio-wrapper { background: #000; height: 90px; display: grid; place-items: center; color: #666; }
+  a { color: #8c8dff; }
+</style>
+</head>
+<body>
+
+<script id="initial-state" type="application/json">
+{"meta":{"me":"1","access_token":"harness"},"accounts":{"1":{"acct":"owner","id":"1"}}}
+</script>
+
+<div id="metrics">measuring…</div>
+<div id="timeline"></div>
+
+<script>
+/* ------------------------------------------------------------------
+   Stand-in for Mastodon: same class names, same shape, and — crucially —
+   the same habit of throwing subtrees away and rebuilding them, which is
+   what a virtualised React timeline does while you scroll.
+   ------------------------------------------------------------------ */
+var timeline = document.getElementById("timeline");
+var metrics = document.getElementById("metrics");
+var stats = { decorates: 0, hostsInserted: 0, rebuilds: 0, listeners: 0 };
+
+/* Count how many times the player actually builds a UI. */
+var realCreate = document.createElement.bind(document);
+document.createElement = function (tag) {
+  var node = realCreate(tag);
+  if (tag === "button") { stats.decorates += 0; }
+  return node;
+};
+/* Count resize listeners: one per decorate that is never removed is a leak. */
+var realAdd = window.addEventListener.bind(window);
+window.addEventListener = function (type, fn, opts) {
+  if (type === "resize") { stats.listeners += 1; }
+  return realAdd(type, fn, opts);
+};
+
+function statusMarkup(i, withAudio) {
+  var body = '<div class="status" data-i="' + i + '">'
+    + '<a href="/@owner">owner</a> <span>@owner</span>'
+    + '<div class="status__content"><p>第 ' + i + ' 条动态，这里是正文。</p></div>';
+  if (withAudio) {
+    body += '<div class="audio-wrapper">MASTODON NATIVE PLAYER'
+      + '<audio src="/silence.mp3" preload="none"></audio></div>';
+  }
+  return body + '</div>';
+}
+
+function build(count) {
+  var html = "";
+  for (var i = 0; i < count; i += 1) {
+    html += statusMarkup(i, i % 2 === 0);   // alternate audio / text, as reported
+  }
+  timeline.innerHTML = html;
+}
+
+build(12);
+
+/* React churn: rebuild a slice of the list on a timer, exactly the way a
+   virtualised list remounts rows as they cross the viewport edge. */
+var tick = 0;
+window.setInterval(function () {
+  tick += 1;
+  stats.rebuilds += 1;
+  var nodes = timeline.querySelectorAll(".status");
+  for (var i = 0; i < nodes.length; i += 1) {
+    if ((i + tick) % 3 === 0) {
+      var idx = Number(nodes[i].dataset.i);
+      var replacement = realCreate("div");
+      replacement.innerHTML = statusMarkup(idx, idx % 2 === 0);
+      nodes[i].replaceWith(replacement.firstChild);
+    }
+  }
+}, 250);
+
+/* New status arriving at the top, the other reported trigger. */
+var next = 1000;
+window.setInterval(function () {
+  var node = realCreate("div");
+  node.innerHTML = statusMarkup(next, next % 2 === 0);
+  timeline.prepend(node.firstChild);
+  next += 1;
+  while (timeline.children.length > 14) { timeline.lastElementChild.remove(); }
+}, 700);
+
+/* Report: hosts present vs audio elements present. Any drift, or a host count
+   that keeps climbing, is the thrash we are hunting. */
+window.setInterval(function () {
+  var audios = document.querySelectorAll("audio").length;
+  var hosts = document.querySelectorAll('[data-pi-host="1"]').length;
+  var marked = document.querySelectorAll('audio[data-pi-voice-player="1"]').length;
+  var natives = 0;
+  document.querySelectorAll(".audio-wrapper").forEach(function (w) {
+    if (w.style.display !== "none") { natives += 1; }
+  });
+  metrics.textContent =
+      "build      " + (window.__piVoicePlayer || "not loaded") + "\n"
+    + "rebuilds   " + stats.rebuilds + "\n"
+    + "audio      " + audios + "\n"
+    + "marked     " + marked + "\n"
+    + "our hosts  " + hosts + "\n"
+    + "native shown " + natives + "   <- should be 0\n"
+    + "resize lsn " + stats.listeners + "   <- should track audio, not climb";
+  window.__harness = { audios: audios, hosts: hosts, marked: marked,
+                       natives: natives, listeners: stats.listeners,
+                       rebuilds: stats.rebuilds };
+}, 300);
+</script>
+<script src="./voice.js"></script>
+</body>
+</html>

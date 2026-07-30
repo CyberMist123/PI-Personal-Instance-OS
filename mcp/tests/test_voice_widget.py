@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "13" and "voice widget v13" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "14" and "voice widget v14" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -572,3 +572,28 @@ def test_a_dropped_host_is_put_back() -> None:
     hidden player and nothing else."""
     assert "audio._piHost && audio._piHost.isConnected" in VOICE_WIDGET_JS
     assert "audio.removeAttribute(PLAYER_MARK)" in VOICE_WIDGET_JS
+
+
+def test_the_swap_happens_before_the_frame_is_painted() -> None:
+    """Hiding early but inserting in the coalesced pass still left a blank where
+    the player belongs. Measured in docs/clip-brain/design/flicker-harness."""
+    assert "function claimEarly(records)" in VOICE_WIDGET_JS
+    assert "decorate(element, acct)" in VOICE_WIDGET_JS
+    claim = VOICE_WIDGET_JS.index("claimEarly(records)")
+    coalesce = VOICE_WIDGET_JS.index("window.requestAnimationFrame(flush)")
+    assert claim < coalesce, "the synchronous claim must precede the coalesced sweep"
+
+
+def test_the_sweep_cannot_deadlock_in_a_hidden_tab() -> None:
+    """requestAnimationFrame never fires while the page is not compositing. With
+    rAF alone the in-flight flag stayed set and the observer was dead for the
+    rest of the session — the harness caught this as hosts stuck at zero."""
+    assert "window.requestAnimationFrame(flush)" in VOICE_WIDGET_JS
+    assert "window.setTimeout(flush, 100)" in VOICE_WIDGET_JS
+
+
+def test_one_resize_listener_for_the_whole_page() -> None:
+    """One per player leaked without bound: a virtualised timeline remounts rows
+    every time you scroll, and each handler pinned a detached subtree."""
+    assert "var relayoutBound = false" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_JS.count('addEventListener("resize"') == 1
