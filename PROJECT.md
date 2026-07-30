@@ -36,7 +36,7 @@ ALTERNATE_DOMAINS=
 ```
 
 - `LOCAL_DOMAIN` 永久固定为 `pi.invalid`；
-- `WEB_DOMAIN` 是可替换公网门牌。**本仓库是公开仓库，所有已跟踪文件一律只写 `<WEB_DOMAIN>` 占位符**；真实门牌只存在于不提交的 `.env` / `.env.production`，代码需要它时经 `InstanceSettings.public_base_url` 在运行时解析，不得写进任何 Markdown、脚本或提交信息；
+- `WEB_DOMAIN` 是可替换公网门牌。**本仓库是公开仓库，所有已跟踪文件一律只写 `<WEB_DOMAIN>` 占位符**；真实门牌只存在于不提交的 `.env` / `.env.production`，代码需要它时经 `InstanceSettings.public_base_url` 在运行时解析，不得写进任何 Markdown、脚本或提交信息。2026-07-31 收官审计已清理已跟踪文档 22 处、issue/PR 6 处；**残留两处，均无法用普通提交抹除**：`nginx/default.conf` 的 CSP 头（活的生产配置，见 #29，很可能可直接删除而非模板化）与 Git 历史中约 79 个提交的 Markdown 内容（要清只能 rewrite + force push）。不得声称已完全清除；
 - 不对历史 ActivityPub URI 做全库字符串替换；
 - 不开启公共联邦；
 - 不运行 `docker compose down -v`；
