@@ -15,9 +15,6 @@ VOICE_WAVEFORM_JS = """
   var BAR_GAP = 2;
   var WAVE_HEIGHT = 32;
   var MIN_BAR = 3;
-  /* System Kai first — Windows and macOS already have one and it costs nothing.
-     The self-hosted subset is the fallback for iOS and Android, which ship no
-     Kai at all and would otherwise land on a plain serif. */
   /* Three tiers, in the order they should win:
        1. the system Kai on Windows and macOS — free, already installed;
        2. "PI Kai Local", the licensed system face subset for this instance. It
@@ -33,6 +30,9 @@ VOICE_WAVEFORM_JS = """
     { family: "LXGW WenKai GB", url: "/files/fonts/lxgw-wenkai-screen-gb2312.woff2" }
   ];
   var kaiRequested = false;
+  /* So "window.__piVoicePlayer" in the console answers "which build is
+     this?" without guessing at cache state. */
+  window.__piVoicePlayer = "v12";
 
   function applyKai(root) {
     /* The visible text lives in the <p> children, and Mastodon sets a

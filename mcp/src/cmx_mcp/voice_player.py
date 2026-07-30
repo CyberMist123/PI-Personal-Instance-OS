@@ -108,7 +108,8 @@ VOICE_PLAYER_JS = """
 
     var clock = document.createElement("span");
     setStyle(clock, {
-      flex: "none", fontSize: "12.5px", color: colours.muted,
+      flex: "none", minWidth: "42px", textAlign: "right",
+      fontSize: "12.5px", color: colours.muted,
       fontVariantNumeric: "tabular-nums",
       fontFamily: '"SF Mono","Cascadia Mono",Consolas,monospace'
     });
@@ -154,8 +155,12 @@ VOICE_PLAYER_JS = """
       for (var i = 0; i < bars.length; i += 1) {
         bars[i].style.background = (i / bars.length) < ratio ? colours.ink : colours.off;
       }
-      clock.textContent = mmssClock(audio.currentTime || 0)
-        + (audio.duration && isFinite(audio.duration) ? " / " + mmssClock(audio.duration) : "");
+      /* Duration while idle, elapsed while playing — one value, so the clock
+         never changes width and the bars keep the space they were sized for. */
+      var showing = audio.paused && !audio.currentTime
+        ? (audio.duration && isFinite(audio.duration) ? audio.duration : 0)
+        : (audio.currentTime || 0);
+      clock.textContent = mmssClock(showing);
     }
 
     function layout() {
@@ -212,7 +217,7 @@ VOICE_PLAYER_JS = """
       }
     });
     audio.addEventListener("timeupdate", paint);
-    audio.addEventListener("loadedmetadata", paint);
+    audio.addEventListener("loadedmetadata", function () { layout(); paint(); });
     audio.addEventListener("play", function () {
       play.innerHTML = playGlyph(false);
     });
@@ -223,10 +228,12 @@ VOICE_PLAYER_JS = """
   }
 
   function scanForVoice(acct) {
+    /* audio *and* video: Mastodon files an ambiguous container as video,
+       and the element still exposes the same play/seek surface. */
     if (!acct) {
       return;
     }
-    var players = document.querySelectorAll("audio");
+    var players = document.querySelectorAll("audio, video");
     for (var i = 0; i < players.length; i += 1) {
       try {
         decorate(players[i], acct);

@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "11" and "voice widget v11" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "12" and "voice widget v12" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -528,3 +528,17 @@ def test_the_licensed_kai_never_reaches_the_repository() -> None:
     assert stack.index("KaiTi") < stack.index("PI Kai Local") < stack.index("LXGW WenKai GB")
     # A machine without the private face must degrade silently, not warn.
     assert "kai-private.woff2" in VOICE_WIDGET_JS
+
+
+def test_player_also_claims_attachments_mastodon_typed_as_video() -> None:
+    """An ambiguous container gets filed as video — every pre-MP3 recording was.
+    The element still exposes the same play and seek surface."""
+    assert 'querySelectorAll("audio, video")' in VOICE_WIDGET_JS
+
+
+def test_the_clock_shows_one_value_so_the_bars_keep_their_width() -> None:
+    """It grew from 0:00 to 00:02 / 00:02 after the bars had been sized to the
+    old width, and they ran on underneath the text."""
+    assert "clock.textContent = mmssClock(showing)" in VOICE_WIDGET_JS
+    assert '" / "' not in VOICE_WIDGET_JS
+    assert 'minWidth: "42px"' in VOICE_WIDGET_JS
