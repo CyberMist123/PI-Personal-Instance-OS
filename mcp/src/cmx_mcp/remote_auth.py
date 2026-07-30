@@ -598,23 +598,23 @@ class CmxOAuthProvider:
         raw_code = raw_code.strip()
         status, invite_scopes = "invalid", None
         if raw_code:
-            # Clients that never asked for a scope get exactly what the owner
-            # minted into the invite; explicit requests keep the invite as a
-            # ceiling.
             status, invite_scopes = self.store.redeem_invite(
                 raw_code=raw_code,
                 bot_id=pending.bot_id,
                 client_id=pending.client_id,
             )
         if status == "ok":
-            allowed = normalize_scopes(invite_scopes or [READ_SCOPE])
-            if pending.scopes_explicit:
-                # Narrow to the ceiling instead of failing the redemption: a
-                # client that replays our registration default would otherwise
-                # be unable to redeem a read-only invite at all.
-                granted = [scope for scope in pending.scopes if scope in set(allowed)]
-            else:
-                granted = allowed
+            # The invite IS the grant, not a ceiling on what the client asked
+            # for. A single-use code minted by the owner on the local machine
+            # is the resource owner's instruction in the sense of RFC 6749
+            # 3.3, which lets the authorization server ignore the requested
+            # scope. This is not a stylistic choice: ChatGPT asks for
+            # `scope=cmx:read` no matter what our registration response and
+            # both discovery documents advertise, so honouring the request
+            # would make a cmx:social connector impossible to create. The
+            # token response carries the granted scope back, and the resident's
+            # remote_profile below still caps it.
+            granted = normalize_scopes(invite_scopes or [READ_SCOPE])
             if SOCIAL_SCOPE in granted and self.bot_remote_profile(pending.bot_id) not in {"social", "social_plus"}:
                 granted = [READ_SCOPE]
             with self._pending_lock:

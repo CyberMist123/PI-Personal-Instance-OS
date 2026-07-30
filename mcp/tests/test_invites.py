@@ -93,14 +93,15 @@ def test_invite_redeem_approves_pending_and_is_single_use(tmp_path):
     asyncio.run(scenario())
 
 
-def test_invite_scope_ceiling_narrows_the_grant(tmp_path):
-    """A smaller invite narrows an explicit request instead of failing it."""
+def test_the_invite_defines_the_grant_not_the_request(tmp_path):
+    """Owner-minted invite wins over whatever scope the client asked for."""
 
     async def scenario():
         store, provider = _provider(tmp_path)
         client = _client()
         await provider.register_client(client)
 
+        # Asking for more than the invite covers still lands on the invite.
         request_id = await _pending_request(provider, client, scopes=[READ_SCOPE, SOCIAL_SCOPE])
         read_only = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
         target = provider.redeem(request_id, read_only)
@@ -108,7 +109,10 @@ def test_invite_scope_ceiling_narrows_the_grant(tmp_path):
         auth_code = await provider.load_authorization_code(client, raw_code)
         assert list(auth_code.scopes) == [READ_SCOPE]
 
-        request_id = await _pending_request(provider, client, scopes=[READ_SCOPE, SOCIAL_SCOPE])
+        # And asking for less does too: this is the ChatGPT case. It sends
+        # scope=cmx:read whatever we advertise, so honouring the request would
+        # make a social connector impossible to create.
+        request_id = await _pending_request(provider, client, scopes=[READ_SCOPE])
         social = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE, SOCIAL_SCOPE])
         target = provider.redeem(request_id, social)
         raw_code = target.split("code=", 1)[1].split("&", 1)[0]
@@ -307,8 +311,11 @@ def test_confidential_client_full_flow_like_chatgpt(tmp_path, monkeypatch):
                 "state": "gpt-state",
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
-                # Exactly what the registration response handed back.
-                "scope": payload["scope"],
+                # Verbatim from the nginx log of a real connector setup on
+                # 2026-07-31: ChatGPT asks for cmx:read alone even though it
+                # just registered with cmx:read cmx:social and both discovery
+                # documents list the social scope.
+                "scope": READ_SCOPE,
                 "resource": "https://pi.example/mcp/gpt",
             },
             follow_redirects=False,
