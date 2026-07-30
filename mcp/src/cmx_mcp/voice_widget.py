@@ -43,9 +43,9 @@ from __future__ import annotations
 from .voice_player import VOICE_PLAYER_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "7"
+VOICE_WIDGET_VERSION = "8"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v7 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v8 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -688,6 +688,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v7 - same-origin, relative API, page se
             throw new Error("empty recording");
           }
           var recorded = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
+          /* Hand the mic back the moment the audio is in hand. Everything after
+             this — rewrap, upload, publish, transcribe — is the network's
+             problem, not something to stand and watch. A failure still flashes,
+             and the locals above keep this tap's data separate from the next. */
+          busy = false;
+          resetUi();
+          flash("\\u5df2\\u53d1\\u9001 \\ud83c\\udf99\\ufe0f");
           return toOgg(recorded, blobName(recorded, clipMime));
         })
         .then(function (ogg) {
@@ -707,10 +714,8 @@ VOICE_WIDGET_JS = """/* CMX voice widget v7 - same-origin, relative API, page se
         .then(publish)
         .then(function (status) {
           var statusId = String((status && status.id) || "");
-          busy = false;
-          resetUi();
-          flash("\\u5df2\\u53d1\\u5e03 \\ud83c\\udf99\\ufe0f");
-          /* The voice post is already online; the transcript catches up on its own. */
+          /* The UI was released back at the recording step; the transcript
+             catches up on its own from here. */
           backfill(statusId, clipMediaId, clipBlob, clipName);
         })
         .catch(function (error) {

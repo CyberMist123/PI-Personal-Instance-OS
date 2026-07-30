@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 # One-stop connection console: pick a resident, get it authorized, and print
@@ -228,6 +228,10 @@ function Invoke-ClaudeCodeConnect {
     }
 
     $exists = $false
+    Write-Host "正在检查 Claude Code 里是否已经配置过（下面如果出现 No MCP server named，说明还没配，属于正常）..." -ForegroundColor DarkGray
+    # No stderr redirection here: in Windows PowerShell 5.1, redirecting a
+    # native command's stderr turns each line into an ErrorRecord, which
+    # $ErrorActionPreference=Stop then escalates into a terminating error.
     & $claude.Source mcp get $name | Out-Null
     if ($LASTEXITCODE -eq 0) { $exists = $true }
 
@@ -339,7 +343,9 @@ function Show-Status {
 
     Write-Host ""
     Write-Host "居民：" -ForegroundColor Cyan
-    foreach ($bot in Get-Bots) {
+    # Assign first: a function returning an array reaches `foreach` as one item.
+    $bots = Get-Bots
+    foreach ($bot in $bots) {
         $state = "启用"
         if (-not $bot.enabled) { $state = "停用" }
         Write-Host ("  " + $bot.id.PadRight(12) + " " + $state + "  本机 profile=" + $bot.profile + "  远程 profile=" + $bot.remote_profile)

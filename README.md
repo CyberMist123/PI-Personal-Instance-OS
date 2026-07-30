@@ -104,6 +104,21 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 
 `start.ps1` 是手动启动、计划任务启动和故障恢复的统一入口，必须保留。
 
+## 接入 AI 客户端
+
+双击根目录 `一键连接.bat`，按菜单走，不需要手敲命令：
+
+```text
+1  网页端 MCP 授权（ChatGPT 等）：铸邀请码、复制到剪贴板、打印服务器地址与分步指南
+2  Claude Code 本机接入：直接写入用户级 MCP 配置
+3  设置 Owner 文件柜上传口令
+4  重新授权居民的 Mastodon Token（浏览器 OAuth，存进 DPAPI）
+5  状态体检（本机 / 公网 / 居民 / 未用邀请码）
+6  重启远程 MCP 服务
+```
+
+新建居民仍走 `一键新居民.bat`，拉取更新走 `一键更新.bat`。
+
 ## Windows 自动启动
 
 当前使用双层启动：

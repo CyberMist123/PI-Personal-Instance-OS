@@ -124,20 +124,24 @@ VOICE_PLAYER_JS = """
     var content = status ? status.querySelector(".status__content") : null;
     if (content && !content.getAttribute(PLAYER_MARK)) {
       content.setAttribute(PLAYER_MARK, "1");
+      /* No rule between player and transcript: the two are one utterance, and
+         spacing already says so. */
       setStyle(content, {
-        borderTop: "1px solid " + colours.hair,
-        paddingTop: "11px",
+        paddingTop: "2px",
         marginTop: "0",
-        fontFamily: KAI,
         fontSize: "17px",
         lineHeight: "1.85"
       });
+      applyKai(content);
       host.appendChild(content);
     }
 
-    var anchor = original && original.parentElement ? original.parentElement : status;
-    if (anchor) {
-      anchor.appendChild(host);
+    /* Put the player exactly where Mastodon's was, not at the end of the
+       status: appending pushed it below the reply/boost row. */
+    if (original && original.parentElement) {
+      original.parentElement.insertBefore(host, original.nextSibling);
+    } else if (status) {
+      status.appendChild(host);
     }
 
     var peaks = null;

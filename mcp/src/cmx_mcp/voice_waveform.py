@@ -22,6 +22,20 @@ VOICE_WAVEFORM_JS = """
   var KAI_FONT_URL = "/files/fonts/lxgw-wenkai-gb2312.woff2";
   var kaiRequested = false;
 
+  function applyKai(root) {
+    /* The visible text lives in the <p> children, and Mastodon sets a
+       font-family on those directly, so a value on the container alone loses to
+       it. Set it on every node, and mark it important so no later rule wins. */
+    var nodes = [root].concat(Array.prototype.slice.call(root.querySelectorAll("p, span, a")));
+    for (var i = 0; i < nodes.length; i += 1) {
+      try {
+        nodes[i].style.setProperty("font-family", KAI, "important");
+      } catch (ignored) {
+        nodes[i].style.fontFamily = KAI;
+      }
+    }
+  }
+
   function ensureKaiFont() {
     /* Registered through the CSS Font Loading API rather than an injected
        @font-face rule. A stylesheet would need style-src to allow inline, and

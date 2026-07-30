@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "7" and "voice widget v7" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "8" and "voice widget v8" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -444,3 +444,26 @@ def test_kai_is_self_hosted_for_phones(tmp_path, monkeypatch) -> None:
     assert "immutable" in ok.headers["cache-control"]
     assert traversal.status_code == 404
     assert wrong_type.status_code == 404
+
+
+def test_the_mic_is_released_before_the_upload_finishes() -> None:
+    """The point of the recorder is to record and walk away. Waiting on remux,
+    upload and publish put an hourglass in front of that."""
+    released = VOICE_WIDGET_JS.index('flash("\\u5df2\\u53d1\\u9001')   # "已发送"
+    remux = VOICE_WIDGET_JS.index("return toOgg(recorded")
+    upload = VOICE_WIDGET_JS.index("return upload(clipBlob")
+    assert released < remux < upload
+
+
+def test_player_sits_where_mastodons_player_was() -> None:
+    """Appending to the status pushed the player below the reply/boost row."""
+    assert "original.parentElement.insertBefore(host, original.nextSibling)" in VOICE_WIDGET_JS
+    assert "anchor.appendChild(host)" not in VOICE_WIDGET_JS
+
+
+def test_kai_beats_mastodons_own_font_rule() -> None:
+    """Mastodon styles the <p> inside .status__content, so a font-family on the
+    container alone never shows."""
+    assert 'setProperty("font-family", KAI, "important")' in VOICE_WIDGET_JS
+    assert 'querySelectorAll("p, span, a")' in VOICE_WIDGET_JS
+    assert "applyKai(content)" in VOICE_WIDGET_JS
