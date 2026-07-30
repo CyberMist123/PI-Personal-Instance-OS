@@ -394,6 +394,15 @@ function New-Onboarding {
     $go = Read-Host "开始？(Y/n)"
     if ($go -eq "n" -or $go -eq "N") { Write-Host "已取消。" -ForegroundColor Yellow; return }
 
+    if ($useExisting) {
+        Write-Host ""
+        Write-Host ("授权页需要用 @" + $botId + " 自己登录，不能用你的 Owner 账号。") -ForegroundColor Yellow
+        $needPass = Read-Host "手上有这个账号的登录密码吗？(回车=有 / y=现在重置一个)"
+        if ($needPass -eq "y" -or $needPass -eq "Y") {
+            Reset-AccountPassword -Username $botId -Confirmed
+        }
+    }
+
     Write-Host ""
     Write-Host "接下来会打开浏览器做授权。两件事先说清楚：" -ForegroundColor Yellow
     Write-Host ("  · 授权页顶部必须显示 @" + $botId + "。如果显示的是 @owner，说明浏览器里还是你自己的登录态——") -ForegroundColor Yellow
@@ -497,6 +506,46 @@ function Set-RemoteProfile {
     Write-Host "远程服务需要重启才会生效（工具集是启动时按权限装配的）。" -ForegroundColor Yellow
     $restart = Read-Host "现在重启远程 MCP？(Y/n)"
     if ($restart -ne "n" -and $restart -ne "N") { Restart-RemoteService }
+}
+
+function Reset-AccountPassword {
+    param([string]$Username = "", [switch]$Confirmed)
+    Write-Section "重置 AI 账号的登录密码"
+    Write-Host "重置的是这个 AI 在 CMX 网页上的【登录密码】，不是它的 MCP Token。" -ForegroundColor DarkGray
+    Write-Host "授权页必须由这个 AI 自己登录，所以密码丢了就从这里重发一个。" -ForegroundColor DarkGray
+    if (-not $Username) {
+        $Username = (Read-Host "AI 账号的用户名（不带 @）").Trim().ToLowerInvariant()
+    }
+    if ($Username -notmatch '^[a-z0-9_]+$') {
+        Write-Host "用户名只能用小写字母、数字和下划线。" -ForegroundColor Red
+        return
+    }
+    if (-not $Confirmed) {
+        $answer = Read-Host ("确认重置 @" + $Username + " 的密码？旧密码立刻失效。(y/N)")
+        if ($answer -ne "y" -and $answer -ne "Y") {
+            Write-Host "取消。" -ForegroundColor DarkGray
+            return
+        }
+    }
+
+    $repository = Split-Path -Parent $Root
+    $previous = Get-Location
+    try {
+        Set-Location -LiteralPath $repository
+        # No stream redirection on the native call: with $ErrorActionPreference
+        # Stop, a redirected stderr becomes a terminating error and buries the
+        # readable message below.
+        & docker info --format "{{.ServerVersion}}" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Docker Desktop 没在运行，先启动它再来。" }
+        Write-Host ""
+        & docker compose exec -T web tootctl accounts modify $Username --reset-password
+        if ($LASTEXITCODE -ne 0) { throw ("重置失败：确认 @" + $Username + " 在 Mastodon 里确实存在。") }
+    } finally {
+        Set-Location -LiteralPath $previous
+    }
+    Write-Host ""
+    Write-Host "上面那行 New password 就是新密码，用它在授权页登录这个 AI 账号。" -ForegroundColor Yellow
+    Write-Host "它不进 Git、不进数据库、不进日志，这里显示完就没有第二份了。" -ForegroundColor DarkGray
 }
 
 function Invoke-ResidentReauth {
@@ -670,7 +719,8 @@ function Show-ResidentMenu {
         @{ Key = "1"; Text = "查看居民详情"; Action = { Show-BotDetail } },
         @{ Key = "2"; Text = "修改公网权限（不开放 / 只读 / 可发帖）"; Action = { Set-RemoteProfile } },
         @{ Key = "3"; Text = "重新授权 Mastodon Token"; Action = { Invoke-ResidentReauth } },
-        @{ Key = "4"; Text = "邀请码：查看未用 / 作废"; Action = { Show-Invites } }
+        @{ Key = "4"; Text = "重置 AI 账号的网页登录密码"; Action = { Reset-AccountPassword } },
+        @{ Key = "5"; Text = "邀请码：查看未用 / 作废"; Action = { Show-Invites } }
     )
 }
 
