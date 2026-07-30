@@ -58,13 +58,22 @@ VOICE_SCAN_JS = """
         version: window.__piVoicePlayer,
         acct: acct,
         media: media.length,
+        mine: 0,
         inStatus: 0,
         own: 0,
         claimed: 0,
+        /* Mastodon's picture-in-picture placeholder. Anything above zero means
+           it took a clip away from its status, which is what our own element
+           exists to prevent. */
+        poppedOut: document.querySelectorAll(".picture-in-picture-placeholder").length,
         samples: []
       };
       for (var i = 0; i < media.length; i += 1) {
         var element = media[i];
+        if (element.getAttribute(OWN_MARK) === "1") {
+          report.mine += 1;
+          continue;
+        }
         var status = statusOf(element);
         if (status) {
           report.inStatus += 1;

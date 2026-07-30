@@ -15,6 +15,9 @@ VOICE_WAVEFORM_JS = """
      need two marks: the first happens before the frame is painted, the second
      one frame later. */
   var HIDDEN_MARK = "data-pi-voice-hidden";
+  /* Our own <audio> is also an <audio>, and every sweep here selects on the tag
+     name. Without a mark the player would try to claim its own element. */
+  var OWN_MARK = "data-pi-voice-own";
   var BAR_WIDTH = 3;
   var BAR_GAP = 2;
   var WAVE_HEIGHT = 32;
@@ -36,7 +39,7 @@ VOICE_WAVEFORM_JS = """
   var kaiRequested = false;
   /* So "window.__piVoicePlayer" in the console answers "which build is
      this?" without guessing at cache state. */
-  window.__piVoicePlayer = "v15";
+  window.__piVoicePlayer = "v16";
 
   function applyKai(root) {
     /* The visible text lives in the <p> children, and Mastodon sets a

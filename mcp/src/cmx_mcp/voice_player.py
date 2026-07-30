@@ -29,6 +29,18 @@ from __future__ import annotations
 VOICE_PLAYER_JS = """
   /* ---------------- voice player: DOM wiring ---------------- */
 
+  /* Exactly one clip may be audible. Our elements live inside hosts React can
+     drop at any moment, and a detached media element keeps playing — without
+     this, remounting a row while it played left a voice nobody could pause. */
+  var playing = null;
+
+  function playOnly(element) {
+    if (playing && playing !== element) {
+      playing.pause();
+    }
+    playing = element;
+  }
+
   /* Where the audio actually is, asked in the order the answers appear.
      currentSrc alone is empty until the element has selected a resource, which
      on a freshly inserted node has not happened yet — that emptiness is what
@@ -72,6 +84,9 @@ VOICE_PLAYER_JS = """
      the replacement this early is what broke the waveform and the sound, since
      React has not finished with the element yet. */
   function claimQuietly(audio, acct) {
+    if (audio.getAttribute(OWN_MARK) === "1") {
+      return;
+    }
     if (!isOwn(statusOf(audio), acct)) {
       return;
     }
@@ -79,15 +94,35 @@ VOICE_PLAYER_JS = """
   }
 
   function decorate(audio, acct) {
+    /* Never decorate our own element: it is an <audio> too, and every sweep
+       here selects on the tag name. */
+    if (audio.getAttribute(OWN_MARK) === "1") {
+      return;
+    }
     /* Done already *and* still on the page. React can drop our host during a
        re-render; when it does, fall through and put it back rather than leaving
        the status with a hidden player and nothing in its place. */
     if (audio.getAttribute(PLAYER_MARK) === "1" && audio._piHost && audio._piHost.isConnected) {
+      /* Already built, but React may only have put the source on the element
+         after we got here. Our own element's events cannot help with that —
+         they never fire while it has no source — so the sweep is what retries. */
+      if (audio._piRefresh) {
+        audio._piRefresh();
+      }
       return;
     }
     if (audio._piHost && !audio._piHost.isConnected) {
+      /* The host went, so its <audio> went with it — but a detached element
+         does not stop on its own. Silence it before building the next one. */
+      if (audio._piOwn) {
+        audio._piOwn.pause();
+        if (playing === audio._piOwn) {
+          playing = null;
+        }
+      }
       audio.removeAttribute(PLAYER_MARK);
       audio._piHost = null;
+      audio._piOwn = null;
     }
     if (audio.getAttribute(PLAYER_MARK) === "1") {
       return;
@@ -143,6 +178,35 @@ VOICE_PLAYER_JS = """
     row.appendChild(clock);
     host.appendChild(row);
 
+    /* Our own element, not Mastodon's.
+
+       Mastodon deploys picture-in-picture when its own audio element is
+       unmounted while playing — features/audio/index.tsx guards on
+       "audioRef.current is not paused and the new ref is null". Driving that
+       element meant every timeline re-render handed the sound to a popped-out
+       player and left a "restore" placeholder where the status had been: the
+       bar went silent while audio came from the corner of the screen.
+       Mastodon's element now stays paused for ever, so that branch never
+       fires. No controls attribute is set, so this one renders nothing, and it
+       stays in the render tree because iOS will not play what is not
+       rendered. */
+    var ours = document.createElement("audio");
+    ours.setAttribute(OWN_MARK, "1");
+    ours.preload = "metadata";
+    host.appendChild(ours);
+    audio._piOwn = ours;
+
+    function ensureSource() {
+      if (ours.getAttribute("src")) {
+        return;
+      }
+      var url = mediaSource(audio);
+      if (url) {
+        ours.setAttribute("src", url);
+      }
+    }
+    ensureSource();
+
     /* Style Mastodon's text where it stands. Never relocate it: that node
        belongs to React, React puts it back, the observer sees the change and we
        move it again — which is exactly what made the timeline strobe. Styles are
@@ -174,16 +238,16 @@ VOICE_PLAYER_JS = """
       if (!peaks) {
         return;
       }
-      var ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+      var ratio = ours.duration ? ours.currentTime / ours.duration : 0;
       var bars = wave.children;
       for (var i = 0; i < bars.length; i += 1) {
         bars[i].style.background = (i / bars.length) < ratio ? colours.ink : colours.off;
       }
       /* Duration while idle, elapsed while playing — one value, so the clock
          never changes width and the bars keep the space they were sized for. */
-      var showing = audio.paused && !audio.currentTime
-        ? (audio.duration && isFinite(audio.duration) ? audio.duration : 0)
-        : (audio.currentTime || 0);
+      var showing = ours.paused && !ours.currentTime
+        ? (ours.duration && isFinite(ours.duration) ? ours.duration : 0)
+        : (ours.currentTime || 0);
       clock.textContent = mmssClock(showing);
     }
 
@@ -242,15 +306,21 @@ VOICE_PLAYER_JS = """
         });
     }
     sampleWaveform();
+    audio._piRefresh = function () {
+      ensureSource();
+      sampleWaveform();
+    };
 
     play.addEventListener("click", function () {
-      if (!audio.paused) {
-        audio.pause();
+      if (!ours.paused) {
+        ours.pause();
         return;
       }
+      ensureSource();
+      playOnly(ours);
       /* play() rejects rather than throws when a browser refuses — an unhandled
          rejection is exactly how "the button does nothing" stays a mystery. */
-      var started = audio.play();
+      var started = ours.play();
       if (started && typeof started.catch === "function") {
         started.catch(function (error) {
           warn("playback was refused by the browser", error);
@@ -260,26 +330,32 @@ VOICE_PLAYER_JS = """
     wave.addEventListener("click", function (event) {
       var rect = wave.getBoundingClientRect();
       var ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-      if (audio.duration && isFinite(audio.duration)) {
-        audio.currentTime = ratio * audio.duration;
+      if (ours.duration && isFinite(ours.duration)) {
+        ours.currentTime = ratio * ours.duration;
         paint();
       }
     });
-    audio.addEventListener("timeupdate", paint);
-    audio.addEventListener("loadedmetadata", function () {
+    ours.addEventListener("timeupdate", paint);
+    ours.addEventListener("loadedmetadata", function () {
       layout();
       paint();
       sampleWaveform();
     });
     /* canplay and the first play are the two later moments where a source is
        guaranteed to exist, whatever the element looked like when we claimed it. */
-    audio.addEventListener("canplay", sampleWaveform);
-    audio.addEventListener("play", function () {
+    ours.addEventListener("canplay", sampleWaveform);
+    ours.addEventListener("play", function () {
       play.innerHTML = playGlyph(false);
       sampleWaveform();
     });
-    audio.addEventListener("pause", function () {
+    ours.addEventListener("pause", function () {
       play.innerHTML = playGlyph(true);
+    });
+    ours.addEventListener("ended", function () {
+      play.innerHTML = playGlyph(true);
+      if (playing === ours) {
+        playing = null;
+      }
     });
     paint();
   }

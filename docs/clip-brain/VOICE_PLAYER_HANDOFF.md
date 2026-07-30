@@ -1,7 +1,7 @@
 # 语音条：当前故障与交接单
 
-**状态：v15 已写好并在复现环境验证，未部署。A 已修且可量测，C 的根因已排除但只在
-桌面浏览器验过，B 仍未定位、已配诊断探针。**
+**状态：v15 已部署，波形回来了（Owner 真机确认）。v16 已写好未部署，修的是「点了没
+声音、旁边弹出一个播放器」——根因是 Mastodon 的画中画。**
 最后更新 2026-07-31。分支 `feat/clip-brain-backend`。
 
 ---
@@ -18,9 +18,34 @@
 
 | # | 现象 | 平台 | v13 | v15 |
 |---|---|---|---|---|
-| A | 播放器和柱子都在，但**柱子全是等高占位条**，没有真实波形 | 手机 | 有波形 | **已修，复现环境量到 7/7 真实波形** |
+| A | 播放器和柱子都在，但**柱子全是等高占位条**，没有真实波形 | 手机 | 有波形 | **v15 已修，Owner 真机确认波形回来了** |
 | B | **仍是 Mastodon 原生黑框播放器**，完全没被接管 | PC | 也坏 | **未修**，已配 `__piVoiceDebug()` |
-| C | **播不出声音** | 手机 | 能播 | **根因已排除**，仅桌面验证，待真机 |
+| C | **播不出声音** | 手机/PC | 能播 | **v16 修，根因确诊：画中画** |
+
+### 故障 C 的真正根因（2026-07-31 确诊）
+
+Owner 的两句话把它钉死了：「点击播放依然没有声音，但**弹出来的原 CMX 是有声音的**」，
+以及截图里那个虚线「恢复」框。那是 Mastodon 的**画中画占位符**
+（`components/picture_in_picture_placeholder.tsx`，文案 id 是
+`picture_in_picture.restore`）。
+
+`features/audio/index.tsx` 的 ref 回调：
+
+```text
+if (audioRef.current && !audioRef.current.paused && c === null) {
+  deployPictureInPicture('audio', { src, currentTime, ... });
+}
+```
+
+**元素在播放中被 React 卸载 → 部署画中画。** 而我们一直在驱动的正是 Mastodon 自己
+那个 `<audio>`：一按播放它就 not paused，时间线一重挂载（虚拟列表滚动、新动态到达
+都会）就把声音搬进角落里的弹出播放器，原位留下「恢复」占位。所以：条子是哑的、声音
+在别处、两种形式横跳——全是同一件事。
+
+v16 不再借用它的元素：在我们自己的 host 里建一个自己的 `<audio>`，同源同 src。
+**Mastodon 那个永远保持 paused**，上面那个分支就永远不会成立。代价是媒体会话归我们
+所有，所以补了两条：全局只允许一个在响（`playOnly`），以及 host 被 React 丢掉时先把
+它自己的元素暂停——脱离文档的媒体元素是不会自己停的。
 
 ### v15 改了什么
 
@@ -38,12 +63,17 @@
    rejection 正是「点了没反应」查不出原因的方式。
 5. `window.__piVoiceDebug()` —— 一次 Console 调用回报整条链断在哪。
 
-### 复现环境静置后实测（v15）
+### 复现环境静置后实测（v16）
 
 ```text
 natives 0    gap 0    hosts 7/7    nonFlat 7/7
 bars 89      waveWidth 446         listeners 1
+ourAudioExists true   oursPlaying true   anyNativePlaying false
 ```
+
+最后一行是 v16 的核心断言：**7 个 Mastodon 元素没有一个进入播放状态**，画中画那个
+分支因此永远不成立。另测：连点两个播放键，先按的自动停，`simultaneouslyAudible` 为
+1，两个按钮图标各自正确。
 
 柱高 5–29px、7 个不同值，与合成音频的「三段响声＋间隙」对得上；点播放键
 `paused=false`、`currentTime` 递增、`readyState=4`，且此时 wrapper 的
@@ -161,7 +191,7 @@ WAV（三段响声＋间隙，Blob URL），并断言柱子数量、波形容器
 | `voice_widget.py` | 770 | 录音键本体 + 组装。**录音链路是好的，别动** |
 | `voice_waveform.py` | 181 | 配色、RMS 取样、画柱子、楷体注册 |
 | `voice_owner.py` | 79 | 账号解析、`statusOf`、`isOwn` |
-| `voice_player.py` | 286 | `mediaSource`、`hideNativeChrome`、`claimQuietly`、`decorate` |
+| `voice_player.py` | 337 | `mediaSource`、`hideNativeChrome`、`claimQuietly`、`playOnly`、`decorate` |
 | `voice_scan.py` | 185 | observer、合并扫描、`claimEarly`、`__piVoiceDebug`、全局 resize |
 
 改任一模块后 `VOICE_WIDGET_VERSION` 必须 +1，否则浏览器缓存不会更新
@@ -185,6 +215,9 @@ Console 里 `window.__piVoicePlayer` 会回当前版本，用它确认浏览器�
 - **observer 回调里只藏，不建**。v15 起，构建必须留在合并那一轮：那个回调发生得
   太早，元素还没选定音源。
 - **波形采样必须可重试**。一次性的 `currentSrc` 判空就是 A 的根因。
+- **绝不驱动 Mastodon 自己的 `<audio>`**。它一旦 not paused 又被卸载，画中画就会把
+  声音搬走（C 的根因）。播放、seek、事件全部走我们自己那个带 `OWN_MARK` 的元素。
+- **全局只允许一个在响**。脱离文档的媒体元素不会自己停。
 - 不 fork Mastodon，不改它的前端源码，不碰它的数据库与媒体卷。
 
 ---

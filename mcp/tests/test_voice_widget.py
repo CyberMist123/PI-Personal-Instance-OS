@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "15" and "voice widget v15" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "16" and "voice widget v16" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -397,11 +397,47 @@ def test_player_only_touches_the_owners_own_statuses() -> None:
 def test_player_hides_mastodons_controls_without_removing_them() -> None:
     from cmx_mcp.voice_player import VOICE_PLAYER_JS
 
-    # Mastodon keeps owning the <audio>; we only hide its chrome and drive it.
+    # Mastodon's node is only hidden, never removed.
     assert "function hideNativeChrome(audio)" in VOICE_PLAYER_JS
     assert ".removeChild(original" not in VOICE_PLAYER_JS
-    assert "audio.play()" in VOICE_PLAYER_JS and "audio.pause()" in VOICE_PLAYER_JS
-    assert "audio.currentTime = ratio * audio.duration" in VOICE_PLAYER_JS
+    assert "ours.play()" in VOICE_PLAYER_JS and "ours.pause()" in VOICE_PLAYER_JS
+    assert "ours.currentTime = ratio * ours.duration" in VOICE_PLAYER_JS
+
+
+def test_playback_uses_our_own_element_so_mastodon_cannot_pop_it_out() -> None:
+    """Mastodon deploys picture-in-picture when its own audio element is
+    unmounted while playing. Driving that element meant every timeline
+    re-render handed the sound to a popped-out player and left a "restore"
+    placeholder: the bar went silent while audio played in the corner. Ours
+    stays paused for ever, so that branch never fires."""
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert 'var ours = document.createElement("audio")' in VOICE_PLAYER_JS
+    assert "ours.setAttribute(OWN_MARK" in VOICE_PLAYER_JS
+    # Mastodon's element is never started, seeked or listened to for playback.
+    for forbidden in (
+        "audio.play()",
+        "audio.pause()",
+        "audio.currentTime =",
+        'audio.addEventListener("timeupdate"',
+        'audio.addEventListener("play"',
+    ):
+        assert forbidden not in VOICE_PLAYER_JS, forbidden
+    # And our element must not be mistaken for a status attachment: every sweep
+    # selects on the tag name, so both entry points check the mark.
+    assert VOICE_PLAYER_JS.count('getAttribute(OWN_MARK) === "1"') >= 2
+
+
+def test_only_one_clip_can_be_audible() -> None:
+    """Our element lives inside a host React can drop at any moment, and a
+    detached media element keeps playing. Without this a remount left a voice
+    nobody could pause."""
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert "function playOnly(element)" in VOICE_PLAYER_JS
+    assert "playOnly(ours)" in VOICE_PLAYER_JS
+    # A dropped host silences its own element before the replacement is built.
+    assert "audio._piOwn.pause()" in VOICE_PLAYER_JS
 
 
 def test_the_native_chrome_is_clipped_rather_than_undisplayed() -> None:
@@ -432,7 +468,7 @@ def test_waveform_sampling_survives_a_source_that_arrives_late() -> None:
     # fire once a resource exists.
     assert "if (audio.currentSrc && window.AudioContext)" not in VOICE_PLAYER_JS
     assert "function sampleWaveform()" in VOICE_PLAYER_JS
-    assert 'audio.addEventListener("canplay", sampleWaveform)' in VOICE_PLAYER_JS
+    assert 'ours.addEventListener("canplay", sampleWaveform)' in VOICE_PLAYER_JS
     assert VOICE_PLAYER_JS.count("sampleWaveform()") >= 3
     # ...but not without bound: a failing fetch must not retry forever.
     assert "sampleAttempts >= 3" in VOICE_PLAYER_JS
@@ -443,7 +479,7 @@ def test_refused_playback_is_reported_instead_of_silent() -> None:
     "the button does nothing" stays unexplained."""
     from cmx_mcp.voice_player import VOICE_PLAYER_JS
 
-    assert "var started = audio.play();" in VOICE_PLAYER_JS
+    assert "var started = ours.play();" in VOICE_PLAYER_JS
     assert 'warn("playback was refused by the browser", error)' in VOICE_PLAYER_JS
 
 
