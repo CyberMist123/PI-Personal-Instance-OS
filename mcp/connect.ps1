@@ -395,9 +395,12 @@ function New-Onboarding {
     if ($go -eq "n" -or $go -eq "N") { Write-Host "已取消。" -ForegroundColor Yellow; return }
 
     Write-Host ""
-    Write-Host "接下来会打开浏览器。请用【这个 AI 自己的账号】登录并点授权，不要用你自己的 Owner 账号。" -ForegroundColor Yellow
+    Write-Host "接下来会打开浏览器做授权。两件事先说清楚：" -ForegroundColor Yellow
+    Write-Host ("  · 授权页顶部必须显示 @" + $botId + "。如果显示的是 @owner，说明浏览器里还是你自己的登录态——") -ForegroundColor Yellow
+    Write-Host "    用无痕窗口打开控制台打印的那条链接，或点授权页右上角登出再换账号。" -ForegroundColor Yellow
+    Write-Host "  · 链接会完整打印出来并复制到剪贴板，浏览器没自动弹出也不影响。" -ForegroundColor Yellow
     if (-not $useExisting) {
-        Write-Host "新账号的一次性密码会在下面打印出来，用它登录；这个密码不进 Git、不进数据库、不进日志。" -ForegroundColor Yellow
+        Write-Host ("  · 新账号 @" + $botId + " 的一次性密码会在下面打印，用它登录；这个密码不进 Git、不进数据库、不进日志。") -ForegroundColor Yellow
     }
     Write-Host ""
 
@@ -413,7 +416,18 @@ function New-Onboarding {
     if ($useExisting) { $parameters["UseExistingAccount"] = $true } else { $parameters["Email"] = $email }
     # No -Invite here: if this AI needs a web connection we mint the code below,
     # after the health checks, so the owner never juggles two codes.
-    & (Join-Path $Root "setup-ai.ps1") @parameters
+    try {
+        & (Join-Path $Root "setup-ai.ps1") @parameters
+    } catch {
+        Write-Host ""
+        Write-Host ("这一步失败了：" + $_.Exception.Message) -ForegroundColor Red
+        if (-not $useExisting) {
+            Write-Host ""
+            Write-Host ("如果 Mastodon 里其实已经建出了 @" + $botId + "（比如上一次跑到一半断了），") -ForegroundColor Yellow
+            Write-Host "重新走一遍这个流程，第 2 步选 [2]「已经有了」，就会跳过建号直接授权。" -ForegroundColor Yellow
+        }
+        return
+    }
 
     $bot = Get-Bot -BotId $botId
     if ($null -eq $bot) {

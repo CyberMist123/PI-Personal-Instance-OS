@@ -5,7 +5,10 @@ import base64
 import hashlib
 import json
 import secrets
+import subprocess
+import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -83,8 +86,9 @@ def main() -> None:
     authorized_username = str(account.get("acct") or "").split("@", 1)[0].lower()
     if authorized_username != bot_id:
         raise RuntimeError(
-            f"Authorized account '@{authorized_username}' does not match BotId '{bot_id}'. "
-            "No credential was saved; repeat and sign in as the AI resident account."
+            f"授权页上点「同意」的是 @{authorized_username}，不是 @{bot_id}。"
+            "没有保存任何凭据。请重来一次，并用【无痕窗口】打开授权链接，"
+            f"或先在授权页右上角登出，改用 @{bot_id} 登录。"
         )
 
     token_ref = f"{bot_id}.token.dpapi"
@@ -181,14 +185,13 @@ def _authorize_in_browser(
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        print("Opening the CMX authorization page in your browser...")
-        print("Log in as the AI resident account, review the scopes, and click Authorize.")
-        if not webbrowser.open(authorize_url):
-            print(f"Open this URL manually:\n{authorize_url}")
+        _announce(authorize_url, bot_id=bot_id)
 
         try:
-            if not ready.wait(timeout_seconds):
-                raise RuntimeError("Browser authorization timed out")
+            if not _wait_with_progress(ready, timeout_seconds):
+                raise RuntimeError(
+                    "浏览器授权超时。重新运行一次即可；这次的链接已经作废。"
+                )
         finally:
             server.shutdown()
             server.server_close()
@@ -219,6 +222,91 @@ def _authorize_in_browser(
         approved = token_data.get("scope", scope_text)
         approved_scopes = approved.split() if isinstance(approved, str) else list(approved)
         return token, approved_scopes
+
+
+def _announce(authorize_url: str, *, bot_id: str) -> None:
+    """Show the link no matter what, and say which account has to click it.
+
+    webbrowser.open returns True on Windows even when nothing visibly opened,
+    so the old "only print the URL if opening failed" branch almost never
+    fired and the owner was left staring at a silent prompt. The far more
+    common failure is subtler: the browser already holds the owner's session,
+    so the consent page appears logged in as the wrong account and the grant
+    would be rejected afterwards for a name mismatch.
+    """
+    print()
+    print(f"这一步要授权的账号是：@{bot_id}")
+    print("请确认授权页顶部显示的就是这个账号。如果显示的是 @owner 或别的账号：")
+    print("  · 用【无痕 / 隐私窗口】打开下面的链接（最省事），或")
+    print("  · 点授权页右上角的登出图标，改用这个 AI 的账号登录。")
+    print()
+    print("这条链接必须在【运行本脚本的这台电脑上】打开：授权后浏览器要跳回")
+    print("http://127.0.0.1 上的一个临时端口，在手机或别的机器上点，回调回不来。")
+    print()
+    print("授权链接（可复制）：")
+    print(authorize_url)
+    if _copy_to_clipboard(authorize_url):
+        print("（已复制到剪贴板）")
+    print()
+    try:
+        opened = webbrowser.open(authorize_url)
+    except Exception:  # noqa: BLE001 - any browser failure falls back to the link
+        opened = False
+    if opened:
+        print("已尝试打开浏览器；没弹出来就手动粘贴上面的链接。")
+    else:
+        print("打不开浏览器，请手动粘贴上面的链接。")
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Best effort only: clip.exe exists on Windows and nowhere else."""
+    try:
+        completed = subprocess.run(
+            ["clip"],
+            input=text.encode("utf-16-le"),
+            shell=False,
+            check=False,
+            capture_output=True,
+        )
+        return completed.returncode == 0
+    except (OSError, ValueError):
+        return False
+
+
+def _wait_with_progress(ready: threading.Event, timeout_seconds: int) -> bool:
+    """Wait for the callback while showing that we are still waiting.
+
+    A silent five-minute block is indistinguishable from a hang, which is
+    exactly how it was read the first time it happened.
+    """
+    interactive = False
+    try:
+        interactive = bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        interactive = False
+    deadline = time.monotonic() + timeout_seconds
+    last_report = 0.0
+    while True:
+        if ready.wait(0.5):
+            if interactive:
+                print("\r" + " " * 78 + "\r", end="", flush=True)
+            print("已收到授权回调，正在换取 Token...")
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if interactive:
+                print("\r" + " " * 78 + "\r", end="", flush=True)
+            return False
+        if interactive:
+            minutes, seconds = divmod(int(remaining), 60)
+            print(
+                f"\r等待浏览器里点「同意授权」... 还剩 {minutes}:{seconds:02d}  (Ctrl+C 可以中止)",
+                end="",
+                flush=True,
+            )
+        elif remaining and (last_report == 0.0 or last_report - remaining >= 30):
+            last_report = remaining
+            print(f"仍在等待浏览器授权，还剩 {int(remaining)} 秒...", flush=True)
 
 
 def _handler_factory(result: dict[str, str], ready: threading.Event, expected_state: str):
