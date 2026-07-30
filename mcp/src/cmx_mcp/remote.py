@@ -35,7 +35,7 @@ from .db import Database
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 from .transcribe import model_dir_ready, transcribe_file
-from .voice_media import OGG_MIME, OGG_SUFFIX, VoiceMediaError, to_ogg_opus
+from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .web_auth import verify_web_bearer
 from .workers import WorkerConfig
@@ -566,10 +566,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         )
 
     async def voice_remux(request: Request) -> Response:
-        # MediaRecorder can only emit WebM or MP4, and Mastodon rejects both as
-        # audio (see voice_media). The widget therefore sends the recording here
-        # first and uploads the Ogg it gets back. Same credential rule as
-        # transcribe: the caller's own page token, verified then dropped.
+        # MediaRecorder can only emit WebM or MP4, which Mastodon reads as video,
+        # and Ogg — the obvious fix — will not play on iOS. MP3 is the one format
+        # both ends accept; see voice_media. Same credential rule as transcribe:
+        # the caller's own page token, verified then dropped.
         bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
         verified = bool(bearer) and await run_in_threadpool(
             _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
@@ -608,15 +608,15 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         temp_dir.mkdir(parents=True, exist_ok=True)
         stem = secrets.token_urlsafe(12)
         source = temp_dir / f"{stem}{_audio_suffix(upload.filename)}"
-        target = temp_dir / f"{stem}{OGG_SUFFIX}"
+        target = temp_dir / f"{stem}{MP3_SUFFIX}"
         try:
             with open(source, "wb") as out:
                 shutil.copyfileobj(stream, out)
-            await run_in_threadpool(to_ogg_opus, source, target)
+            await run_in_threadpool(to_mp3, source, target)
             payload = target.read_bytes()
         except VoiceMediaError as exc:
             return JSONResponse(
-                {"error": "remux_failed", "detail": str(exc)[:120]},
+                {"error": "convert_failed", "detail": str(exc)[:120]},
                 status_code=422, headers={"Cache-Control": "no-store"},
             )
         finally:
@@ -627,7 +627,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                     pass
         return Response(
             payload,
-            media_type=OGG_MIME,
+            media_type=MP3_MIME,
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 

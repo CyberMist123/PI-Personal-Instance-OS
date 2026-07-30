@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "8" and "voice widget v8" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "9" and "voice widget v9" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -348,11 +348,11 @@ def test_widget_rewraps_the_recording_before_uploading_to_mastodon() -> None:
     bytes read as video, so Mastodon either trips Paperclip's spoof check or
     types the upload as a video with no video stream."""
     assert '/files/voice-remux' in VOICE_WIDGET_JS
-    remux_at = VOICE_WIDGET_JS.index("return toOgg(recorded")
+    remux_at = VOICE_WIDGET_JS.index("return toMp3(recorded")
     upload_at = VOICE_WIDGET_JS.index("return upload(clipBlob")
     assert remux_at < upload_at, "the remux must happen before /api/v2/media"
-    assert 'clipName = OGG_NAME' in VOICE_WIDGET_JS
-    assert 'var OGG_NAME = "voice.ogg"' in VOICE_WIDGET_JS
+    assert 'clipName = MP3_NAME' in VOICE_WIDGET_JS
+    assert 'var MP3_NAME = "voice.mp3"' in VOICE_WIDGET_JS
 
 
 def test_remux_route_is_registered_and_needs_a_session(monkeypatch, tmp_path) -> None:
@@ -367,7 +367,7 @@ def test_remux_route_is_registered_and_needs_a_session(monkeypatch, tmp_path) ->
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_remux_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None:
+def test_convert_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None:
     app = _app(tmp_path, monkeypatch)
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
     with TestClient(app, base_url="https://pi.example") as client:
@@ -378,7 +378,7 @@ def test_remux_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None:
         )
     # 422, not 500: the upload was understood and refused, not a server fault.
     assert response.status_code == 422
-    assert response.json()["error"] == "remux_failed"
+    assert response.json()["error"] == "convert_failed"
 
 
 def test_player_only_touches_the_owners_own_statuses() -> None:
@@ -450,7 +450,7 @@ def test_the_mic_is_released_before_the_upload_finishes() -> None:
     """The point of the recorder is to record and walk away. Waiting on remux,
     upload and publish put an hourglass in front of that."""
     released = VOICE_WIDGET_JS.index('flash("\\u5df2\\u53d1\\u9001')   # "已发送"
-    remux = VOICE_WIDGET_JS.index("return toOgg(recorded")
+    remux = VOICE_WIDGET_JS.index("return toMp3(recorded")
     upload = VOICE_WIDGET_JS.index("return upload(clipBlob")
     assert released < remux < upload
 
@@ -467,3 +467,17 @@ def test_kai_beats_mastodons_own_font_rule() -> None:
     assert 'setProperty("font-family", KAI, "important")' in VOICE_WIDGET_JS
     assert 'querySelectorAll("p, span, a")' in VOICE_WIDGET_JS
     assert "applyKai(content)" in VOICE_WIDGET_JS
+
+
+def test_the_upload_format_plays_on_ios() -> None:
+    """Ogg cleared Mastodon's magic-byte check but WebKit will not decode it, so
+    every browser on iPhone went silent. MP3 is the one format both ends take."""
+    from cmx_mcp.voice_media import MP3_MIME, MP3_SUFFIX
+
+    assert MP3_MIME == "audio/mpeg" and MP3_SUFFIX == ".mp3"
+    assert 'var MP3_NAME = "voice.mp3"' in VOICE_WIDGET_JS
+    # The container must be gone from the code path, not merely unmentioned:
+    # "Logged-out" contains the substring, so match the real references.
+    assert ".ogg" not in VOICE_WIDGET_JS
+    assert "audio/ogg" not in VOICE_WIDGET_JS
+    assert "toOgg" not in VOICE_WIDGET_JS

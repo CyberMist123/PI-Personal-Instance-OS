@@ -43,9 +43,9 @@ from __future__ import annotations
 from .voice_player import VOICE_PLAYER_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "8"
+VOICE_WIDGET_VERSION = "9"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v8 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v9 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 
@@ -66,7 +66,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v8 - same-origin, relative API, page se
   var POLL_MAX_TRIES = 30;
   var TRANSCRIBE_PATH = "/files/transcribe";
   var REMUX_PATH = "/files/voice-remux";
-  var OGG_NAME = "voice.ogg";
+  var MP3_NAME = "voice.mp3";
   var TRANSCRIBE_TIMEOUT_MS = 90000;
   var STATUS_MAX_CHARS = 4900;
   var ALT_MAX_CHARS = 1500;
@@ -523,12 +523,11 @@ VOICE_WIDGET_JS = """/* CMX voice widget v8 - same-origin, relative API, page se
         });
     }
 
-    /* MediaRecorder only emits WebM or MP4, and Mastodon rejects both as audio:
-       their magic bytes read as video, so the upload either trips Paperclip's
-       spoof check or is typed as a video with no video stream. CMX rewraps the
-       recording as Ogg/Opus first — a container swap, not a re-encode, unless
-       the source is iOS Safari's AAC. */
-    function toOgg(blob, filename) {
+    /* MediaRecorder only emits WebM or MP4, whose magic bytes read as video,
+       so Mastodon refuses them as audio. Ogg fixes that but will not play on
+       iOS, where every browser is WebKit. CMX converts to MP3, the one format
+       both ends accept. */
+    function toMp3(blob, filename) {
       var form = new FormData();
       form.append("file", blob, filename);
       return fetch(REMUX_PATH, {
@@ -695,13 +694,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v8 - same-origin, relative API, page se
           busy = false;
           resetUi();
           flash("\\u5df2\\u53d1\\u9001 \\ud83c\\udf99\\ufe0f");
-          return toOgg(recorded, blobName(recorded, clipMime));
+          return toMp3(recorded, blobName(recorded, clipMime));
         })
-        .then(function (ogg) {
-          /* From here on the Ogg is the recording: Mastodon accepts it and
-             whisper reads it just as happily as the original. */
-          clipBlob = ogg;
-          clipName = OGG_NAME;
+        .then(function (mp3) {
+          /* From here on the MP3 is the recording: Mastodon files it as audio,
+             every phone can play it, and whisper reads it just as happily. */
+          clipBlob = mp3;
+          clipName = MP3_NAME;
           return upload(clipBlob, clipName);
         })
         .then(function (media) {
