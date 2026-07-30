@@ -388,7 +388,7 @@ def test_player_only_touches_the_owners_own_statuses() -> None:
     assert "function isOwn(status, acct)" in VOICE_PLAYER_JS
     assert "if (!isOwn(status, acct)) {" in VOICE_PLAYER_JS
     assert "return;" in VOICE_PLAYER_JS
-    assert VOICE_PLAYER_JS in VOICE_WIDGET_JS
+    assert VOICE_PLAYER_JS.strip() in VOICE_WIDGET_JS
 
 
 def test_player_hides_mastodons_controls_without_removing_them() -> None:
@@ -402,17 +402,15 @@ def test_player_hides_mastodons_controls_without_removing_them() -> None:
 
 
 def test_player_is_idempotent_under_react_rerenders() -> None:
-    from cmx_mcp.voice_player import VOICE_PLAYER_JS
-
-    assert 'PLAYER_MARK = "data-pi-voice-player"' in VOICE_PLAYER_JS
-    assert 'audio.getAttribute(PLAYER_MARK) === "1"' in VOICE_PLAYER_JS
-    assert "new MutationObserver" in VOICE_PLAYER_JS
+    # Asserted against the composed script: the mark is declared in the drawing
+    # half and consumed by the wiring half, so only the whole thing is coherent.
+    assert 'PLAYER_MARK = "data-pi-voice-player"' in VOICE_WIDGET_JS
+    assert 'audio.getAttribute(PLAYER_MARK) === "1"' in VOICE_WIDGET_JS
+    assert "new MutationObserver" in VOICE_WIDGET_JS
 
 
 def test_player_uses_one_ink_that_flips_with_the_theme() -> None:
-    from cmx_mcp.voice_player import VOICE_PLAYER_JS
-
-    assert "#eef1f5" in VOICE_PLAYER_JS      # dark theme ink
-    assert "#4d535f" in VOICE_PLAYER_JS      # light theme ink: slate, not black
-    assert "#6364ff" not in VOICE_PLAYER_JS  # no accent hue anywhere
-    assert "KaiTi" in VOICE_PLAYER_JS
+    assert "#eef1f5" in VOICE_WIDGET_JS      # dark theme ink
+    assert "#4d535f" in VOICE_WIDGET_JS      # light theme ink: slate, not black
+    assert "#6364ff" not in VOICE_WIDGET_JS  # no accent hue anywhere
+    assert "KaiTi" in VOICE_WIDGET_JS
