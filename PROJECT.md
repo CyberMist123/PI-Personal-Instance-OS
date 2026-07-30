@@ -30,13 +30,13 @@ PI OS 是部署在个人 Windows 电脑上的私人生活时间线，用于日�
 
 ```env
 LOCAL_DOMAIN=pi.invalid
-WEB_DOMAIN=pi.ler428.xyz
-STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+WEB_DOMAIN=<WEB_DOMAIN>
+STREAMING_API_BASE_URL=wss://<WEB_DOMAIN>
 ALTERNATE_DOMAINS=
 ```
 
 - `LOCAL_DOMAIN` 永久固定为 `pi.invalid`；
-- `WEB_DOMAIN` 是可替换公网门牌；
+- `WEB_DOMAIN` 是可替换公网门牌。**本仓库是公开仓库，所有已跟踪文件一律只写 `<WEB_DOMAIN>` 占位符**；真实门牌只存在于不提交的 `.env` / `.env.production`，代码需要它时经 `InstanceSettings.public_base_url` 在运行时解析，不得写进任何 Markdown、脚本或提交信息；
 - 不对历史 ActivityPub URI 做全库字符串替换；
 - 不开启公共联邦；
 - 不运行 `docker compose down -v`；
@@ -182,9 +182,9 @@ cmx_profile_update
 - 目标 Windows 安装 `cmx-mcp 0.3.0rc1`，Python 编译和测试 `8 passed`；
 - 已恢复现有 `gpt` 居民的有效 DPAPI Token，账号名校验、`status.ps1 -BotId gpt` 和独立 STDIO `smoke.ps1` 均通过；
 - Claude Code 用户级 `cmx-gpt` STDIO 配置显示 `Connected`；
-- 本机 `127.0.0.1:8766` 和公网 `https://pi.ler428.xyz/_pi/mcp-health` 通过；
+- 本机 `127.0.0.1:8766` 和公网 `https://<WEB_DOMAIN>/_pi/mcp-health` 通过；
 - 公网完整 DCR → PKCE → 本机批准 → code/token → refresh/revoke → MCP initialize/tools/list/call 流程通过；
-- `test` 居民完成真实 Remote Social smoke：OAuth `cmx:read + cmx:social` 成功，subject 绑定 `test`，resource 绑定 `https://pi.ler428.xyz/mcp/test`；
+- `test` 居民完成真实 Remote Social smoke：OAuth `cmx:read + cmx:social` 成功，subject 绑定 `test`，resource 绑定 `https://<WEB_DOMAIN>/mcp/test`；
 - Reader/Social 工具隔离验证通过：`tools/list` 恰好返回 `cmx_home`、`cmx_status`、`cmx_search`、`cmx_post`、`cmx_interact`，未出现 `cmx_notifications`、`boost`、`unboost` 或任何本地 STDIO full 工具；
 - 真实写入 smoke 全部通过：private create、严格幂等、`mine`、compact、edit、like/unlike、bookmark/unbookmark、reply、thread 均成功；OAuth revoke 后旧 token 再读失败；
 - 本轮真实 smoke 未发布 public，未测试 direct，未测试 boosts、notifications 或 Phase B/C；
@@ -255,15 +255,15 @@ Token 存于 `mcp/runtime/secrets/<bot>.token.dpapi`，只允许同一 Windows �
 
 ```text
 本机服务       http://127.0.0.1:8766
-公网资源       https://pi.ler428.xyz/mcp/<bot_id>
+公网资源       https://<WEB_DOMAIN>/mcp/<bot_id>
 健康检查       /_pi/mcp-health
 OAuth metadata /.well-known/oauth-authorization-server
 资源 metadata  /.well-known/oauth-protected-resource/mcp/<bot_id>
 OAuth 路由      /register /authorize /token /revoke
 本机批准页      http://127.0.0.1:8766/oauth/approve
-邀请码兑换页    https://pi.ler428.xyz/oauth/invite
+邀请码兑换页    https://<WEB_DOMAIN>/oauth/invite
 文件柜上传      POST /files/upload（cmx:social bearer；内容不经过 MCP/模型）
-Owner 上传页    https://pi.ler428.xyz/files/up（cmx-admin filebox-pass 设置口令）
+Owner 上传页    https://<WEB_DOMAIN>/files/up（cmx-admin filebox-pass 设置口令）
 文件下载        /files/<bot>/<file_id>/<文件名>（不可猜测能力链接）
 录音键脚本      GET /files/voice.js（静态，无凭据）
 录音容器转换    POST /files/voice-remux（网页登录态 bearer；WebM/MP4 → Ogg/Opus）
@@ -304,7 +304,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 远程 Streamable HTTP MCP | 已在目标 Windows 部署当前 Draft 分支并完成 `test` 受控真实 smoke；生产常驻居民仍未开启 Social |
 | ChatGPT 网页端连接 | 已连接但只读：2026-07-31 Owner 实测 `public_explicit` / `residents` / `self` / `direct`（带与不带 @）/ 回复全部 `insufficient_scope`，读时间线、读状态、搜缓存正常——不是四种可见性的实现问题，是 token 缺 `cmx:social`。第一轮修复（DCR `default_scopes`）已部署但不足；第二轮「邀请码即授予」已实现并通过本机 `pytest 174 passed`，**尚未部署**：需提权重启 `cmx-mcp-http`，然后重走一次网页端授权（refresh 不能扩权）。端到端 smoke 未通过 |
 | Clip Brain 剪贴板影子站 | 2026-07-29 目标 Windows 已受控部署：磁盘 checkout 为 detached `b4c8492`，Owner 提权重启 `cmx-mcp-http`，只重建 nginx（db/redis/web/sidekiq/streaming 未动）。本机与公网 `/clipboard/`=200、`/clipboard-api/*`=401、`/files/voice.js`=200、`/api/v2/instance` 仍为 4.6.4/5000、`status.ps1 -BotId gpt` 通过、nginx 日志无 token 泄露。**真机与真实 Mastodon 登录态下的端到端仍未验收**；未合并，回滚点 `security/mastodon-4.6.4` @ `a871628` 与 `backups/phase-c-20260729/` |
-| 网页语音条播放器（接管 Mastodon 原生播放器） | **v15 已部署，波形已恢复（Owner 真机确认）**：波形采样改为可重试是根因修复——原来 `if (audio.currentSrc …)` 在 decorate 里只判一次，而 decorate 每元素只跑一次，判空即永久跳过。**v16 已实现未部署**，修「点了没声音、声音却从弹出播放器出来」：根因确诊为 Mastodon 画中画——`features/audio/index.tsx` 在「元素播放中被 React 卸载」时 `deployPictureInPicture`，而我们驱动的正是它自己的 `<audio>`。v16 改为在自己的 host 里建自己的 `<audio>`（同源同 src），Mastodon 那个永远保持 paused，该分支永不成立；配套 `playOnly` 全局单播与「host 被丢弃时先暂停」。复现环境静置实测 `natives 0 / gap 0 / 7 个播放器全部有真实波形 / anyNativePlaying false / 同时发声数 1`。**B（PC 完全没接管）仍未定位**，`window.__piVoiceDebug()` 可一次性定位断点（含画中画占位符计数）。iOS 真机、真实 MP3 解码耗时未验证。详见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，收口后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
+| 网页语音条播放器（接管 Mastodon 原生播放器） | **v16 已部署（`etag: "voice-16"` 已核）、Owner 确认可用**：波形、播放、画中画规避三项均已在真机通过。历程如下——**v15 修好波形**：波形采样改为可重试是根因修复——原来 `if (audio.currentSrc …)` 在 decorate 里只判一次，而 decorate 每元素只跑一次，判空即永久跳过。**v16 修「点了没声音、声音却从弹出播放器出来」**：根因确诊为 Mastodon 画中画——`features/audio/index.tsx` 在「元素播放中被 React 卸载」时 `deployPictureInPicture`，而我们驱动的正是它自己的 `<audio>`。v16 改为在自己的 host 里建自己的 `<audio>`（同源同 src），Mastodon 那个永远保持 paused，该分支永不成立；配套 `playOnly` 全局单播与「host 被丢弃时先暂停」。复现环境静置实测 `natives 0 / gap 0 / 7 个播放器全部有真实波形 / anyNativePlaying false / 同时发声数 1`。**B（PC 完全没接管）仍未定位**，`window.__piVoiceDebug()` 可一次性定位断点（含画中画占位符计数）。iOS 真机、真实 MP3 解码耗时未验证。详见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，收口后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
 | 独立 CMX 前端 | 计划中 |
 | 公共联邦 | 永不实施 |
 
@@ -313,7 +313,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 1. 本地 MCP、真实 `gpt` Token、DPAPI、状态和独立读 smoke：完成；
 2. Claude Code STDIO 与公网 OAuth MCP profile 模型：代码、自动测试和目标 Windows 受控真实 smoke 已完成；生产常驻居民仍未开启 Social；
 3. `fix/cmx-5000-char-limit`：2026-07-22 目标 Windows 完成 Compose 校验、重建 `web`/`sidekiq`、实例 API/发布边界/点赞通知验证并合并到 `main`：完成；
-4. 在具备 ChatGPT Pro/工作区资格的账号中创建 `https://pi.ler428.xyz/mcp/gpt` 自定义 App：待账号功能开放；
+4. 在具备 ChatGPT Pro/工作区资格的账号中创建 `https://<WEB_DOMAIN>/mcp/gpt` 自定义 App：待账号功能开放；
 5. 使用真实新邮箱人工验收一次 `setup-ai.ps1` 新账号创建流程；
 6. 如后续需要，再单独决定是否为生产常驻居民开启 Remote Social，并继续保持 PR Draft 直到准备合并；
 7. 需要时再处理 Telegram/Fable 客户端接入。

@@ -45,7 +45,7 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 按 [CLOUDFLARE.md](./CLOUDFLARE.md) 创建 Named Tunnel，并添加当前网页域名：
 
 ```text
-pi.ler428.xyz → http://nginx:80
+<WEB_DOMAIN> → http://nginx:80
 ```
 
 主网页域名不要套 Cloudflare Access、Challenge 或 Cache Everything。
@@ -57,7 +57,7 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File ".\setup.ps1" `
-  -AccessDomain "pi.ler428.xyz"
+  -AccessDomain "<WEB_DOMAIN>"
 ```
 
 脚本会：
@@ -215,7 +215,7 @@ Docker Desktop 自启负责 engine，PI OS 计划任务负责等待、调用 `st
 重启 Windows 并登录后：
 
 1. 等待 Docker Desktop engine 就绪；
-2. 确认 `pi.ler428.xyz` 可打开；
+2. 确认 `<WEB_DOMAIN>` 可打开；
 3. 确认旧文字与图片仍存在；
 4. 手机与 PC 均可访问和同步；
 5. 需要完整诊断时，用绝对路径运行 `status.ps1`。

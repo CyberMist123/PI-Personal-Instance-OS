@@ -10,8 +10,8 @@ PI OS 不是重新开发社交平台内核，而是把 Mastodon v4.6.4 当作稳
 
 ```env
 LOCAL_DOMAIN=pi.invalid
-WEB_DOMAIN=pi.ler428.xyz
-STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+WEB_DOMAIN=<WEB_DOMAIN>
+STREAMING_API_BASE_URL=wss://<WEB_DOMAIN>
 ALTERNATE_DOMAINS=
 ```
 

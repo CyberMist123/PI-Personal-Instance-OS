@@ -64,7 +64,7 @@ docker compose exec -T web bundle exec rails runner "puts StatusLengthValidator:
 再检查公网实例元数据：
 
 ```powershell
-$instance = Invoke-RestMethod -Method Get -Uri "https://pi.ler428.xyz/api/v2/instance"
+$instance = Invoke-RestMethod -Method Get -Uri "https://<WEB_DOMAIN>/api/v2/instance"
 $instance.configuration.statuses.max_characters
 ```
 

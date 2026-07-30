@@ -109,7 +109,7 @@ Mastodon 原生 quote 对 private/direct 内容有 quote policy 限制。由于 
 Mastodon REST 默认使用当前 `WEB_DOMAIN` 的已验证 HTTPS：
 
 ```text
-https://pi.ler428.xyz
+https://<WEB_DOMAIN>
 ```
 
 `CMX_MASTODON_BASE_URL` 只允许同一 `WEB_DOMAIN` 的 HTTPS，或显式选择 loopback HTTP；不能指向任意远程 Host。

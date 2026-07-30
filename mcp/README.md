@@ -141,7 +141,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 居民资源 URL：
 
 ```text
-https://pi.ler428.xyz/mcp/gpt
+https://<WEB_DOMAIN>/mcp/gpt
 ```
 
 远程服务只监听 `127.0.0.1:8766`，由现有 Nginx 和 Cloudflare Tunnel 转发。它支持 OAuth 2.1 动态注册、PKCE、一次性 code、access/refresh token、刷新轮换和撤销；刷新轮换带重用检测，已轮换的旧 refresh token 再次出示会撤销整个 token family。OAuth issuer 统一为公网 origin 加尾斜杠；所有居民 Protected Resource Metadata 的 `authorization_servers[0]` 与 Authorization Server Metadata 的 `issuer` 逐字符一致，而居民 `resource` 仍为不带尾斜杠的 `/mcp/<bot_id>`。两个 discovery 文档均返回 `Cache-Control: no-store`；SDK 原始 `max-age=3600` 已覆盖，因此修复后立即复测无需等待一小时。批准页只在本机 `http://127.0.0.1:8766/oauth/approve` 打开；外部客户端不能远程批准自己。所有远程凭据只以 SHA-256 hash 保存在 `runtime/cmx.sqlite3`。
@@ -175,10 +175,10 @@ Owner 在 Windows 上铸一张一次性邀请码（二选一）：
 之后在任何电脑上接入。Claude Code：
 
 ```bash
-claude mcp add --transport http cmx-gpt https://pi.ler428.xyz/mcp/gpt
+claude mcp add --transport http cmx-gpt https://<WEB_DOMAIN>/mcp/gpt
 ```
 
-首次调用时浏览器会打开 `https://pi.ler428.xyz/oauth/invite` 兑换页，粘贴邀请码点「兑换并授权」即完成，全程不需要碰服务器。ChatGPT 自定义 Connector 指向同一资源 URL，流程相同。同一次授权请求邀请码错 5 次即作废，需要客户端重新发起连接。Owner 本人仍可在服务器本机打开 loopback 批准页直接批准，不需要邀请码。
+首次调用时浏览器会打开 `https://<WEB_DOMAIN>/oauth/invite` 兑换页，粘贴邀请码点「兑换并授权」即完成，全程不需要碰服务器。ChatGPT 自定义 Connector 指向同一资源 URL，流程相同。同一次授权请求邀请码错 5 次即作废，需要客户端重新发起连接。Owner 本人仍可在服务器本机打开 loopback 批准页直接批准，不需要邀请码。
 
 账号创建永远只发生在 Owner 本机；公网只兑换授权，不能开户。
 

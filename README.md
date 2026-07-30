@@ -60,8 +60,8 @@ Sidekiq / PostgreSQL / Redis / 本地媒体
 
 ```env
 LOCAL_DOMAIN=pi.invalid           # 永久内部身份，不访问、不更换
-WEB_DOMAIN=pi.ler428.xyz          # 当前公网门牌，可以受控替换
-STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+WEB_DOMAIN=<WEB_DOMAIN>          # 当前公网门牌，可以受控替换
+STREAMING_API_BASE_URL=wss://<WEB_DOMAIN>
 ALTERNATE_DOMAINS=                # 只在切换过渡期使用
 ```
 

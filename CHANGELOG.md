@@ -49,7 +49,7 @@
 - 新增 OAuth 2.1 动态客户端注册、PKCE、一次性 code、access/refresh token、刷新轮换、撤销和每居民 resource/subject 绑定；
 - 远程服务只绑定 `127.0.0.1:8766`，Nginx/Cloudflare 只转发明确的 MCP/OAuth 路由；
 - 新增 `http-enable.ps1`、`http-disable.ps1`、`http-start.ps1`、`http-stop.ps1`、`http-status.ps1`，并接入 PI OS 总启动/停止/状态脚本；
-- 公网 `https://pi.ler428.xyz/mcp/gpt` 仅暴露四个 Reader 工具，完整 DCR/PKCE/OAuth/MCP 调用已通过；
+- 公网 `https://<WEB_DOMAIN>/mcp/gpt` 仅暴露四个 Reader 工具，完整 DCR/PKCE/OAuth/MCP 调用已通过；
 - Claude Code 用户级 `cmx-gpt` STDIO 连接已通过；ChatGPT Plus 当前没有 Apps → Create 入口，网页端连接待账号能力开放。
 
 ## v0.2.0-rc.2 — 2026-07-18
