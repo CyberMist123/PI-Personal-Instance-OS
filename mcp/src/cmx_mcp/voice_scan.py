@@ -37,6 +37,57 @@ VOICE_SCAN_JS = """
     });
   }
 
+  /* Replaced once an account resolves. Until then the answer to "why is
+     nothing claimed" is this note, which is itself the diagnosis. */
+  window.__piVoiceDebug = function () {
+    return {
+      version: window.__piVoicePlayer,
+      acct: "",
+      note: "no signed-in account resolved yet"
+    };
+  };
+
+  /* One console call that says which link in the chain is broken, because the
+     desktop timeline has never been claimed and the offline harness cannot
+     answer it: its markup is a hand-made imitation, so it can prove there is no
+     loop and no leak but never that a selector matches the real thing. */
+  function installDebug(acct) {
+    window.__piVoiceDebug = function () {
+      var media = document.querySelectorAll("audio, video");
+      var report = {
+        version: window.__piVoicePlayer,
+        acct: acct,
+        media: media.length,
+        inStatus: 0,
+        own: 0,
+        claimed: 0,
+        samples: []
+      };
+      for (var i = 0; i < media.length; i += 1) {
+        var element = media[i];
+        var status = statusOf(element);
+        if (status) {
+          report.inStatus += 1;
+        }
+        if (isOwn(status, acct)) {
+          report.own += 1;
+        }
+        if (element.getAttribute(PLAYER_MARK) === "1") {
+          report.claimed += 1;
+        }
+        if (report.samples.length < 3) {
+          report.samples.push({
+            tag: element.tagName,
+            src: String(mediaSource(element)).slice(0, 90),
+            status: status ? (status.className || status.tagName) : null,
+            acctLinks: status ? status.querySelectorAll('a[href*="/@"]').length : 0
+          });
+        }
+      }
+      return report;
+    };
+  }
+
   function scanForVoice(acct) {
     bindRelayout();
     /* audio *and* video: Mastodon files an ambiguous container as video,
@@ -65,6 +116,7 @@ VOICE_SCAN_JS = """
 
   function startWatching(acct) {
     ensureKaiFont();
+    installDebug(acct);
     scanForVoice(acct);
     var pending = false;
     function flush() {
@@ -75,10 +127,14 @@ VOICE_SCAN_JS = """
       scanForVoice(acct);
     }
     /* Runs synchronously inside the observer callback, which fires after the
-       mutation but before the frame is painted. Doing the whole swap here is
-       what makes it invisible: hiding early but inserting later still left a
-       blank where the player should be. The coalesced pass below stays as a
-       safety net for nodes that were moved rather than added. */
+       mutation but before the frame is painted, so Mastodon's player is never
+       drawn. It only *hides*.
+
+       v14 built the whole replacement here and broke two things at once: the
+       element has no chosen source this early, so the waveform sampling was
+       skipped and never retried, and driving a player React had not finished
+       wiring left it silent. Hiding is the only part that has to beat the
+       paint; the rest belongs one frame later, which is where v13 had it. */
     function claimEarly(records) {
       for (var r = 0; r < records.length; r += 1) {
         var added = records[r].addedNodes;
@@ -95,7 +151,7 @@ VOICE_SCAN_JS = """
             if (element.getAttribute(PLAYER_MARK) === "1") {
               continue;
             }
-            decorate(element, acct);
+            claimQuietly(element, acct);
           }
         }
       }

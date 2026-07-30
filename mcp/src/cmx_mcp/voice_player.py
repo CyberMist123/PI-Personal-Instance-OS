@@ -29,6 +29,55 @@ from __future__ import annotations
 VOICE_PLAYER_JS = """
   /* ---------------- voice player: DOM wiring ---------------- */
 
+  /* Where the audio actually is, asked in the order the answers appear.
+     currentSrc alone is empty until the element has selected a resource, which
+     on a freshly inserted node has not happened yet — that emptiness is what
+     silently skipped the sampling in v14 and left every bar at placeholder
+     height. */
+  function mediaSource(audio) {
+    var direct = audio.currentSrc || audio.getAttribute("src") || "";
+    if (direct) {
+      return direct;
+    }
+    var source = audio.querySelector ? audio.querySelector("source[src]") : null;
+    return source ? (source.getAttribute("src") || "") : "";
+  }
+
+  /* Hide Mastodon's chrome without taking the element out of the render tree.
+     display:none did take it out, and a media element in a subtree that is not
+     rendered will not play on iOS — the phone showed a player that did
+     nothing. Clipping keeps it rendered, keeps Mastodon owning the media
+     session, and still shows nothing. */
+  function hideNativeChrome(audio) {
+    var status = statusOf(audio);
+    var original = audio.parentElement;
+    if (!original || original === status) {
+      return null;
+    }
+    if (original.getAttribute(HIDDEN_MARK) === "1") {
+      return original;
+    }
+    original.setAttribute(HIDDEN_MARK, "1");
+    original.setAttribute("aria-hidden", "true");
+    setStyle(original, {
+      position: "absolute", width: "1px", height: "1px", margin: "-1px",
+      padding: "0", border: "0", overflow: "hidden", opacity: "0",
+      pointerEvents: "none", clip: "rect(0 0 0 0)", clipPath: "inset(50%)"
+    });
+    return original;
+  }
+
+  /* The first half of the swap, run synchronously inside the observer callback
+     so Mastodon's player is never painted. Only hiding happens here: building
+     the replacement this early is what broke the waveform and the sound, since
+     React has not finished with the element yet. */
+  function claimQuietly(audio, acct) {
+    if (!isOwn(statusOf(audio), acct)) {
+      return;
+    }
+    hideNativeChrome(audio);
+  }
+
   function decorate(audio, acct) {
     /* Done already *and* still on the page. React can drop our host during a
        re-render; when it does, fall through and put it back rather than leaving
@@ -50,12 +99,10 @@ VOICE_PLAYER_JS = """
     audio.setAttribute(PLAYER_MARK, "1");
 
     var colours = palette();
-    var original = audio.parentElement;
-    if (original && original !== status) {
-      /* Hide Mastodon's own controls but leave the element in place: it still
-         owns the media session, and React can keep re-rendering it safely. */
-      original.style.display = "none";
-    }
+    /* Usually already hidden by claimQuietly one frame earlier; this covers
+       nodes that were moved rather than added, which the observer reports
+       without an addedNodes entry. */
+    var original = hideNativeChrome(audio);
 
     var host = document.createElement("div");
     host.setAttribute("data-pi-host", "1");
@@ -156,9 +203,25 @@ VOICE_PLAYER_JS = """
     audio._piLayout = layout;
 
     /* Real amplitudes, fetched same-origin and decoded once. If anything fails
-       the flat placeholder bars stay and playback still works. */
-    if (audio.currentSrc && window.AudioContext) {
-      fetch(audio.currentSrc, { credentials: "same-origin" })
+       the flat placeholder bars stay and playback still works.
+
+       Deliberately not a one-shot at decorate time: the source is often not
+       chosen yet at the moment we claim the element, and decorate runs once per
+       element, so a single early attempt meant the waveform never appeared at
+       all. Try now, and try again on the events that fire once the element has
+       a resource. */
+    var sampleAttempts = 0;
+    var sampled = false;
+    function sampleWaveform() {
+      if (sampled || sampleAttempts >= 3 || !window.AudioContext) {
+        return;
+      }
+      var url = mediaSource(audio);
+      if (!url) {
+        return;
+      }
+      sampleAttempts += 1;
+      fetch(url, { credentials: "same-origin" })
         .then(function (response) { return response.arrayBuffer(); })
         .then(function (bytes) {
           var context = new window.AudioContext();
@@ -168,6 +231,7 @@ VOICE_PLAYER_JS = """
           });
         })
         .then(function (buffer) {
+          sampled = true;
           var count = wave.children.length || 40;
           peaks = peaksFrom(buffer, count);
           buildBars(wave, peaks, colours);
@@ -177,12 +241,20 @@ VOICE_PLAYER_JS = """
           warn("waveform unavailable; using flat bars", error);
         });
     }
+    sampleWaveform();
 
     play.addEventListener("click", function () {
-      if (audio.paused) {
-        audio.play();
-      } else {
+      if (!audio.paused) {
         audio.pause();
+        return;
+      }
+      /* play() rejects rather than throws when a browser refuses — an unhandled
+         rejection is exactly how "the button does nothing" stays a mystery. */
+      var started = audio.play();
+      if (started && typeof started.catch === "function") {
+        started.catch(function (error) {
+          warn("playback was refused by the browser", error);
+        });
       }
     });
     wave.addEventListener("click", function (event) {
@@ -194,9 +266,17 @@ VOICE_PLAYER_JS = """
       }
     });
     audio.addEventListener("timeupdate", paint);
-    audio.addEventListener("loadedmetadata", function () { layout(); paint(); });
+    audio.addEventListener("loadedmetadata", function () {
+      layout();
+      paint();
+      sampleWaveform();
+    });
+    /* canplay and the first play are the two later moments where a source is
+       guaranteed to exist, whatever the element looked like when we claimed it. */
+    audio.addEventListener("canplay", sampleWaveform);
     audio.addEventListener("play", function () {
       play.innerHTML = playGlyph(false);
+      sampleWaveform();
     });
     audio.addEventListener("pause", function () {
       play.innerHTML = playGlyph(true);

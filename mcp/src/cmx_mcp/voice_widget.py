@@ -45,9 +45,9 @@ from .voice_player import VOICE_PLAYER_JS
 from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "14"
+VOICE_WIDGET_VERSION = "15"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v14 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v15 - same-origin, relative API, page session token only. */
 (function () {
   "use strict";
 

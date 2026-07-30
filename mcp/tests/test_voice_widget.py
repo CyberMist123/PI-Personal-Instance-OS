@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "14" and "voice widget v14" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "15" and "voice widget v15" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -398,10 +398,53 @@ def test_player_hides_mastodons_controls_without_removing_them() -> None:
     from cmx_mcp.voice_player import VOICE_PLAYER_JS
 
     # Mastodon keeps owning the <audio>; we only hide its chrome and drive it.
-    assert 'original.style.display = "none"' in VOICE_PLAYER_JS
+    assert "function hideNativeChrome(audio)" in VOICE_PLAYER_JS
     assert ".removeChild(original" not in VOICE_PLAYER_JS
     assert "audio.play()" in VOICE_PLAYER_JS and "audio.pause()" in VOICE_PLAYER_JS
     assert "audio.currentTime = ratio * audio.duration" in VOICE_PLAYER_JS
+
+
+def test_the_native_chrome_is_clipped_rather_than_undisplayed() -> None:
+    """display:none takes the element out of the render tree, and iOS will not
+    play media that is not rendered — the phone showed a player that did
+    nothing. Clipping hides it just as completely and keeps it playable."""
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert 'display: "none"' not in VOICE_PLAYER_JS
+    assert 'style.display = "none"' not in VOICE_PLAYER_JS
+    assert 'clip: "rect(0 0 0 0)"' in VOICE_PLAYER_JS
+    assert 'opacity: "0"' in VOICE_PLAYER_JS
+    assert 'pointerEvents: "none"' in VOICE_PLAYER_JS
+    # Invisible controls that still take focus are a trap for a screen reader.
+    assert 'setAttribute("aria-hidden", "true")' in VOICE_PLAYER_JS
+
+
+def test_waveform_sampling_survives_a_source_that_arrives_late() -> None:
+    """decorate runs once per element, and at that moment the element usually
+    has no chosen source, so a single `if (audio.currentSrc)` attempt meant the
+    real waveform never appeared and every bar stayed at placeholder height."""
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert "function mediaSource(audio)" in VOICE_PLAYER_JS
+    assert 'audio.currentSrc || audio.getAttribute("src")' in VOICE_PLAYER_JS
+    assert 'querySelector("source[src]")' in VOICE_PLAYER_JS
+    # The one-shot gate is gone: sampling is retried on the events that only
+    # fire once a resource exists.
+    assert "if (audio.currentSrc && window.AudioContext)" not in VOICE_PLAYER_JS
+    assert "function sampleWaveform()" in VOICE_PLAYER_JS
+    assert 'audio.addEventListener("canplay", sampleWaveform)' in VOICE_PLAYER_JS
+    assert VOICE_PLAYER_JS.count("sampleWaveform()") >= 3
+    # ...but not without bound: a failing fetch must not retry forever.
+    assert "sampleAttempts >= 3" in VOICE_PLAYER_JS
+
+
+def test_refused_playback_is_reported_instead_of_silent() -> None:
+    """play() rejects rather than throws. An unhandled rejection is exactly how
+    "the button does nothing" stays unexplained."""
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert "var started = audio.play();" in VOICE_PLAYER_JS
+    assert 'warn("playback was refused by the browser", error)' in VOICE_PLAYER_JS
 
 
 def test_player_is_idempotent_under_react_rerenders() -> None:
@@ -574,14 +617,33 @@ def test_a_dropped_host_is_put_back() -> None:
     assert "audio.removeAttribute(PLAYER_MARK)" in VOICE_WIDGET_JS
 
 
-def test_the_swap_happens_before_the_frame_is_painted() -> None:
-    """Hiding early but inserting in the coalesced pass still left a blank where
-    the player belongs. Measured in docs/clip-brain/design/flicker-harness."""
+def test_only_the_hiding_happens_before_the_frame_is_painted() -> None:
+    """Mastodon's player must not be painted, so hiding is synchronous inside
+    the observer callback. Building the replacement there as well is what v14
+    did, and it broke both the waveform and the sound: React has not finished
+    with the element that early. Only the hiding has to beat the paint."""
     assert "function claimEarly(records)" in VOICE_WIDGET_JS
-    assert "decorate(element, acct)" in VOICE_WIDGET_JS
+    assert "claimQuietly(element, acct)" in VOICE_WIDGET_JS
+    assert "function claimQuietly(audio, acct)" in VOICE_WIDGET_JS
+    assert "decorate(element, acct)" not in VOICE_WIDGET_JS
+    # claimQuietly hides and stops; the build belongs to the coalesced sweep.
+    body = VOICE_WIDGET_JS[VOICE_WIDGET_JS.index("function claimQuietly(audio, acct)"):]
+    body = body[: body.index("function decorate(")]
+    assert "hideNativeChrome(audio)" in body
+    assert "createElement" not in body
     claim = VOICE_WIDGET_JS.index("claimEarly(records)")
     coalesce = VOICE_WIDGET_JS.index("window.requestAnimationFrame(flush)")
     assert claim < coalesce, "the synchronous claim must precede the coalesced sweep"
+
+
+def test_a_console_probe_reports_where_the_chain_breaks() -> None:
+    """The desktop timeline has never been claimed and the offline harness
+    cannot say why: its markup is an imitation, so it proves there is no loop
+    and no leak but never that a selector matches the real thing."""
+    assert "window.__piVoiceDebug = function ()" in VOICE_WIDGET_JS
+    assert "function installDebug(acct)" in VOICE_WIDGET_JS
+    for field in ("media:", "inStatus:", "own:", "claimed:", "acctLinks:"):
+        assert field in VOICE_WIDGET_JS
 
 
 def test_the_sweep_cannot_deadlock_in_a_hidden_tab() -> None:
