@@ -151,7 +151,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "6" and "voice widget v6" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "7" and "voice widget v7" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -379,3 +379,40 @@ def test_remux_rejects_a_file_that_is_not_audio(monkeypatch, tmp_path) -> None:
     # 422, not 500: the upload was understood and refused, not a server fault.
     assert response.status_code == 422
     assert response.json()["error"] == "remux_failed"
+
+
+def test_player_only_touches_the_owners_own_statuses() -> None:
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    # The gate: a status is only restyled when it links to the logged-in acct.
+    assert "function isOwn(status, acct)" in VOICE_PLAYER_JS
+    assert "if (!isOwn(status, acct)) {" in VOICE_PLAYER_JS
+    assert "return;" in VOICE_PLAYER_JS
+    assert VOICE_PLAYER_JS in VOICE_WIDGET_JS
+
+
+def test_player_hides_mastodons_controls_without_removing_them() -> None:
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    # Mastodon keeps owning the <audio>; we only hide its chrome and drive it.
+    assert 'original.style.display = "none"' in VOICE_PLAYER_JS
+    assert ".removeChild(original" not in VOICE_PLAYER_JS
+    assert "audio.play()" in VOICE_PLAYER_JS and "audio.pause()" in VOICE_PLAYER_JS
+    assert "audio.currentTime = ratio * audio.duration" in VOICE_PLAYER_JS
+
+
+def test_player_is_idempotent_under_react_rerenders() -> None:
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert 'PLAYER_MARK = "data-pi-voice-player"' in VOICE_PLAYER_JS
+    assert 'audio.getAttribute(PLAYER_MARK) === "1"' in VOICE_PLAYER_JS
+    assert "new MutationObserver" in VOICE_PLAYER_JS
+
+
+def test_player_uses_one_ink_that_flips_with_the_theme() -> None:
+    from cmx_mcp.voice_player import VOICE_PLAYER_JS
+
+    assert "#eef1f5" in VOICE_PLAYER_JS      # dark theme ink
+    assert "#4d535f" in VOICE_PLAYER_JS      # light theme ink: slate, not black
+    assert "#6364ff" not in VOICE_PLAYER_JS  # no accent hue anywhere
+    assert "KaiTi" in VOICE_PLAYER_JS

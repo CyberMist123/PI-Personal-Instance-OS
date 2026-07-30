@@ -2,7 +2,7 @@
 
 ## CMX Remote Social MCP v0.4.2 当前状态
 
-Phase 0、Phase A 与 Phase A+ 已随 #6/#8/#7 合并链于 2026-07-22 进入 `main`。目标 Windows 已部署并完成受控验证；远程默认仍为 Reader，`test` 居民已完成一次真实 Remote Social smoke，`gpt` 仍保持 Reader。生产常驻居民尚未开启 Social；Phase B/C、public、direct、boosts 与 notifications 仍未纳入本轮验证。
+Phase 0、Phase A 与 Phase A+ 已随 #6/#8/#7 合并链于 2026-07-22 进入 `main`。目标 Windows 已部署并完成受控验证；未配置的远程默认仍为 Reader，`test` 与 `gpt` 两个居民的 `remote_profile` 现均为 `social`（`boosts`/`notifications` 关闭），`test` 已完成一次真实 Remote Social smoke。Phase B/C、public、direct、boosts 与 notifications 仍未纳入本轮验证。
 
 > 本文件是需求、边界、架构、进度和下一步的唯一当前事实入口。
 >
@@ -132,8 +132,9 @@ D:\AI\PI-Personal-Instance-OS\mcp
 - `cmx-mcp-http`：只绑定 `127.0.0.1:8766`，由 Nginx/Cloudflare 暴露经过 OAuth 与 profile 隔离的 Streamable HTTP；
 - OAuth 2.1：动态客户端注册、PKCE、一次性授权码、access/refresh token、刷新轮换、撤销、每居民 resource/subject 绑定；所有居民 discovery 共用带尾斜杠的 canonical issuer，Protected Resource Metadata 的 `authorization_servers[0]` 与 Authorization Server Metadata 的 `issuer` 逐字符相同，metadata 使用 `Cache-Control: no-store` 便于立即纠正客户端发现；远程 Token 仅以 SHA-256 hash 写入 SQLite；
 - OAuth 加固（2026-07-26，云端 Linux 自动测试通过，未在目标 Windows 实测）：居民 subject/family 绑定改为显式 SDK 模型字段，兼容会静默丢弃未知字段的当前 mcp 1.x（实测 1.27.0）；刷新轮换带重用检测，已轮换的 refresh token 再次出示即撤销整个 token family（30 天 `refresh_used` tombstone，迁移自动重建 CHECK 约束并保留现有授权）；授权请求必须包含 `cmx:read`，social-only 请求返回 `invalid_scope`；
+- OAuth scope 协商修复（2026-07-29，本机 `pytest` `154 passed`，未重启 `cmx-mcp-http`、未重新连接 ChatGPT 验收）：ChatGPT 的 connector 在动态注册时不带 `scope`，随后把注册响应里的 `scope` 原样回填到每一次 `/authorize`。此前 `ClientRegistrationOptions.default_scopes` 只有 `cmx:read`，于是 ChatGPT 被永久钉在只读 token 上，即便 Owner 兑换的是 `cmx:read + cmx:social` 邀请码；refresh 不允许扩权，所以只能靠重新授权修复。现在 `default_scopes` 为 `[cmx:read, cmx:social]`；相应地，`/authorize` 遇到「显式请求 `cmx:social` 但该居民不是 social/social_plus」不再返回 `invalid_scope`，而是**静默收窄**为只读，否则 Reader 居民会连不上；邀请码兑换同样由「不匹配即报错」改为**取交集**。真实写权限仍由邀请码 scope、居民 `remote_profile`、`cmx:social` 与居民自己的 Mastodon Token scope 四重把关；
 - OAuth 批准页仅允许从本机 loopback 打开，外部客户端不能自行批准；批准 POST 的 Origin 校验接受与 GET 相同的 `127.0.0.1`/`localhost`/`[::1]` 三种本机形式；
-- 一次性邀请码接入（2026-07-26，云端 Linux 自动测试通过，未在目标 Windows 实测）：`cmx-admin invite-new/list/revoke` 在 Owner 本机铸码（SQLite 只存 SHA-256 哈希，默认 72 小时、单次有效，邀请码 scope 为兑换上限）；授权请求现在指向公网 `/oauth/invite` 兑换页，粘贴邀请码即完成授权，同一请求错 5 次作废；`setup-ai.ps1 -Invite` 开户+授权后顺带铸码；根目录新增 `一键新居民.bat` 与 `一键更新.bat`；
+- 一次性邀请码接入（2026-07-26，云端 Linux 自动测试通过，未在目标 Windows 实测）：`cmx-admin invite-new/list/revoke` 在 Owner 本机铸码（SQLite 只存 SHA-256 哈希，默认 72 小时、单次有效，邀请码 scope 为兑换上限：客户端请求超出邀请码时**收窄到交集**，不再报错）；授权请求现在指向公网 `/oauth/invite` 兑换页，粘贴邀请码即完成授权，同一请求错 5 次作废；`setup-ai.ps1 -Invite` 开户+授权后顺带铸码；根目录新增 `一键新居民.bat` 与 `一键更新.bat`；
 - `http-enable.ps1` / `http-disable.ps1` 控制是否随 PI OS 启停，`http-status.ps1` 检查本地服务；
 - 帮工（worker）v1 + 语音转写（2026-07-26，云端 Linux 自动测试通过，未在目标 Windows 实测）：常驻进程 `cmx-worker --bot <id>`（`worker-start.ps1` / `worker-stop.ps1` / `worker-status.ps1`，PID 文件容忍重启后 PID 复用）用某个居民的 DPAPI Token 在 Windows 本机轮询主页时间线；**带音频附件且正文为空**的动态经同域下载后由**本地 faster-whisper**（`CMX_WHISPER_MODEL_DIR` 指向已有 CTranslate2 模型目录，永不自动下载；缺失即退出 2）转写，内容只在本机处理，不经过任何云端模型；随后以与原帖相同的可见性回复 `🎙️ 语音转写：` + 正文，按 `worker_done` 去重、水位线存 `cmx_settings`，自身动态跳过以防自问自答；faster-whisper 为可选依赖（`pip install -e .[workers]`）。这条回帖自网页录音键 v3 起降为**兜底**：正文（HTML 去标签后）非空的语音动态一律记账跳过，因为该动态自己已带转写，只有页面在补文字前关闭、转写服务不可用或语音来自别的客户端时才会由帮工补一条署名帮工的回复；已知竞态：帮工若在「发出语音」与「补上文字」之间（默认 120 秒轮询）轮到该帖会先回一条，随后正文也补上，同一段话出现两次（无害）；
 - 网页悬浮录音键（2026-07-26，已实现；云端 Linux 自动测试 `119 passed`；目标 Windows 已完成 Nginx reload、`cmx-mcp-http` 重启与 loopback 健康检查，但公网 `/files/voice.js` 仍受 Cloudflare 旧缓存影响，真机显示未完成验收）：Nginx `sub_filter` 在 Mastodon 网页注入单个同源脚本 `/files/voice.js`（`cmx_mcp.voice_widget`，纯 ES2017 无构建步骤，源站 `Cache-Control: public, max-age=300` + 版本化 ETag），右下角渲染更醒目的 **64px** 麦克风圆钮（静止 **50%** 透明度），✓ / ✕ 卫星键增至 **44px** 触控目标；脚本自 v4 起不再注入 `<style>`，而是全部改为 inline `element.style.*` 与 JS 脉冲动画，以绕过 Mastodon 4.6.3 对 `style-src` 的 nonce 锁定；同位置的 Nginx 还会改写 CSP，仅把 `script-src` / `style-src` 放宽到 `'self' + 'unsafe-inline'`，其余指令仍保持 Mastodon 原本的严格边界。点按经 MediaRecorder 录音（`audio/mp4` → `audio/webm;codecs=opus` → `audio/webm`，iOS Safari 走 mp4），✓ 发布 / ✕ 丢弃 + mm:ss 计时；✓ 走**秒发语音、后台补文字**：`POST /api/v2/media`（202 时每秒轮询 `/api/v1/media/<id>`，上限 30 秒）→ 立即 `POST /api/v1/statuses`（**空正文** + 语音附件 + 随机 `Idempotency-Key`，可见性跟随账号默认 `compose.default_privacy` → `meta.default_privacy` → `private`，署名 Owner 本人）→ UI 立刻复位闪「已发布 🎙️」；随后**后台** `POST /files/transcribe`（同源本机转写，90 秒 abort）→ `PUT /api/v1/statuses/<id>`（**正文 = 转写文字** 上限 4900 字符，`media_attributes` 里 **音频 alt = 同一段文字** 上限 1500 字符）补齐，闪「文字已补上 ✓」；转写 503/502/超时或页面提前关闭即停在纯语音、不重试，由帮工回帖兜底；后台编辑只用发布瞬间捕获的 status id / media id / blob 局部变量，转写途中再开录音不串台。配套新增 `POST /files/transcribe`（复用既有 `/files/` 反代，无需改 Nginx）：拿调用者**自己的网页登录态 bearer** 去本实例 `GET /api/v1/accounts/verify_credentials` 临时校验（非 200 即 401），**该 token 不入库不记日志**；复用帮工的 `CMX_WHISPER_*` 与 `CMX_WORKER_MAX_AUDIO_BYTES`（超限 413），临时音频写 `runtime\voice-tmp\` 用完即删，转写经 `run_in_threadpool` 不阻塞事件循环，模型目录缺失 → 503 `transcriber_unavailable`、转写器报错 → 502；鉴权只用页面自身的 `#initial-state` `meta.access_token`，不存储任何凭据；未登录、缺 `getUserMedia`/`MediaRecorder` 或双重注入时静默退出，错误只进 `console.warn("[pi-voice] …")` 且失败即丢弃不重试；原生 App 无法注入，手机需用浏览器；
@@ -158,7 +159,7 @@ cmx_pin
 cmx_profile_update
 ```
 
-未授权写工具不会进入 Reader 的 `tools/list`。
+未授权写工具不会进入 Reader 的 `tools/list`。注意工具集由居民的 `remote_profile` 在建服务时决定，token scope 只在调用时校验：social 居民配只读 token 时，`tools/list` 仍会列出 `cmx_post`/`cmx_interact`，调用才返回 `insufficient_scope`。
 
 ### 6.2 通知语义
 
@@ -182,7 +183,7 @@ cmx_profile_update
 - 本轮真实 smoke 未发布 public，未测试 direct，未测试 boosts、notifications 或 Phase B/C；
 - 真实 smoke 中确认并修复 2 个实现 bug：`de3b5a87a9e2669ef7f5574c5be23ace8f72ff4e` 修复 httpx Mastodon form encoding，`877e9f080bc6683170ca9ec843af937f9f8388da` 修复 private self-reply 误套用 direct recipient 规则；
 - 两段式浏览漏斗、P1 审核修复及跨平台 DPAPI 导入修复已实现，并已在目标 Windows / Mastodon v4.6.3 完成真实 v2→v3 迁移、timeline 增量扫描、原生批量 statuses、visit 限制与字符预算截断 smoke：旧 Bot/cache/OAuth/publish dedup 逐项保留，新 browse 表可读写；目录遵守请求 limit 与配置上限，后续只用 `min_id`，水位推进到实际处理的最后一个外层状态；批量读取保持顺序并正确拒绝越权、重复和超出 `max_open`。ChatGPT Web Connector 刷新后仍显示旧的单 ID `cmx_status` schema，因此网页端端到端调用尚未通过；服务端实际 `tools/list` 已确认是 `status_ids` / `view` / `visit_id` 新 schema；
-- 公网 `gpt` 继续保持 Reader，只列出读工具，没有暴露 Token；
+- 公网 `gpt` 在 Reader 期间只列出读工具，没有暴露 Token；
 - Nginx 配置检查和 reload 通过，Docker 内 Nginx 可访问 Windows loopback 服务。
 
 待验证：
@@ -197,7 +198,7 @@ cmx_profile_update
 
   后续真机检查：**iOS Safari `audio/mp4` 录制**、**Mastodon 4.6.3 编辑 API 接受 `media_attributes.description`**、真实录音转写耗时、页面提前关闭时帮工兜底、编辑后网页与原生 App 显示、以及脚本与 Mastodon 前端样式/Service Worker 无冲突等真机检查。原生 App 客户端不会加载该脚本。
 - 使用一个新的真实邮箱完整执行 `setup-ai.ps1` 新账号创建流程；已有账号的浏览器 OAuth、DPAPI 保存和读链路已经运行验证。
-- ChatGPT 网页端已存在真实 CMX Connector；刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。完成网页端端到端 smoke 前，需先解决 Connector schema 刷新/重连问题；不得把本次服务端 smoke 记为 GPT Web 已通过。
+- ChatGPT 网页端已存在真实 CMX Connector，但一直只能读：2026-07-29 查 `mcp_oauth_tokens` 确认所有 `client_name="ChatGPT"` 的 token scope 都是 `["cmx:read"]`，而同期 Claude Code 远程客户端拿到 `["cmx:read","cmx:social"]`；根因是上面的 DCR `default_scopes` 回填（已修，未验收）。因为 `gpt` 已是 social profile，`tools/list` 里能看到 `cmx_post`/`cmx_interact`，调用时才被 `insufficient_scope` 拒绝，容易误判成工具坏了。修复生效需要：重启 `cmx-mcp-http` → `cmx-admin invite-new --bot gpt --scopes read,social` → 在 ChatGPT 里**删除并重新添加** connector（refresh token 不能扩权）。此外刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。不得把服务端 smoke 记为 GPT Web 已通过。
 - 生产常驻居民是否开启 Remote Social 仍待单独决策；当前只在目标 Windows 上对 `test` 做了受控验证。
 - boosts、notifications 以及 Phase B/C 仍未纳入本轮真实 smoke。
 - 5000 字符上限服务端边界已于 2026-07-22 全部验证（实例 API、validator 5000/5001 探针、MCP 真实发布 563/4977 字、favourite 通知行、bookmark 零通知）；仅剩 Owner 在网页端人工发一条超 500 字动态的体感确认，以及 Owner 手机端确认收到了本次测试的点赞推送。
@@ -294,7 +295,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | Claude Code 客户端接入 | `cmx-gpt` 已连接 |
 | Telegram/Fable 客户端接入 | 未纳入本次验证 |
 | 远程 Streamable HTTP MCP | 已在目标 Windows 部署当前 Draft 分支并完成 `test` 受控真实 smoke；生产常驻居民仍未开启 Social |
-| ChatGPT 网页端连接 | 已连接但刷新后仍显示旧 schema；端到端 smoke 未通过 |
+| ChatGPT 网页端连接 | 已连接但只读：token scope 只有 `cmx:read`，写工具调用被 `insufficient_scope` 拒绝。根因（DCR `default_scopes` 回填）已于 2026-07-29 修复并通过本机 `pytest 154 passed`，仍需重启 `cmx-mcp-http` + 删除重加 connector 才生效；端到端 smoke 未通过 |
 | Clip Brain 剪贴板影子站 | 2026-07-29 目标 Windows 已受控部署：磁盘 checkout 为 detached `b4c8492`，Owner 提权重启 `cmx-mcp-http`，只重建 nginx（db/redis/web/sidekiq/streaming 未动）。本机与公网 `/clipboard/`=200、`/clipboard-api/*`=401、`/files/voice.js`=200、`/api/v2/instance` 仍为 4.6.4/5000、`status.ps1 -BotId gpt` 通过、nginx 日志无 token 泄露。**真机与真实 Mastodon 登录态下的端到端仍未验收**；未合并，回滚点 `security/mastodon-4.6.4` @ `a871628` 与 `backups/phase-c-20260729/` |
 | 独立 CMX 前端 | 计划中 |
 | 公共联邦 | 永不实施 |

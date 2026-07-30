@@ -446,12 +446,12 @@ class OAuthStore:
         *,
         raw_code: str,
         bot_id: str,
-        requested_scopes: list[str] | tuple[str, ...],
         client_id: str,
     ) -> tuple[str, list[str] | None]:
         """Atomically consume one invite.
 
-        Returns ('ok', invite_scopes), ('scope', None), or ('invalid', None).
+        Returns ('ok', invite_scopes) or ('invalid', None). The invite scopes
+        are a ceiling, applied by the caller against what the client asked for.
         """
         now = int(time.time())
         with self.connect() as db:
@@ -468,8 +468,6 @@ class OAuthStore:
             ):
                 return "invalid", None
             allowed = set(json.loads(row["scopes_json"]))
-            if not set(requested_scopes).issubset(allowed):
-                return "scope", None
             db.execute(
                 """
                 UPDATE mcp_oauth_invites SET redeemed_at=?, redeemed_client_id=?
@@ -550,7 +548,11 @@ class CmxOAuthProvider:
             # rejected on every request.
             raise AuthorizeError("invalid_scope", "cmx:read is required")
         if SOCIAL_SCOPE in scopes and self.bot_remote_profile(bot_id) not in {"social", "social_plus"}:
-            raise AuthorizeError("invalid_scope", "this resident only supports read access")
+            # An explicit cmx:social is not evidence of intent: ChatGPT replays
+            # the scope our registration response handed it, so every client
+            # now asks for social. Rejecting that would make read-only
+            # residents unconnectable, so narrow the grant instead.
+            scopes = [scope for scope in scopes if scope != SOCIAL_SCOPE]
 
         pending_id = secrets.token_urlsafe(32)
         pending = PendingAuthorization(
@@ -596,20 +598,23 @@ class CmxOAuthProvider:
         raw_code = raw_code.strip()
         status, invite_scopes = "invalid", None
         if raw_code:
-            # Clients that never asked for a scope (ChatGPT sends none) get
-            # exactly what the owner minted into the invite; explicit requests
-            # keep the invite as a ceiling.
+            # Clients that never asked for a scope get exactly what the owner
+            # minted into the invite; explicit requests keep the invite as a
+            # ceiling.
             status, invite_scopes = self.store.redeem_invite(
                 raw_code=raw_code,
                 bot_id=pending.bot_id,
-                requested_scopes=list(pending.scopes) if pending.scopes_explicit else [],
                 client_id=pending.client_id,
             )
         if status == "ok":
+            allowed = normalize_scopes(invite_scopes or [READ_SCOPE])
             if pending.scopes_explicit:
-                granted = list(pending.scopes)
+                # Narrow to the ceiling instead of failing the redemption: a
+                # client that replays our registration default would otherwise
+                # be unable to redeem a read-only invite at all.
+                granted = [scope for scope in pending.scopes if scope in set(allowed)]
             else:
-                granted = normalize_scopes(invite_scopes or [READ_SCOPE])
+                granted = allowed
             if SOCIAL_SCOPE in granted and self.bot_remote_profile(pending.bot_id) not in {"social", "social_plus"}:
                 granted = [READ_SCOPE]
             with self._pending_lock:
@@ -620,8 +625,6 @@ class CmxOAuthProvider:
             return self.complete(request_id, approved=True)
         with self._pending_lock:
             self._invite_attempts[request_id] = self._invite_attempts.get(request_id, 0) + 1
-        if status == "scope":
-            raise ValueError("这张邀请码不包含本次请求的全部权限；请重新连接并只申请只读，或让 Owner 生成带社交权限的邀请码")
         raise ValueError("邀请码无效、已被使用或已过期")
 
     def complete(self, request_id: str, *, approved: bool) -> str:

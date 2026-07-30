@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音条 · 定稿</title>
+<style>
+/* No bubble at all: the player sits directly in the status and inverts with the
+   theme, so day and night are the same restraint rather than a light card
+   floating on a dark timeline. One ink, one muted, one hairline.
+   No transition, no animation. */
+:root[data-theme="light"]{
+  --page:#eef1f4; --card:#ffffff; --line:rgba(0,0,0,.08);
+  --text:#1c2028; --muted:#606984;
+  --ink:#16191f;
+  --off:rgba(22,25,31,.20);
+  --hair:rgba(22,25,31,.12);
+  --hover:rgba(22,25,31,.07);
+}
+:root[data-theme="dark"]{
+  --page:#191b22; --card:#232731; --line:rgba(255,255,255,.08);
+  --text:#e9edf2; --muted:#8f97ab;
+  --ink:#eef1f5;
+  --off:rgba(238,241,245,.22);
+  --hair:rgba(238,241,245,.13);
+  --hover:rgba(238,241,245,.09);
+}
+:root{
+  --mono:"SF Mono","Cascadia Mono",Consolas,monospace;
+  /* Kai is a system font on Windows and macOS; elsewhere it falls back to the
+     platform serif, which keeps the same hand-written weight. */
+  --kai:"Kaiti SC","STKaiti",KaiTi,"楷体","TW-Kai","AR PL UKai CN",serif;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;padding:26px 20px 70px;background:var(--page);color:var(--text);
+  font:15px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:620px;margin:0 auto;display:grid;gap:22px}
+.topline{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;font-weight:700}
+h1 span{color:var(--muted);font-weight:400;font-size:13px;margin-left:8px}
+.switch{
+  margin-left:auto;border:1px solid var(--line);border-radius:999px;
+  background:var(--card);color:var(--text);font:inherit;font-size:13px;font-weight:700;
+  padding:7px 15px;cursor:pointer;
+}
+.label{font-size:12px;color:var(--muted);margin:0 0 8px}
+
+.status{background:var(--card);border-radius:12px;padding:14px 16px;border:1px solid var(--line)}
+.who{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.avatar{width:34px;height:34px;border-radius:9px;background:linear-gradient(140deg,#5a6270,#3a4049);flex:none}
+.name{font-weight:700;font-size:14px;line-height:1.25}
+.handle{color:var(--muted);font-size:13px;line-height:1.25}
+.when{margin-left:auto;color:var(--muted);font-size:12px}
+
+/* ---------- player: no ground, aligned to the status text edge ---------- */
+.voice{color:var(--ink)}
+.row{display:flex;align-items:center;gap:13px;padding:4px 0 10px}
+
+.play{
+  width:46px;height:46px;flex:none;border:0;border-radius:50%;padding:0;cursor:pointer;
+  background:none;color:var(--ink);display:grid;place-items:center;
+}
+.play:hover{background:var(--hover)}
+.play svg{width:26px;height:26px;display:block}
+.play .pause{display:none}
+.is-playing .play .pause{display:block}
+.is-playing .play .tri{display:none}
+
+.wave{position:relative;flex:1;min-width:0;height:32px;display:flex;align-items:center;gap:2px;cursor:pointer}
+.wave i{width:3px;flex:none;border-radius:999px;background:var(--off);display:block}
+.wave i.done{background:var(--ink)}
+.dot{
+  position:absolute;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;
+  background:var(--ink);display:none;
+}
+.is-playing .dot{display:block}
+
+.time{
+  flex:none;font-family:var(--mono);font-size:12.5px;color:var(--muted);
+  font-variant-numeric:tabular-nums;
+}
+
+.script{
+  padding:11px 0 0;border-top:1px solid var(--hair);
+  font-family:var(--kai);
+  font-size:17px;line-height:1.85;color:var(--text);
+}
+
+.note{
+  font-size:12.5px;line-height:1.75;color:var(--muted);
+  background:var(--card);border-radius:12px;padding:14px 16px;border:1px solid var(--line);
+}
+.note b{color:var(--text)}
+.note code{font-family:var(--mono);font-size:11.5px}
+.sample{font-family:var(--kai);font-size:17px;color:var(--text)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <h1>语音条 · 定稿 <span>无底色，随主题反色</span></h1>
+    <button class="switch" id="theme">切到夜间 ☾</button>
+  </div>
+  <div id="stage"></div>
+  <p class="note">
+    <b>楷体只在系统装了它时生效</b>：Windows 是 <code>KaiTi/楷体</code>，macOS 是 <code>Kaiti SC/STKaiti</code>，两边都自带。
+    iOS 和 Android 通常没有楷体，会退到平台衬线体——字重和手写感接近，但笔形不是楷。
+    如果你要求手机上也必须是楷，那就得自己托管一个楷体 web font，代价是几 MB 的中文字体文件，我不建议为一句转写付这个流量。
+    <br><br>
+    正文样例：<span class="sample">你好 天道，明天早上先把备份跑一遍。</span>
+    <br><br>
+    <b>反色而非白底</b>：整条只用一个 <code>--ink</code>，日间是墨黑、夜间是暖白，波形、播放键、播放头共用它。
+    所以夜间不再有一张白纸浮在时间线上，两种主题是同一种克制。
+    <b>倍速已移除</b>，播放键放大到 46px（图标 26px）。
+  </p>
+</div>
+
+<script>
+var SAMPLES = [
+  ["你好 天道", "0:07", false],
+  ["明天早上先把备份跑一遍，然后确认一下容器状态；如果 streaming 又不健康，先看日志再决定要不要重建。", "0:41", true],
+  ["这条稍微长一点，用来看楷体在多行的时候读起来会不会累。语音和转写是同一条动态的两部分，中间只有一条发丝线，前面不加任何标记——上下相邻本身就说明了关系。", "2:13", false]
+];
+
+var stage = document.getElementById("stage");
+SAMPLES.forEach(function (sample, index) {
+  var block = document.createElement("div");
+  block.style.marginBottom = "20px";
+  block.innerHTML =
+    '<div class="status">' +
+      '<div class="who"><div class="avatar"></div>' +
+      '<div><div class="name">owner</div><div class="handle">@owner</div></div>' +
+      '<div class="when">' + ["刚刚", "2 分钟前", "昨天"][index] + '</div></div>' +
+      '<div class="voice' + (sample[2] ? ' is-playing' : '') + '" data-voice data-seed="' + (index * 7 + 3) + '"' +
+        (sample[2] ? ' data-progress=".46"' : '') + '>' +
+        '<div class="row">' +
+          '<button class="play" aria-label="播放">' +
+            '<svg class="tri" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6L19 12z"/></svg>' +
+            '<svg class="pause" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>' +
+          '</button>' +
+          '<div class="wave"><span class="dot"></span></div>' +
+          '<span class="time">' + sample[1] + '</span>' +
+        '</div>' +
+        '<div class="script">' + sample[0] + '</div>' +
+      '</div>' +
+    '</div>';
+  stage.append(block);
+});
+
+document.querySelectorAll("[data-voice]").forEach(function (voice) {
+  var wave = voice.querySelector(".wave");
+  var dot = voice.querySelector(".dot");
+  var seed = Number(voice.dataset.seed || 1);
+  var progress = Number(voice.dataset.progress || 0);
+
+  function build() {
+    var width = wave.clientWidth || 320;
+    var count = Math.max(24, Math.floor(width / 5));
+    wave.querySelectorAll("i").forEach(function (n) { n.remove(); });
+    for (var i = 0; i < count; i += 1) {
+      var t = i / count;
+      var envelope = Math.sin(Math.PI * Math.min(1, t * 1.12)) * 0.7 + 0.3;
+      var wobble = Math.abs(Math.sin(i * 1.31 + seed) * Math.cos(i * 0.47 + seed * 1.7))
+                 + Math.abs(Math.sin(i * 0.21 + seed)) * 0.35;
+      var bar = document.createElement("i");
+      bar.style.height = Math.max(3, Math.round(envelope * wobble * 23 + 3)) + "px";
+      if (t < progress) bar.className = "done";
+      wave.insertBefore(bar, dot);
+    }
+    dot.style.left = (progress * wave.clientWidth) + "px";
+  }
+
+  wave.addEventListener("click", function (event) {
+    var rect = wave.getBoundingClientRect();
+    var ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    var bars = wave.querySelectorAll("i");
+    bars.forEach(function (bar, i) { bar.className = i / bars.length < ratio ? "done" : ""; });
+    voice.classList.add("is-playing");
+    dot.style.left = (ratio * wave.clientWidth) + "px";
+    progress = ratio;
+  });
+  voice.querySelector(".play").addEventListener("click", function () {
+    voice.classList.toggle("is-playing");
+  });
+  build();
+  window.addEventListener("resize", build);
+});
+
+var root = document.documentElement;
+var button = document.getElementById("theme");
+button.addEventListener("click", function () {
+  var dark = root.dataset.theme === "dark";
+  root.dataset.theme = dark ? "light" : "dark";
+  button.textContent = dark ? "切到夜间 ☾" : "切到日间 ☀";
+});
+</script>
+</body>
+</html>

@@ -252,7 +252,7 @@ main{{max-width:560px;margin:8vh auto;padding:32px;background:#1f2937;border-rad
     def _invite_form(request_id: str, pending: Any, *, error: str | None = None) -> HTMLResponse:
         bot = database.get_bot(pending.bot_id)
         if getattr(pending, "scopes_explicit", True):
-            scope_text = html.escape(" ".join(pending.scopes))
+            scope_text = html.escape(" ".join(pending.scopes)) + "（最终以邀请码为准）"
         else:
             scope_text = "由邀请码决定（客户端未指定）"
         error_html = (
@@ -633,7 +633,14 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             # its /token exchange with "Client secret has expired".
             client_secret_expiry_seconds=None,
             valid_scopes=[READ_SCOPE, SOCIAL_SCOPE],
-            default_scopes=[READ_SCOPE],
+            # ChatGPT registers without asking for a scope and then replays
+            # whatever scope our registration response handed back on every
+            # /authorize. Defaulting to read-only therefore pinned its
+            # connector to a read-only token forever, even when the owner
+            # redeemed a cmx:social invite. Advertise both; the real grant is
+            # still capped by the invite, the resident's remote_profile and
+            # the resident's own Mastodon token.
+            default_scopes=[READ_SCOPE, SOCIAL_SCOPE],
         ),
         revocation_options=RevocationOptions(enabled=True),
     )
