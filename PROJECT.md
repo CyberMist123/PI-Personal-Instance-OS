@@ -298,6 +298,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 远程 Streamable HTTP MCP | 已在目标 Windows 部署当前 Draft 分支并完成 `test` 受控真实 smoke；生产常驻居民仍未开启 Social |
 | ChatGPT 网页端连接 | 已连接但只读：token scope 只有 `cmx:read`，写工具调用被 `insufficient_scope` 拒绝。根因（DCR `default_scopes` 回填）已于 2026-07-29 修复并通过本机 `pytest 154 passed`，仍需重启 `cmx-mcp-http` + 删除重加 connector 才生效；端到端 smoke 未通过 |
 | Clip Brain 剪贴板影子站 | 2026-07-29 目标 Windows 已受控部署：磁盘 checkout 为 detached `b4c8492`，Owner 提权重启 `cmx-mcp-http`，只重建 nginx（db/redis/web/sidekiq/streaming 未动）。本机与公网 `/clipboard/`=200、`/clipboard-api/*`=401、`/files/voice.js`=200、`/api/v2/instance` 仍为 4.6.4/5000、`status.ps1 -BotId gpt` 通过、nginx 日志无 token 泄露。**真机与真实 Mastodon 登录态下的端到端仍未验收**；未合并，回滚点 `security/mastodon-4.6.4` @ `a871628` 与 `backups/phase-c-20260729/` |
+| 网页语音条播放器（接管 Mastodon 原生播放器） | v14 已部署，Owner 真机实测三项故障：手机波形退化为等高占位条、PC 完全没接管、手机播不出声。自动测试 `174 passed` 只覆盖 DOM 节点结构，不覆盖外观与实际播放，因此全绿并不代表可用。止血办法、根因分析、代码地图与必须守住的约束见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，修复后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
 | 独立 CMX 前端 | 计划中 |
 | 公共联邦 | 永不实施 |
 
