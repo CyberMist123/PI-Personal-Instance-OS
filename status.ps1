@@ -77,7 +77,10 @@ try {
 $mcpEnabled = Test-Path -LiteralPath ".\mcp\runtime\http-enabled"
 if ($mcpEnabled) {
   try {
-    $mcpHealth = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8080/_pi/mcp-health" -TimeoutSec 5
+    # Nginx forwards this Host header to the loopback-only MCP service, whose
+    # host allowlist intentionally accepts the configured public host rather
+    # than the Nginx listener's 127.0.0.1:8080 address.
+    $mcpHealth = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8080/_pi/mcp-health" -Headers @{ Host = $webDomain } -TimeoutSec 5
     if ($mcpHealth.StatusCode -ne 200) { throw "HTTP $($mcpHealth.StatusCode)" }
     Write-Host "Remote MCP (read only): OK" -ForegroundColor Green
   } catch {
