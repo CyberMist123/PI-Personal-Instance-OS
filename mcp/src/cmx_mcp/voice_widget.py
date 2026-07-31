@@ -18,8 +18,15 @@ same-origin ``/files/transcribe`` (CMX's own endpoint, which re-verifies that
 same page token against the instance) and, when the local transcript comes back,
 **edits the status it just created** (``PUT /api/v1/statuses/<id>`` with
 ``media_attributes``) so the body becomes the transcript and the audio gains alt
-text. Nothing is retried: if transcription fails or the page is closed first, the
-status simply stays text-less and the worker's reply remains the fallback.
+text.
+
+Since v17 tapping the large microphone again ends the recording and starts the
+upload immediately (the check button remains as an equivalent accessible
+target). Before the first network request, the completed Blob and its stable
+idempotency key are saved in IndexedDB. Upload/publish/transcript failures remain
+there and resume when the same browser opens CMX again or comes back online. The
+page token is never persisted. This gives both mobile browsers and Windows a
+device-local outbox without weakening the same-origin credential boundary.
 
 Since v4 the widget never injects a ``<style>`` element: Mastodon 4.6.3 ships a
 strict Content-Security-Policy whose ``style-src`` is locked to a per-response
@@ -29,10 +36,8 @@ property and the recording "pulse" is driven by a ``setInterval`` toggle instead
 of a CSS animation. (The Nginx site also rewrites the CSP on injected pages so
 the external script itself is allowed to load — see ``nginx/default.conf``.)
 
-v5 only resizes: this is the owner's private single-user instance, so the mic
-no longer has to be discreet - 64px instead of 48px, resting at 50% opacity
-instead of 35%, with the check/cross satellites grown to 44px comfortable tap
-targets.
+v5 resized the controls for the owner's private single-user instance. v17 keeps
+those sizes and adds tap-to-finish plus the durable outbox described above.
 
 Plain ES2017, no build step, no external dependency, no backticks (the source
 must stay safe to embed in any HTML or config context).
@@ -45,9 +50,9 @@ from .voice_player import VOICE_PLAYER_JS
 from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "16"
+VOICE_WIDGET_VERSION = "17"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page session token only. */
+VOICE_WIDGET_JS = """/* CMX voice widget v17 - same-origin, relative API, durable local outbox. */
 (function () {
   "use strict";
 
@@ -72,6 +77,9 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
   var TRANSCRIBE_TIMEOUT_MS = 90000;
   var STATUS_MAX_CHARS = 4900;
   var ALT_MAX_CHARS = 1500;
+  var OUTBOX_DB = "cmx-voice-outbox";
+  var OUTBOX_VERSION = 1;
+  var OUTBOX_STORE = "recordings";
   var MIC_RESTING = "0.5";
   var SAT_BUTTON_STYLE = { width: "44px", height: "44px", fontSize: "19px" };
   var MIC_BUTTON_STYLE = { width: "64px", height: "64px", fontSize: "29px" };
@@ -116,6 +124,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
       return state.meta.default_privacy;
     }
     return "private";
+  }
+
+  function pickOwnerId(state) {
+    if (state && state.meta && (typeof state.meta.me === "string" || typeof state.meta.me === "number")) {
+      return String(state.meta.me);
+    }
+    return "";
   }
 
   function pickMime() {
@@ -176,6 +191,96 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
     });
   }
 
+  function openOutbox() {
+    return new Promise(function (resolve, reject) {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB unavailable"));
+        return;
+      }
+      var request = window.indexedDB.open(OUTBOX_DB, OUTBOX_VERSION);
+      request.onupgradeneeded = function () {
+        var db = request.result;
+        if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+          db.createObjectStore(OUTBOX_STORE, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = function () {
+        resolve(request.result);
+      };
+      request.onerror = function () {
+        reject(request.error || new Error("could not open voice outbox"));
+      };
+      request.onblocked = function () {
+        reject(new Error("voice outbox upgrade blocked"));
+      };
+    });
+  }
+
+  function outboxWrite(mode, operation) {
+    return openOutbox().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx;
+        try {
+          tx = db.transaction(OUTBOX_STORE, mode);
+          operation(tx.objectStore(OUTBOX_STORE));
+        } catch (error) {
+          db.close();
+          reject(error);
+          return;
+        }
+        tx.oncomplete = function () {
+          db.close();
+          resolve();
+        };
+        tx.onerror = function () {
+          db.close();
+          reject(tx.error || new Error("voice outbox transaction failed"));
+        };
+        tx.onabort = tx.onerror;
+      });
+    });
+  }
+
+  function outboxPut(entry) {
+    return outboxWrite("readwrite", function (store) {
+      store.put(entry);
+    });
+  }
+
+  function outboxDelete(id) {
+    return outboxWrite("readwrite", function (store) {
+      store.delete(id);
+    });
+  }
+
+  function outboxList() {
+    return openOutbox().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var values = [];
+        var tx = db.transaction(OUTBOX_STORE, "readonly");
+        var request = tx.objectStore(OUTBOX_STORE).openCursor();
+        request.onsuccess = function () {
+          var cursor = request.result;
+          if (cursor) {
+            values.push(cursor.value);
+            cursor.continue();
+          }
+        };
+        request.onerror = function () {
+          reject(request.error || new Error("could not read voice outbox"));
+        };
+        tx.oncomplete = function () {
+          db.close();
+          resolve(values);
+        };
+        tx.onerror = function () {
+          db.close();
+          reject(tx.error || new Error("voice outbox transaction failed"));
+        };
+      });
+    });
+  }
+
   function setStyle(element, styles) {
     /* Inline styles only: Mastodon's CSP style-src is nonce-locked, so an
        injected stylesheet element (with :hover or CSS animation) is refused. */
@@ -218,6 +323,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
     }
 
     var visibility = pickVisibility(state);
+    var ownerId = pickOwnerId(state);
     var authHeader = "Bearer " + token;
 
     var root = document.createElement("div");
@@ -313,7 +419,9 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
     var timerId = 0;
     var elapsed = 0;
     var busy = false;
+    var requesting = false;
     var recording = false;
+    var retrying = false;
     var mimeType = "";
     var pulseId = 0;
     var pulseOn = false;
@@ -340,6 +448,8 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
 
     function enterRecordingLook() {
       recording = true;
+      micButton.setAttribute("aria-label", "\u7ed3\u675f\u5e76\u4e0a\u4f20\u5f55\u97f3");
+      micButton.title = "\u518d\u70b9\u4e00\u6b21\u7ed3\u675f\u5e76\u4e0a\u4f20";
       micButton.style.background = "rgba(239,68,68,.35)";
       micButton._piRest = "1";
       micButton.style.opacity = "1";
@@ -349,6 +459,8 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
 
     function exitRecordingLook() {
       recording = false;
+      micButton.setAttribute("aria-label", "\u8bed\u97f3\u4fbf\u7b7e");
+      micButton.title = "\u8bed\u97f3\u4fbf\u7b7e";
       stopPulse();
       micButton.style.background = "rgba(99,102,241,.25)";
       micButton._piRest = MIC_RESTING;
@@ -414,7 +526,12 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
     }
 
     function beginRecording() {
+      if (requesting) {
+        return;
+      }
+      requesting = true;
       navigator.mediaDevices.getUserMedia({ audio: true }).then(function (granted) {
+        requesting = false;
         stream = granted;
         mimeType = pickMime();
         try {
@@ -445,6 +562,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
           setChip(mmss(elapsed));
         }, 1000);
       }, function (error) {
+        requesting = false;
         warn("microphone permission denied or unavailable", error);
         flash("\\u65e0\\u9ea6\\u514b\\u98ce\\u6743\\u9650");
       });
@@ -584,7 +702,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
       return attempt();
     }
 
-    function publish(mediaId) {
+    function publish(mediaId, stableKey, entryVisibility) {
       /* Publish first, with an empty body: the transcript is edited in later so
          that tapping the check mark never waits on transcription. */
       return fetch("/api/v1/statuses", {
@@ -592,9 +710,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
         headers: {
           Authorization: authHeader,
           "Content-Type": "application/json",
-          "Idempotency-Key": idempotencyKey()
+          "Idempotency-Key": stableKey
         },
-        body: JSON.stringify({ status: "", media_ids: [mediaId], visibility: visibility })
+        body: JSON.stringify({
+          status: "",
+          media_ids: [mediaId],
+          visibility: entryVisibility || visibility
+        })
       }).then(function (response) {
         if (!response.ok) {
           throw new Error("status publish HTTP " + response.status);
@@ -625,27 +747,218 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
       });
     }
 
-    function backfill(statusId, mediaId, blob, filename) {
-      /* Fire-and-forget, and deliberately state-free: every value it touches was
-         captured when its own status was published, so a second recording started
-         meanwhile cannot redirect this edit. No retry - a text-less voice post is
-         still a complete post, and the worker's reply covers it. */
-      if (!statusId || !mediaId) {
+    function persistEntry(entry) {
+      return outboxPut(entry).then(function () {
+        return true;
+      }).catch(function (error) {
+        warn("could not save recording to the local outbox", error);
+        return false;
+      });
+    }
+
+    function backfill(entry) {
+      /* A published entry stays in IndexedDB until the transcript edit succeeds.
+         Reopening the page can therefore finish a local transcription that was
+         interrupted by navigation, sleep or a temporary model failure. */
+      if (!entry.statusId || !entry.mediaId) {
         warn("published status carried no id; skipping the transcript edit");
-        return;
+        return Promise.resolve(false);
       }
-      transcribe(blob, filename)
+      return transcribe(entry.blob, entry.filename)
         .then(function (text) {
           if (!text) {
-            return null;
+            return false;
           }
-          return editWithTranscript(statusId, mediaId, text).then(function () {
+          return editWithTranscript(entry.statusId, entry.mediaId, text).then(function () {
+            return outboxDelete(entry.id).catch(function (error) {
+              warn("transcript succeeded but the local outbox entry could not be removed", error);
+            });
+          }).then(function () {
             quietFlash("\\u6587\\u5b57\\u5df2\\u8865\\u4e0a \\u2713");
-            return null;
+            return true;
           });
         })
         .catch(function (error) {
-          warn("could not add the transcript to " + statusId, error);
+          warn("could not add the transcript to " + entry.statusId, error);
+          return false;
+        });
+    }
+
+    function ensureMedia(entry) {
+      function markReady() {
+        entry.mediaPending = false;
+        entry.phase = "media-ready";
+        return persistEntry(entry).then(function () {
+          return entry.mediaId;
+        });
+      }
+
+      if (entry.mediaId) {
+        return entry.mediaPending
+          ? waitForMedia(entry.mediaId).then(markReady)
+          : Promise.resolve(entry.mediaId);
+      }
+      return upload(entry.blob, entry.filename).then(function (media) {
+        if (!media.id) {
+          throw new Error("media upload returned no id");
+        }
+        entry.mediaId = String(media.id);
+        entry.mediaPending = Boolean(media.pending);
+        entry.phase = "uploaded";
+        return persistEntry(entry).then(function () {
+          return entry.mediaPending ? waitForMedia(entry.mediaId).then(markReady) : markReady();
+        });
+      });
+    }
+
+    function prepareEntry(entry) {
+      if (entry.phase !== "recorded" || entry.filename === MP3_NAME) {
+        return Promise.resolve(entry);
+      }
+      return toMp3(entry.blob, entry.filename).then(function (mp3) {
+        entry.blob = mp3;
+        entry.filename = MP3_NAME;
+        entry.mimeType = mp3.type || "audio/mpeg";
+        entry.phase = "converted";
+        return persistEntry(entry).then(function () {
+          return entry;
+        });
+      });
+    }
+
+    function publishEntry(entry) {
+      if (entry.statusId) {
+        return Promise.resolve(entry);
+      }
+      return prepareEntry(entry)
+        .then(ensureMedia)
+        .then(function () {
+          return publish(entry.mediaId, entry.idempotencyKey, entry.visibility);
+        })
+        .then(function (status) {
+          entry.statusId = String((status && status.id) || "");
+          if (!entry.statusId) {
+            throw new Error("status publish returned no id");
+          }
+          entry.phase = "published";
+          return persistEntry(entry).then(function () {
+            return entry;
+          });
+        });
+    }
+
+    function makeEntry(blob, filename) {
+      var stableKey = idempotencyKey();
+      return {
+        id: "voice-" + stableKey,
+        ownerId: ownerId,
+        createdAt: Date.now(),
+        visibility: visibility,
+        idempotencyKey: stableKey,
+        filename: filename,
+        mimeType: blob.type || "audio/webm",
+        blob: blob,
+        phase: "recorded",
+        mediaId: "",
+        mediaPending: false,
+        statusId: ""
+      };
+    }
+
+    function finishAndPublish() {
+      if (busy || !recording) {
+        return;
+      }
+      busy = true;
+      stopTimer();
+      setChip("\\u4e0a\\u4f20\\u4e2d\\u2026");
+      var clipMime = mimeType;
+      var entry = null;
+      var stored = false;
+      stopRecorder()
+        .then(function (parts) {
+          releaseStream();
+          if (!parts.length) {
+            throw new Error("empty recording");
+          }
+          var blob = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
+          entry = makeEntry(blob, blobName(blob, clipMime));
+          return persistEntry(entry);
+        })
+        .then(function (saved) {
+          stored = saved;
+          /* Release the microphone and controls as soon as the recording is
+             safely in the local outbox. Remux/upload/publish/transcribe continue
+             in the background, so the next recording can start immediately. */
+          busy = false;
+          resetUi();
+          flash("\\u5df2\\u4fdd\\u5b58\\uff0c\\u53d1\\u9001\\u4e2d \\ud83c\\udf99\\ufe0f");
+          return publishEntry(entry);
+        })
+        .then(function (publishedEntry) {
+          quietFlash("\\u5df2\\u53d1\\u5e03 \\ud83c\\udf99\\ufe0f");
+          /* Publishing is complete; transcription can finish in this page or a
+             later page load using the durable entry and no stored credential. */
+          backfill(publishedEntry);
+        })
+        .catch(function (error) {
+          warn("publish failed; recording kept in the local outbox", error);
+          if (busy) {
+            busy = false;
+            resetUi();
+          }
+          quietFlash(stored
+            ? "\\u5df2\\u4fdd\\u5b58\\uff0c\\u8054\\u7f51\\u540e\\u91cd\\u4f20"
+            : "\\u53d1\\u5e03\\u5931\\u8d25");
+        });
+    }
+
+    function retryOutbox() {
+      if (retrying || busy || recording || navigator.onLine === false) {
+        return;
+      }
+      retrying = true;
+      outboxList()
+        .then(function (allEntries) {
+          var entries = allEntries.filter(function (entry) {
+            return entry && entry.blob && (!entry.ownerId || !ownerId || entry.ownerId === ownerId);
+          });
+          if (!entries.length) {
+            return { total: 0, failed: 0 };
+          }
+          quietFlash("\\u6b63\\u5728\\u91cd\\u4f20 " + entries.length + " \\u6761\\u2026");
+          var result = { total: entries.length, failed: 0 };
+          var chain = Promise.resolve();
+          entries.forEach(function (entry) {
+            chain = chain.then(function () {
+              return publishEntry(entry)
+                .then(backfill)
+                .then(function (complete) {
+                  if (!complete) {
+                    result.failed += 1;
+                  }
+                })
+                .catch(function (error) {
+                  result.failed += 1;
+                  warn("outbox retry failed for " + entry.id, error);
+                });
+            });
+          });
+          return chain.then(function () {
+            return result;
+          });
+        })
+        .then(function (result) {
+          retrying = false;
+          if (result.total && !result.failed) {
+            quietFlash("\\u91cd\\u4f20\\u5b8c\\u6210 \\u2713");
+          } else if (result.failed) {
+            quietFlash("\\u5f85\\u91cd\\u4f20 " + result.failed + " \\u6761");
+          }
+        })
+        .catch(function (error) {
+          retrying = false;
+          warn("could not resume the local voice outbox", error);
         });
     }
 
@@ -654,6 +967,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
         return;
       }
       if (recording) {
+        finishAndPublish();
         return;
       }
       beginRecording();
@@ -670,62 +984,11 @@ VOICE_WIDGET_JS = """/* CMX voice widget v16 - same-origin, relative API, page s
     });
 
     okButton.addEventListener("click", function () {
-      if (busy) {
-        return;
-      }
-      busy = true;
-      stopTimer();
-      setChip("\\u23f3");
-      /* Locals, captured once per tap: the background transcript edit below runs
-         long after resetUi() and after a new recording may have started. */
-      var clipMime = mimeType;
-      var clipBlob = null;
-      var clipName = "";
-      var clipMediaId = "";
-      stopRecorder()
-        .then(function (parts) {
-          releaseStream();
-          if (!parts.length) {
-            throw new Error("empty recording");
-          }
-          var recorded = new Blob(parts, { type: clipMime || parts[0].type || "audio/webm" });
-          /* Hand the mic back the moment the audio is in hand. Everything after
-             this — rewrap, upload, publish, transcribe — is the network's
-             problem, not something to stand and watch. A failure still flashes,
-             and the locals above keep this tap's data separate from the next. */
-          busy = false;
-          resetUi();
-          flash("\\u5df2\\u53d1\\u9001 \\ud83c\\udf99\\ufe0f");
-          return toMp3(recorded, blobName(recorded, clipMime));
-        })
-        .then(function (mp3) {
-          /* From here on the MP3 is the recording: Mastodon files it as audio,
-             every phone can play it, and whisper reads it just as happily. */
-          clipBlob = mp3;
-          clipName = MP3_NAME;
-          return upload(clipBlob, clipName);
-        })
-        .then(function (media) {
-          if (!media.id) {
-            throw new Error("media upload returned no id");
-          }
-          clipMediaId = String(media.id);
-          return media.pending ? waitForMedia(clipMediaId) : clipMediaId;
-        })
-        .then(publish)
-        .then(function (status) {
-          var statusId = String((status && status.id) || "");
-          /* The UI was released back at the recording step; the transcript
-             catches up on its own from here. */
-          backfill(statusId, clipMediaId, clipBlob, clipName);
-        })
-        .catch(function (error) {
-          warn("publish failed; recording discarded", error);
-          busy = false;
-          resetUi();
-          flash("\\u53d1\\u5e03\\u5931\\u8d25");
-        });
+      finishAndPublish();
     });
+
+    window.addEventListener("online", retryOutbox);
+    window.setTimeout(retryOutbox, 500);
   }
 
 /*__VOICE_PLAYER__*/

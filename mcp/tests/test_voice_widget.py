@@ -63,6 +63,9 @@ def _app(tmp_path, monkeypatch):
         "CMX_WHISPER_DEVICE",
         "CMX_WHISPER_COMPUTE",
         "CMX_WHISPER_LANGUAGE",
+        "CMX_WHISPER_INITIAL_PROMPT",
+        "CMX_WHISPER_HOTWORDS",
+        "CMX_WHISPER_BEAM_SIZE",
         "CMX_WORKER_POLL_SECONDS",
         "CMX_WHISPER_MAX_SECONDS",
         "CMX_WORKER_MAX_AUDIO_BYTES",
@@ -120,23 +123,30 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     # Logged-out pages have no meta.access_token and must be silently skipped.
     assert "access_token" in VOICE_WIDGET_JS
     assert "media_ids" in VOICE_WIDGET_JS
-    # v3 ordering: the status goes out with an empty body, then a PUT carrying
-    # media_attributes fills in both the body and the audio alt text.
-    assert 'body: JSON.stringify({ status: "", media_ids: [mediaId], visibility: visibility })' in (
-        VOICE_WIDGET_JS
-    )
+    # The status goes out with an empty body, then a PUT carrying media_attributes
+    # fills in both the body and the audio alt text.
+    assert 'status: ""' in VOICE_WIDGET_JS
+    assert "media_ids: [mediaId]" in VOICE_WIDGET_JS
+    assert "visibility: entryVisibility || visibility" in VOICE_WIDGET_JS
     assert 'fetch("/api/v1/statuses/" + encodeURIComponent(statusId), {' in VOICE_WIDGET_JS
     assert 'method: "PUT"' in VOICE_WIDGET_JS
     assert "media_attributes: [{ id: mediaId, description: clip(text, ALT_MAX_CHARS) }]" in (
         VOICE_WIDGET_JS
     )
     assert "status: clip(text, STATUS_MAX_CHARS)" in VOICE_WIDGET_JS
-    # publish() must resolve before backfill() is even called.
-    assert VOICE_WIDGET_JS.index(".then(publish)") < VOICE_WIDGET_JS.index(
-        "backfill(statusId, clipMediaId, clipBlob, clipName)"
+    # v6 persists the Blob and a stable idempotency key before the first upload,
+    # then keeps that entry until its transcript edit succeeds.
+    assert 'var OUTBOX_DB = "cmx-voice-outbox";' in VOICE_WIDGET_JS
+    assert "window.indexedDB.open(OUTBOX_DB, OUTBOX_VERSION)" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_JS.index("return persistEntry(entry);") < VOICE_WIDGET_JS.index(
+        "return publishEntry(entry);"
     )
-    # The background edit reads only locals captured at ✓ time, so a second
-    # recording started mid-transcription cannot redirect it.
+    assert "idempotencyKey: stableKey" in VOICE_WIDGET_JS
+    assert "return outboxDelete(entry.id).catch" in VOICE_WIDGET_JS
+    assert 'window.addEventListener("online", retryOutbox);' in VOICE_WIDGET_JS
+    # The large mic itself is the finish-and-upload target; ✓ remains equivalent.
+    assert 'if (recording) {\n        finishAndPublish();' in VOICE_WIDGET_JS
+    assert 'okButton.addEventListener("click", function () {\n      finishAndPublish();' in VOICE_WIDGET_JS
     assert "var clipMime = mimeType;" in VOICE_WIDGET_JS
     assert "function blobName(blob, mime)" in VOICE_WIDGET_JS
     assert "TRANSCRIBE_TIMEOUT_MS = 90000" in VOICE_WIDGET_JS
@@ -151,7 +161,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "16" and "voice widget v16" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "17" and "voice widget v17" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -251,6 +261,9 @@ def test_transcribe_returns_the_transcript_off_the_event_loop(tmp_path, monkeypa
     assert len(calls) == 1
     assert calls[0]["bytes"] == b"fake-audio"
     assert calls[0]["model_dir"] == str(model_dir) and calls[0]["language"] == "zh"
+    assert calls[0]["initial_prompt"]
+    assert calls[0]["hotwords"] == "CMX, PI OS"
+    assert calls[0]["beam_size"] == 5
     assert calls[0]["path"].endswith(".m4a")
     assert "MainThread" not in calls[0]["thread"]
     # The temporary upload is always removed, success or failure.
@@ -348,10 +361,10 @@ def test_widget_rewraps_the_recording_before_uploading_to_mastodon() -> None:
     bytes read as video, so Mastodon either trips Paperclip's spoof check or
     types the upload as a video with no video stream."""
     assert '/files/voice-remux' in VOICE_WIDGET_JS
-    remux_at = VOICE_WIDGET_JS.index("return toMp3(recorded")
-    upload_at = VOICE_WIDGET_JS.index("return upload(clipBlob")
-    assert remux_at < upload_at, "the remux must happen before /api/v2/media"
-    assert 'clipName = MP3_NAME' in VOICE_WIDGET_JS
+    assert "return toMp3(entry.blob" in VOICE_WIDGET_JS
+    assert "return prepareEntry(entry)\n        .then(ensureMedia)" in VOICE_WIDGET_JS
+    assert "return upload(entry.blob" in VOICE_WIDGET_JS
+    assert 'entry.filename = MP3_NAME' in VOICE_WIDGET_JS
     assert 'var MP3_NAME = "voice.mp3"' in VOICE_WIDGET_JS
 
 
@@ -533,10 +546,10 @@ def test_kai_is_self_hosted_for_phones(tmp_path, monkeypatch) -> None:
 def test_the_mic_is_released_before_the_upload_finishes() -> None:
     """The point of the recorder is to record and walk away. Waiting on remux,
     upload and publish put an hourglass in front of that."""
-    released = VOICE_WIDGET_JS.index('flash("\\u5df2\\u53d1\\u9001')   # "已发送"
-    remux = VOICE_WIDGET_JS.index("return toMp3(recorded")
-    upload = VOICE_WIDGET_JS.index("return upload(clipBlob")
-    assert released < remux < upload
+    released = VOICE_WIDGET_JS.index('flash("\\u5df2\\u4fdd\\u5b58')   # "已保存"
+    publish = VOICE_WIDGET_JS.index("return publishEntry(entry);", released)
+    assert released < publish
+    assert "return prepareEntry(entry)\n        .then(ensureMedia)" in VOICE_WIDGET_JS
 
 
 def test_player_sits_above_the_transcript_not_at_the_end() -> None:
@@ -587,8 +600,10 @@ def test_transcripts_are_biased_to_simplified_chinese() -> None:
 
     from cmx_mcp import transcribe as module
 
+    signature = inspect.signature(module.transcribe_file)
     source = inspect.getsource(module.transcribe_file)
-    assert "initial_prompt=SIMPLIFIED_PROMPT" in source
+    assert signature.parameters["initial_prompt"].default == SIMPLIFIED_PROMPT
+    assert "initial_prompt=initial_prompt or None" in source
     assert "简体" in SIMPLIFIED_PROMPT
 
 

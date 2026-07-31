@@ -23,7 +23,10 @@ cmx-mcp-http = "cmx_mcp.remote:main"
 cmx-worker = "cmx_mcp.workers:main"
 
 [project.optional-dependencies]
-workers = ["faster-whisper>=1"]
+workers = [
+  "faster-whisper>=1.1",
+  "opencc-python-reimplemented>=0.1.7",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

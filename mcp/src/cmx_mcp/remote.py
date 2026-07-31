@@ -458,8 +458,8 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         )
 
     async def voice_transcribe(request: Request) -> Response:
-        # Called by the injected widget before it publishes: the voice status
-        # itself carries the transcript, so there is no follow-up reply. The
+        # Called by the injected widget after it publishes the voice status. The
+        # transcript is then edited into that same status. The
         # bearer here is the caller's OWN Mastodon web session token, verified
         # against the instance and then dropped (never stored, never logged).
         bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
@@ -528,6 +528,9 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 device=config.device,
                 compute_type=config.compute_type,
                 language=config.language,
+                initial_prompt=config.initial_prompt,
+                hotwords=config.hotwords,
+                beam_size=config.beam_size,
                 max_audio_seconds=float(config.max_audio_seconds),
             )
         finally:
