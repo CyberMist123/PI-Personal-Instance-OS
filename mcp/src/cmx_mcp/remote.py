@@ -44,6 +44,7 @@ from .transcribe import model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
+from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
 from .site_search import search_site
 from .web_auth import verify_web_bearer, verify_web_identity
 from .workers import WorkerConfig
@@ -465,6 +466,19 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             },
         )
 
+    async def search_widget(_request: Request) -> Response:
+        # Same static, credential-free shape as voice_widget above: this script
+        # only patches window.fetch at runtime using the page's own token, and
+        # carries none of its own.
+        return Response(
+            SEARCH_WIDGET_JS,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache",
+                "ETag": f'"search-{SEARCH_WIDGET_VERSION}"',
+            },
+        )
+
     async def voice_transcribe(request: Request) -> Response:
         # Called by the injected widget after it publishes the voice status. The
         # transcript is then edited into that same status. The
@@ -882,6 +896,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # Must stay ahead of the templated download route, which would otherwise
         # never match "voice.js" but would shadow future single-segment files.
         Route("/files/voice.js", voice_widget, methods=["GET"]),
+        Route("/files/search.js", search_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
         Route("/files/recognize", image_recognize, methods=["POST"]),
         Route("/files/search", site_search_endpoint, methods=["GET"]),

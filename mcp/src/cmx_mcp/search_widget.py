@@ -1,0 +1,361 @@
+"""The script that teaches Mastodon's own search box about CMX's whole-instance
+search, injected the same way `voice_widget` is: a single same-origin
+`<script src="/files/search.js" defer>` tag, served by this process and (per
+the Owner's nginx, which this module does not touch) appended to Mastodon's
+HTML by the same `sub_filter` that already injects `/files/voice.js`.
+
+The Owner does not want a second search UI living next to Mastodon's. Mastodon
+already ships one, backed by `GET /api/v2/search`, and its result list already
+renders accounts, hashtags and statuses. So instead of building a new box, this
+patches `window.fetch` and rewrites the *answer* to that one request: the
+`statuses` array Mastodon's own search returns is index-limited (own posts and
+ones you interacted with; `ES_ENABLED=false` here), so it is replaced with
+results from `GET /files/search` (`site_search.search_site`, a `psql` substring
+scan across every status in PostgreSQL — see that module's docstring for why
+AI/MCP may not reach it directly and why this may). `accounts` and `hashtags`
+come back from Mastodon's own search untouched, because those already work on
+this instance.
+
+The same two hard rules as the voice widget apply, for the same reason:
+
+* only relative, same-origin paths are ever fetched, so the script inherits
+  whatever origin the browser is already on;
+* the bearer is the page's own `#initial-state` token (`meta.access_token`),
+  read at call time and never stored, copied or sent anywhere else. A
+  logged-out page has no token, and the widget never touches `window.fetch`
+  at all.
+
+A third rule is specific to this widget: **never break search**. Mastodon's
+own request is always issued and awaited regardless of what CMX's side does.
+If `/files/search` 401s (bad/expired page token), 403s (the caller is a
+resident's Mastodon account, not the Owner's own — the same site-search
+endpoint answers both, see `site_search.py`), times out, or the follow-up
+`GET /api/v1/statuses` batch comes back malformed, the fetch override falls
+back to Mastodon's own untouched response. The failure mode is "search behaves
+exactly as it does today", never a blank or broken result list. Because the
+override reads the native response through `.clone().json()`, the original
+`Response` object's body is never disturbed by a failed enhancement attempt
+and can still be handed back and read once, normally, by Mastodon's own code.
+
+Full status objects are fetched through Mastodon's own
+`GET /api/v1/statuses?id[]=...`, in chunks of 20 ids per request (this instance
+has never been asked to accept more, so nothing here assumes it would), which
+both re-applies Mastodon's visibility rules to the viewing account (unlike the
+raw `psql` scan behind `/files/search`) and reuses the shapes Mastodon's own
+status components already know how to render. Batches do not preserve
+request order, so the ids returned by `/files/search` (already newest-first)
+are used to re-sort the merged statuses afterward; an id Mastodon silently
+drops (not visible to this viewer) is simply absent from the result, not an
+error.
+
+Mastodon's web client has used `fetch`, not `XMLHttpRequest`, for its own API
+calls (including search) since it dropped axios; this repository does not
+vendor the Mastodon frontend source to grep, so that is prior knowledge about
+Mastodon's codebase rather than something checked against this instance's
+actual bundle. Patching only `window.fetch` is therefore expected to be
+sufficient. If a future Mastodon release reintroduces XHR for search, the
+practical effect is simply that this widget stops enhancing results — Mastodon's
+own search keeps working unmodified, which is exactly the required fallback
+behaviour anyway.
+
+Plain ES2017, no build step, no external dependency, no backticks (the source
+must stay safe to embed in any HTML or config context) — matching
+`voice_widget.py`.
+"""
+
+from __future__ import annotations
+
+SEARCH_WIDGET_VERSION = "1"
+
+SEARCH_WIDGET_JS = """/* CMX search widget v1 - patches window.fetch so Mastodon's own search box also surfaces whole-instance results. */
+(function () {
+  "use strict";
+
+  if (window.__piSearchWidget) {
+    return;
+  }
+  window.__piSearchWidget = "1";
+
+  var LOG = "[pi-search]";
+  var SEARCH_PATH = "/api/v2/search";
+  var SITE_SEARCH_PATH = "/files/search";
+  var STATUSES_PATH = "/api/v1/statuses";
+  var STATUS_CHUNK_SIZE = 20;
+  var SITE_SEARCH_LIMIT = 30;
+  var TIMEOUT_MS = 8000;
+
+  function warn(message, detail) {
+    try {
+      if (detail === undefined) {
+        console.warn(LOG + " " + message);
+      } else {
+        console.warn(LOG + " " + message, detail);
+      }
+    } catch (ignored) {
+      /* console may be missing in exotic webviews */
+    }
+  }
+
+  function readInitialState() {
+    var node = document.getElementById("initial-state");
+    if (!node) {
+      return null;
+    }
+    try {
+      return JSON.parse(node.textContent || node.innerText || "null");
+    } catch (error) {
+      warn("could not parse #initial-state JSON", error);
+      return null;
+    }
+  }
+
+  function pickToken(state) {
+    if (!state || !state.meta || typeof state.meta.access_token !== "string") {
+      return "";
+    }
+    return state.meta.access_token;
+  }
+
+  function describeRequest(input, init) {
+    /* input can be a string, a URL, or a Request; only a Request also carries
+       its own method and that is only used when init does not override it. */
+    var url = "";
+    var method = (init && init.method) || "GET";
+    if (typeof input === "string") {
+      url = input;
+    } else if (typeof URL !== "undefined" && input instanceof URL) {
+      url = input.href;
+    } else if (input && typeof input === "object" && typeof input.url === "string") {
+      url = input.url;
+      if (!init || !init.method) {
+        method = input.method || "GET";
+      }
+    }
+    return { url: url, method: String(method).toUpperCase() };
+  }
+
+  function sameOriginSearchQuery(url) {
+    /* Resolved against the current page so a bare "/api/v2/search?q=x" string
+       is treated the same as an absolute same-origin URL. Anything on another
+       origin, any other path, or a call with no q, is left completely alone -
+       that is exactly what Mastodon does today, so nothing should change. */
+    var parsed;
+    try {
+      parsed = new URL(url, window.location.href);
+    } catch (error) {
+      return "";
+    }
+    if (parsed.origin !== window.location.origin || parsed.pathname !== SEARCH_PATH) {
+      return "";
+    }
+    return (parsed.searchParams.get("q") || "").trim();
+  }
+
+  function chunk(items, size) {
+    var out = [];
+    for (var i = 0; i < items.length; i += size) {
+      out.push(items.slice(i, i + size));
+    }
+    return out;
+  }
+
+  function fetchSiteHits(query, token, signal, rawFetch) {
+    var url = SITE_SEARCH_PATH + "?q=" + encodeURIComponent(query) + "&limit=" + SITE_SEARCH_LIMIT;
+    return rawFetch(url, {
+      headers: { Authorization: "Bearer " + token },
+      signal: signal
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error("site search HTTP " + response.status);
+      }
+      return response.json();
+    }).then(function (payload) {
+      var items = payload && Array.isArray(payload.items) ? payload.items : null;
+      if (!items) {
+        throw new Error("site search returned no items array");
+      }
+      return items;
+    });
+  }
+
+  function fetchStatusChunk(ids, token, signal, rawFetch) {
+    var params = ids.map(function (id) {
+      return "id[]=" + encodeURIComponent(id);
+    }).join("&");
+    return rawFetch(STATUSES_PATH + "?" + params, {
+      headers: { Authorization: "Bearer " + token },
+      signal: signal
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error("statuses HTTP " + response.status);
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!Array.isArray(payload)) {
+        throw new Error("statuses response was not an array");
+      }
+      return payload;
+    });
+  }
+
+  function fetchStatusesInOrder(ids, token, signal, rawFetch) {
+    if (!ids.length) {
+      return Promise.resolve([]);
+    }
+    var byId = {};
+    var chain = Promise.resolve();
+    chunk(ids, STATUS_CHUNK_SIZE).forEach(function (part) {
+      chain = chain.then(function () {
+        return fetchStatusChunk(part, token, signal, rawFetch).then(function (statuses) {
+          statuses.forEach(function (status) {
+            if (status && status.id !== undefined && status.id !== null) {
+              byId[String(status.id)] = status;
+            }
+          });
+        });
+      });
+    });
+    return chain.then(function () {
+      /* /api/v1/statuses does not promise to preserve request order, and
+         silently omits ids the viewer may not see. Re-derive order from the
+         (already newest-first) site-search ids instead of trusting the batch. */
+      var ordered = [];
+      ids.forEach(function (id) {
+        var status = byId[String(id)];
+        if (status) {
+          ordered.push(status);
+        }
+      });
+      return ordered;
+    });
+  }
+
+  function fetchCmxStatuses(query, token, rawFetch) {
+    var controller = window.AbortController ? new window.AbortController() : null;
+    var timer = 0;
+    if (controller) {
+      timer = window.setTimeout(function () {
+        try {
+          controller.abort();
+        } catch (ignored) {
+          /* already settled */
+        }
+      }, TIMEOUT_MS);
+    }
+    var signal = controller ? controller.signal : undefined;
+    function done() {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    }
+    return fetchSiteHits(query, token, signal, rawFetch)
+      .then(function (items) {
+        var ids = items.map(function (item) {
+          return item && item.id;
+        }).filter(function (id) {
+          return id !== undefined && id !== null && id !== "";
+        });
+        return fetchStatusesInOrder(ids, token, signal, rawFetch);
+      })
+      .then(function (statuses) {
+        done();
+        return statuses;
+      }, function (error) {
+        done();
+        throw error;
+      });
+  }
+
+  function mergedResponse(nativeJson, statuses) {
+    /* accounts and hashtags already work on this instance and are kept as
+       Mastodon returned them; only statuses - the one index-limited field -
+       is replaced. */
+    var accounts = nativeJson && Array.isArray(nativeJson.accounts) ? nativeJson.accounts : [];
+    var hashtags = nativeJson && Array.isArray(nativeJson.hashtags) ? nativeJson.hashtags : [];
+    var payload = { accounts: accounts, hashtags: hashtags, statuses: statuses };
+    return new window.Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8" }
+    });
+  }
+
+  function start(state) {
+    var token = pickToken(state);
+    if (!token) {
+      /* Logged-out page (or a Mastodon build without a web token): do not
+         touch window.fetch at all, so search stays completely untouched. */
+      return;
+    }
+    if (typeof window.fetch !== "function" || typeof window.Response !== "function") {
+      warn("fetch/Response unavailable in this browser");
+      return;
+    }
+
+    var originalFetch = window.fetch.bind(window);
+
+    window.fetch = function (input, init) {
+      var described = describeRequest(input, init);
+      if (described.method !== "GET") {
+        return originalFetch(input, init);
+      }
+      var query = sameOriginSearchQuery(described.url);
+      if (!query) {
+        return originalFetch(input, init);
+      }
+
+      /* Mastodon's own search always runs; the CMX lookup runs alongside it,
+         not after it, and a slow or failing CMX side never delays or breaks
+         the native call. */
+      var nativePromise = originalFetch(input, init);
+      var cmxPromise = fetchCmxStatuses(query, token, originalFetch).then(
+        function (statuses) {
+          return { ok: true, statuses: statuses };
+        },
+        function (error) {
+          return { ok: false, error: error };
+        }
+      );
+
+      return nativePromise.then(function (native) {
+        return cmxPromise.then(function (cmx) {
+          if (!native.ok) {
+            return native;
+          }
+          if (!cmx.ok) {
+            warn("whole-instance search unavailable; native results only", cmx.error);
+            return native;
+          }
+          return native.clone().json().then(
+            function (nativeJson) {
+              return mergedResponse(nativeJson, cmx.statuses);
+            },
+            function (error) {
+              warn("native search response was not JSON", error);
+              return native;
+            }
+          );
+        });
+      });
+    };
+  }
+
+  function boot() {
+    var state = readInitialState();
+    if (!state) {
+      return;
+    }
+    try {
+      start(state);
+    } catch (error) {
+      warn("search widget failed to start", error);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+"""
