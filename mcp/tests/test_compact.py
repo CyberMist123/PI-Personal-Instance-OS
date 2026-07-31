@@ -1,8 +1,50 @@
-from cmx_mcp.compact import strip_html, timeline_preview
+from cmx_mcp.compact import extract_links, strip_html, timeline_preview
+
+
+def _autolink(url: str, shown: str) -> str:
+    """Reproduce Mastodon's autolink markup: the visible slice plus hidden ends."""
+    hidden_head, rest = url.split(shown, 1)
+    return (
+        f'<a href="{url}" rel="nofollow noopener" target="_blank">'
+        f'<span class="invisible">{hidden_head}</span>'
+        f'<span class="ellipsis">{shown}</span>'
+        f'<span class="invisible">{rest}</span></a>'
+    )
 
 
 def test_strip_html_preserves_paragraphs():
     assert strip_html("<p>one<br>two</p><p>three</p>") == "one\ntwo\nthree"
+
+
+def test_xhs_share_becomes_note_plus_placeholder():
+    url = "http://xhslink.cn/o/6ZScCdILPdc"
+    html = (
+        "<p>蜂蜜柠檬脆皮鸡翅！！ "
+        + _autolink(url, "xhslink.cn/o/6ZScCdILPdc")
+        + " 把这段复制好，然后去【小红书】就能看笔记。</p>"
+    )
+    assert strip_html(html) == "蜂蜜柠檬脆皮鸡翅！！ 【url-xhs】"
+    assert extract_links(html) == [url]
+
+
+def test_unknown_host_gets_a_bare_placeholder_not_its_domain():
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    html = f"<p>see {_autolink(url, 'youtube.com/watch?v=dQw4w9WgXcQ')}</p>"
+    assert strip_html(html) == "see 【url】"
+    assert extract_links(html) == [url]
+
+
+def test_boilerplate_matching_never_eats_ordinary_writing():
+    html = "<p>今天在小红书上看到一个菜谱，复制下来了，明天试试</p>"
+    assert strip_html(html) == "今天在小红书上看到一个菜谱，复制下来了，明天试试"
+
+
+def test_mentions_and_hashtags_keep_their_own_text():
+    html = (
+        '<p><a href="https://pi.invalid/@alice" class="u-url mention">@<span>alice</span></a>'
+        ' 聊聊 <a href="https://pi.invalid/tags/cooking" rel="tag">#<span>cooking</span></a></p>'
+    )
+    assert strip_html(html) == "@alice 聊聊 #cooking"
 
 
 def test_timeline_preview_is_sparse_normalized_and_bounded():

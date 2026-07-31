@@ -10,7 +10,14 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from .compact import compact_account, compact_media, compact_status, compact_v2_status, timeline_preview
+from .compact import (
+    compact_account,
+    compact_media,
+    compact_status,
+    compact_v2_status,
+    extract_links,
+    timeline_preview,
+)
 from .config import InstanceSettings, Paths
 from .db import Database
 from .mastodon_client import MastodonApiError, MastodonClient
@@ -143,7 +150,7 @@ def build_server(
 
     @mcp.tool()
     def cmx_search(query: str, limit: int = 8) -> dict:
-        """Search the local SQLite FTS index built from previously read CMX statuses."""
+        """Substring-search the local SQLite cache of previously read CMX statuses."""
         query = query.strip()
         if not query:
             raise ValueError("query is required")
@@ -153,7 +160,7 @@ def build_server(
         return {
             "items": items,
             "count": len(items),
-            "source": "local_sqlite_fts5",
+            "source": "local_sqlite_substring",
             "hint": "Read timelines to expand the local index.",
         }
 
@@ -409,11 +416,11 @@ def _build_remote_server(
     @mcp.tool()
     def cmx_status(
         status_ids: list[str],
-        view: Literal["compact", "thread", "media"] = "compact",
+        view: Literal["compact", "thread", "media", "links"] = "compact",
         visit_id: str | None = None,
         ctx: Context = None,
     ) -> dict:
-        """Read 1-3 statuses; thread/media are explicit single-status views."""
+        """Read 1-3 statuses; thread/media/links are explicit single-status views."""
         read_scope(ctx)
         ids = [_id(value) for value in status_ids]
         direct_max_open = getattr(runtime.settings, "browse_max_open", 3)
@@ -422,7 +429,7 @@ def _build_remote_server(
         if len(set(ids)) != len(ids):
             raise ValueError("status_ids must be distinct")
         if view != "compact" and len(ids) != 1:
-            raise ValueError("thread and media views accept exactly one status ID")
+            raise ValueError("thread, media and links views accept exactly one status ID")
         visit = runtime.db.get_visit(runtime.bot.bot_id, visit_id) if visit_id else None
         if visit_id and not visit:
             raise ValueError("visit_id is invalid or expired")
@@ -468,6 +475,15 @@ def _build_remote_server(
         status_id = ids[0]
         if view == "media":
             result = {"id": compact["id"], "media": compact.get("media", [])}
+            if visit_id:
+                if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_chars=_json_cost(result)):
+                    return {"truncated": True, "remaining_ids": [compact["id"]], "budget_chars_remaining": 0}
+            return result
+        if view == "links":
+            # The 【url】 placeholders in compact text cost a few characters each;
+            # this is where a resident spends the rest, deliberately and per status.
+            source = raw.get("reblog") or raw
+            result = {"id": compact["id"], "links": extract_links(source.get("content"))}
             if visit_id:
                 if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_chars=_json_cost(result)):
                     return {"truncated": True, "remaining_ids": [compact["id"]], "budget_chars_remaining": 0}

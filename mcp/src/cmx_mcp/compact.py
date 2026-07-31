@@ -3,27 +3,89 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlsplit
+
+
+# Hosts worth naming in the placeholder. Anything absent stays a bare 【url】 —
+# the point is to spend a handful of characters, not to smuggle the address back
+# in as a domain. Adding an entry is one line.
+LINK_ALIASES = {
+    "xhslink.cn": "xhs",
+    "xhslink.com": "xhs",
+    "xiaohongshu.com": "xhs",
+}
+
+# Share blurbs are matched as whole known templates, never by keyword. "复制" and
+# "小红书" both appear in ordinary writing ("今天在小红书上看到一个菜谱，复制下来了"),
+# so keyword matching would eat the resident's own words. Missing a template is
+# recoverable; deleting someone's sentence is not.
+_SHARE_BOILERPLATE = re.compile(
+    r"[，,]?\s*(?:复制本条信息|把这段复制好|复制这段内容|复制打开)[^。！!？?\n]*[。！!]?"
+)
+
+
+def link_placeholder(url: str) -> str:
+    """Return the token that stands in for `url` in resident-facing text."""
+    host = urlsplit(url).hostname or ""
+    host = host[4:] if host.startswith("www.") else host
+    for domain, alias in LINK_ALIASES.items():
+        if host == domain or host.endswith("." + domain):
+            return f"【url-{alias}】"
+    return "【url】"
 
 
 class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.links: list[str] = []
+        self._anchor_href: str | None = None
+        self._anchor_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
         if tag in {"p", "br", "li", "blockquote"}:
             self.parts.append("\n")
+        elif tag == "a":
+            self._anchor_href = dict(attrs).get("href") or None
+            self._anchor_parts = []
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"p", "li", "blockquote"}:
             self.parts.append("\n")
+        elif tag == "a":
+            shown = "".join(self._anchor_parts)
+            href = self._anchor_href
+            compact = "".join(shown.split())
+            # Mastodon autolinks a bare URL by slicing it across visible and
+            # `invisible` spans, so the rendered text is a substring of the href.
+            # Mentions and hashtags must be excluded by their leading sigil, not
+            # by that substring test: `@alice` does occur inside the mention's own
+            # href (https://host/@alice) and would otherwise be rewritten to it.
+            if href and compact and not compact.startswith(("@", "#")) and compact in href:
+                self.links.append(href)
+                self.parts.append(link_placeholder(href))
+            else:
+                self.parts.append(shown)
+            self._anchor_href = None
+            self._anchor_parts = []
 
     def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+        if self._anchor_href is not None:
+            self._anchor_parts.append(data)
+        else:
+            self.parts.append(data)
 
     def text(self) -> str:
-        lines = [" ".join(line.split()) for line in "".join(self.parts).splitlines()]
+        joined = _SHARE_BOILERPLATE.sub("", "".join(self.parts))
+        lines = [" ".join(line.split()) for line in joined.splitlines()]
         return "\n".join(line for line in lines if line).strip()
+
+
+def extract_links(value: str | None) -> list[str]:
+    """Return the full hrefs the placeholders stand for, in the order they appear."""
+    parser = _TextExtractor()
+    parser.feed(value or "")
+    return parser.links
 
 
 def strip_html(value: str | None) -> str:
