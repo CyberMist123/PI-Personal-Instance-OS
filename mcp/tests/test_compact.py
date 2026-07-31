@@ -60,6 +60,37 @@ def test_timeline_preview_is_sparse_normalized_and_bounded():
     assert result["replies"] == 4 and result["media"] == 2
 
 
+def test_feed_advertises_recognised_text_by_size_without_spending_it():
+    from cmx_mcp.compact import compact_v2_status
+
+    raw = {
+        "id": "1", "content": "<p>看这个</p>", "account": {"acct": "a"},
+        "media_attachments": [{"id": "m1", "type": "image", "description": "菜单"}],
+    }
+    recognitions = {"m1": {"local_ocr_text": "蜂蜜柠檬脆皮鸡翅 鸡翅中 500g 柠檬 1个"}}
+    media = compact_v2_status(raw, recognitions)["media"][0]
+    assert media == {"type": "image", "alt": "菜单", "ocr_chars": 23}
+    assert "蜂蜜" not in str(media)
+    # No recognition yet, or an image with no text at all, adds nothing.
+    assert compact_v2_status(raw)["media"][0] == {"type": "image", "alt": "菜单"}
+
+
+def test_expanding_media_separates_what_was_read_from_what_was_guessed():
+    from cmx_mcp.compact import compact_media
+
+    row = {
+        "local_ocr_text": "蜂密柠檬脆皮鸡翅",
+        "cloud_corrected_text": "蜂蜜柠檬脆皮鸡翅",
+        "cloud_description": "一张手写餐牌的照片",
+        "uncertain_text": "第三行价格看不清",
+    }
+    result = compact_media({"id": "m1", "type": "image", "description": "菜单"}, row)
+    assert result["ocr"] == "蜂蜜柠檬脆皮鸡翅"
+    assert result["description"] == "一张手写餐牌的照片"
+    assert result["uncertain"] == "第三行价格看不清"
+    assert result["ocr"] != row["local_ocr_text"]
+
+
 def test_timeline_preview_omits_zero_replies_and_media():
     assert timeline_preview({"id": "1", "content": "ok", "account": {"acct": "a"}}) == {
         "id": "1", "author": "a", "preview": "ok"

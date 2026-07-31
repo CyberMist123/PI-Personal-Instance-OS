@@ -125,13 +125,36 @@ def compact_account(account: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_media(media: dict[str, Any]) -> dict[str, Any]:
-    return {
+def compact_media(media: dict[str, Any], recognition: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = {
         "id": str(media.get("id") or ""),
         "type": media.get("type"),
         "description": media.get("description"),
         "url": media.get("url"),
     }
+    result.update(media_recognition_fields(recognition))
+    return result
+
+
+def media_recognition_fields(recognition: dict[str, Any] | None) -> dict[str, Any]:
+    """Split what a machine read out of an image from what a model guessed about it.
+
+    `ocr` is what the model on this desk read; `description` is what a remote
+    model said the picture shows. Merging them would leave a resident unable to
+    tell a transcription from a guess, which matters most exactly where it is
+    least visible — a wrong digit in a receipt reads the same as a right one.
+    The cloud correction supersedes the local reading when one exists, because
+    it saw the same pixels with more capacity.
+    """
+    if not recognition:
+        return {}
+    text = recognition.get("cloud_corrected_text") or recognition.get("local_ocr_text") or ""
+    fields = {
+        "ocr": text.strip(),
+        "description": (recognition.get("cloud_description") or "").strip(),
+        "uncertain": (recognition.get("uncertain_text") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
 
 
 def compact_status(raw: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +186,17 @@ def compact_status(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_v2_status(raw: dict[str, Any]) -> dict[str, Any]:
+def _recognised_chars(recognitions: dict[str, Any] | None, attachment: dict[str, Any]) -> int:
+    row = (recognitions or {}).get(str(attachment.get("id") or ""))
+    if not row:
+        return 0
+    text = row.get("cloud_corrected_text") or row.get("local_ocr_text") or ""
+    return len(text.strip())
+
+
+def compact_v2_status(
+    raw: dict[str, Any], recognitions: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Return the sparse Phase A representation; omit absent/empty fields."""
     wrapper = raw
     source = raw.get("reblog") or raw
@@ -190,11 +223,16 @@ def compact_v2_status(raw: dict[str, Any]) -> dict[str, Any]:
             result[key] = value
     attachments = source.get("media_attachments") or []
     if attachments:
+        # Recognised text is advertised by its size, not included. A screenshot
+        # can carry hundreds of characters; spending them on every timeline row
+        # would undo the browse funnel that exists to keep this view cheap. The
+        # count is enough for a resident to decide whether to open the status.
         result["media"] = [
             {key: value for key, value in {
                 "type": item.get("type"),
                 "alt": item.get("description"),
-            }.items() if value not in (None, "")}
+                "ocr_chars": _recognised_chars(recognitions, item),
+            }.items() if value not in (None, "", 0)}
             for item in attachments
         ]
     poll = source.get("poll")

@@ -474,7 +474,17 @@ def _build_remote_server(
         compact = compacts[0]
         status_id = ids[0]
         if view == "media":
-            result = {"id": compact["id"], "media": compact.get("media", [])}
+            # The one place the full recognised text is spent: the resident asked
+            # for this status's images by name, having seen ocr_chars in the feed.
+            source = raw.get("reblog") or raw
+            recognitions = runtime.db.recognitions_for_status(str(source.get("id") or status_id))
+            result = {
+                "id": compact["id"],
+                "media": [
+                    compact_media(item, recognitions.get(str(item.get("id") or "")))
+                    for item in source.get("media_attachments") or []
+                ],
+            }
             if visit_id:
                 if not runtime.db.use_visit(bot_id=runtime.bot.bot_id, visit_id=visit_id, opened_ids=[compact["id"]], added_chars=_json_cost(result)):
                     return {"truncated": True, "remaining_ids": [compact["id"]], "budget_chars_remaining": 0}

@@ -81,6 +81,35 @@ def test_later_cloud_pass_does_not_blank_an_earlier_one(tmp_path: Path):
     assert row["cloud_description"] == "一张手写餐牌"
 
 
+def test_search_finds_a_status_by_text_recognised_inside_its_image(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [{"id": "s1", "account": {"acct": "a"}, "text": "今天做了这个"}])
+    db.record_local_ocr("sha-menu", text="蜂蜜柠檬脆皮鸡翅", line_count=1, mean_confidence=0.95)
+    db.link_status_media("s1", "m1", "sha-menu")
+    assert [item["id"] for item in db.search_statuses("gpt", "鸡翅", 5)] == ["s1"]
+    assert db.search_statuses("gpt", "红烧肉", 5) == []
+
+
+def test_image_text_cannot_pull_a_direct_status_into_results(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [{"id": "d1", "account": {"acct": "a"}, "text": "私密", "visibility": "direct"}])
+    db.record_local_ocr("sha-secret", text="蜂蜜柠檬脆皮鸡翅", line_count=1, mean_confidence=0.95)
+    db.link_status_media("d1", "m1", "sha-secret")
+    assert db.search_statuses("gpt", "鸡翅", 5) == []
+
+
+def test_one_recognition_serves_every_status_that_reuses_the_image(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.record_local_ocr("sha-same", text="同一张图", line_count=1, mean_confidence=0.9)
+    db.link_status_media("s1", "m1", "sha-same")
+    db.link_status_media("s2", "m9", "sha-same")
+    assert db.recognitions_for_status("s1")["m1"]["local_ocr_text"] == "同一张图"
+    assert db.recognitions_for_status("s2")["m9"]["local_ocr_text"] == "同一张图"
+
+
 def test_status_cache_isolated_by_bot_id(tmp_path: Path):
     db = Database(tmp_path / "cmx.sqlite3")
     db.initialize()

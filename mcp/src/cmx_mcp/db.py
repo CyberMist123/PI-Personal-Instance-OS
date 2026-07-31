@@ -165,6 +165,20 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_image_recognition_state
                     ON image_recognition(state);
+
+                -- image_recognition is keyed by content and knows nothing about
+                -- Mastodon; this is the join that lets a search over recognised
+                -- text come back with statuses. Many attachments legitimately map
+                -- to one hash — the same photo posted twice is recognised once.
+                CREATE TABLE IF NOT EXISTS status_media (
+                    status_id TEXT NOT NULL,
+                    media_id TEXT NOT NULL,
+                    image_sha256 TEXT NOT NULL,
+                    linked_at INTEGER NOT NULL,
+                    PRIMARY KEY (status_id, media_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_status_media_sha
+                    ON status_media(image_sha256);
                 """
             )
             for name, definition in (
@@ -513,6 +527,12 @@ class Database:
         rows rather than raising, so this was silent. Substring matching is the
         semantics this corpus needs, and the corpus is one small instance's cache.
 
+        Text recognised inside a status's images is searched too, so a photo of a
+        menu is findable by what it says. The image tables are global while this
+        query is not, hence the join through status_media; the visibility filter
+        stays on the outer table, so a direct status is excluded no matter what
+        its attachments contain.
+
         `visibility IS NOT 'direct'` mirrors what cache_statuses indexes, and is
         null-safe: statuses cached without a visibility count as non-direct.
         `self` diaries ride on Mastodon's direct visibility, so they stay out too.
@@ -521,13 +541,23 @@ class Database:
         with self.connect() as db:
             rows = db.execute(
                 """
-                SELECT payload_json FROM status_cache
-                WHERE bot_id=? AND visibility IS NOT 'direct' AND (
-                    text LIKE ?2 ESCAPE '\\'
-                    OR spoiler_text LIKE ?2 ESCAPE '\\'
-                    OR author_acct LIKE ?2 ESCAPE '\\'
+                SELECT payload_json FROM status_cache c
+                WHERE c.bot_id=? AND c.visibility IS NOT 'direct' AND (
+                    c.text LIKE ?2 ESCAPE '\\'
+                    OR c.spoiler_text LIKE ?2 ESCAPE '\\'
+                    OR c.author_acct LIKE ?2 ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM status_media m
+                        JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                        WHERE m.status_id = c.status_id AND (
+                            r.local_ocr_text LIKE ?2 ESCAPE '\\'
+                            OR r.cloud_corrected_text LIKE ?2 ESCAPE '\\'
+                            OR r.cloud_description LIKE ?2 ESCAPE '\\'
+                            OR r.search_keywords LIKE ?2 ESCAPE '\\'
+                        )
+                    )
                 )
-                ORDER BY created_at DESC LIMIT ?3
+                ORDER BY c.created_at DESC LIMIT ?3
                 """,
                 (bot_id, pattern, limit),
             ).fetchall()
@@ -695,6 +725,31 @@ class Database:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"Unknown image_sha256: {image_sha256}")
+
+    def link_status_media(self, status_id: str, media_id: str, image_sha256: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO status_media(status_id, media_id, image_sha256, linked_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(status_id, media_id) DO UPDATE SET
+                    image_sha256=excluded.image_sha256, linked_at=excluded.linked_at
+                """,
+                (status_id, media_id, image_sha256, int(time.time())),
+            )
+
+    def recognitions_for_status(self, status_id: str) -> dict[str, dict[str, Any]]:
+        """Return each attachment's recognition row, keyed by Mastodon media id."""
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT m.media_id, r.* FROM status_media m
+                JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                WHERE m.status_id=?
+                """,
+                (status_id,),
+            ).fetchall()
+        return {row["media_id"]: dict(row) for row in rows}
 
     def get_image_recognition(self, image_sha256: str) -> dict[str, Any] | None:
         with self.connect() as db:
