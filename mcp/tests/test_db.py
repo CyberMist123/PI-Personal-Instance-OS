@@ -25,6 +25,51 @@ def test_sqlite_fts_roundtrip(tmp_path: Path):
     assert result[0]["id"] == "1"
 
 
+def test_search_matches_chinese_substrings_not_only_whole_sentences(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses(
+        "gpt",
+        [
+            {"id": "1", "account": {"acct": "a"}, "text": "今天烧了个菜很好吃", "created_at": "2026-07-17T00:00:00Z"},
+            {"id": "2", "account": {"acct": "a"}, "text": "学习烧菜的第一天", "created_at": "2026-07-18T00:00:00Z"},
+            {"id": "3", "account": {"acct": "a"}, "text": "读了一本书", "created_at": "2026-07-19T00:00:00Z"},
+        ],
+    )
+    assert [item["id"] for item in db.search_statuses("gpt", "烧菜", 5)] == ["2"]
+    # Newest first, and a single character is a legitimate Chinese query.
+    assert [item["id"] for item in db.search_statuses("gpt", "烧", 5)] == ["2", "1"]
+    assert db.search_statuses("gpt", "游泳", 5) == []
+
+
+def test_search_never_reaches_direct_or_self_entries(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses(
+        "gpt",
+        [
+            {"id": "d", "account": {"acct": "a"}, "text": "烧菜的秘密", "visibility": "direct"},
+            {"id": "p", "account": {"acct": "a"}, "text": "烧菜的公开笔记", "visibility": "private"},
+        ],
+    )
+    assert [item["id"] for item in db.search_statuses("gpt", "烧菜", 5)] == ["p"]
+
+
+def test_search_treats_like_wildcards_as_literal_characters(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses(
+        "gpt",
+        [
+            {"id": "1", "account": {"acct": "a"}, "text": "电池还剩 50% 电量"},
+            {"id": "2", "account": {"acct": "a"}, "text": "完全无关的一条"},
+        ],
+    )
+    assert [item["id"] for item in db.search_statuses("gpt", "50%", 5)] == ["1"]
+    # Unescaped, a bare "%" would match every row; escaped, it finds the literal sign.
+    assert [item["id"] for item in db.search_statuses("gpt", "%", 5)] == ["1"]
+
+
 def test_status_cache_isolated_by_bot_id(tmp_path: Path):
     db = Database(tmp_path / "cmx.sqlite3")
     db.initialize()

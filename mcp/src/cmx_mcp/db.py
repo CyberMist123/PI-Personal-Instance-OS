@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+def _escape_like(value: str) -> str:
+    """Neutralise LIKE wildcards so a query of `50%` looks for those three characters."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass(frozen=True, slots=True)
 class Bot:
     bot_id: str
@@ -479,29 +484,33 @@ class Database:
                     )
 
     def search_statuses(self, bot_id: str, query: str, limit: int) -> list[dict[str, Any]]:
+        """Substring-match this bot's non-direct cache, newest first.
+
+        Deliberately a scan rather than `status_fts MATCH`. FTS5's unicode61
+        tokenizer does not segment CJK, so a run of Chinese becomes a single
+        token: indexing 「学习烧菜的第一天」 makes it reachable only by typing that
+        exact string back, and a query of 烧菜 matches nothing. MATCH returns zero
+        rows rather than raising, so this was silent. Substring matching is the
+        semantics this corpus needs, and the corpus is one small instance's cache.
+
+        `visibility IS NOT 'direct'` mirrors what cache_statuses indexes, and is
+        null-safe: statuses cached without a visibility count as non-direct.
+        `self` diaries ride on Mastodon's direct visibility, so they stay out too.
+        """
+        pattern = f"%{_escape_like(query)}%"
         with self.connect() as db:
-            try:
-                rows = db.execute(
-                    """
-                    SELECT c.payload_json
-                    FROM status_fts f
-                    JOIN status_cache c ON c.status_id=f.status_id AND c.bot_id=f.bot_id
-                    WHERE status_fts MATCH ? AND f.bot_id=? AND c.bot_id=?
-                    ORDER BY bm25(status_fts), c.created_at DESC
-                    LIMIT ?
-                    """,
-                    (query, bot_id, bot_id, limit),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                pattern = f"%{query}%"
-                rows = db.execute(
-                    """
-                    SELECT payload_json FROM status_cache
-                    WHERE bot_id=? AND (text LIKE ? OR spoiler_text LIKE ? OR author_acct LIKE ?)
-                    ORDER BY created_at DESC LIMIT ?
-                    """,
-                    (bot_id, pattern, pattern, pattern, limit),
-                ).fetchall()
+            rows = db.execute(
+                """
+                SELECT payload_json FROM status_cache
+                WHERE bot_id=? AND visibility IS NOT 'direct' AND (
+                    text LIKE ?2 ESCAPE '\\'
+                    OR spoiler_text LIKE ?2 ESCAPE '\\'
+                    OR author_acct LIKE ?2 ESCAPE '\\'
+                )
+                ORDER BY created_at DESC LIMIT ?3
+                """,
+                (bot_id, pattern, limit),
+            ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
     def invalidate_status(self, bot_id: str, status_id: str) -> None:
