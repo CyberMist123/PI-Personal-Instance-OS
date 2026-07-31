@@ -5,13 +5,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 OVERRIDE_PATH = (
     REPOSITORY_ROOT
     / "mastodon-overrides"
-    / "v4.6.3"
+    / "v4.6.4"
     / "app"
     / "validators"
     / "status_length_validator.rb"
 )
 MOUNT = (
-    "./mastodon-overrides/v4.6.3/app/validators/status_length_validator.rb:"
+    "./mastodon-overrides/v4.6.4/app/validators/status_length_validator.rb:"
     "/opt/mastodon/app/validators/status_length_validator.rb:ro"
 )
 

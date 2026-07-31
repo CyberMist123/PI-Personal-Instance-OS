@@ -16,7 +16,7 @@ PI OS 是部署在个人 Windows 电脑上的私人生活时间线，用于日�
 
 ## 2. 已验证基础实例
 
-- Mastodon v4.6.3 官方容器；
+- Mastodon v4.6.4 官方容器；
 - 手机和 PC 可通过 HTTPS 登录；
 - 文字、图片和跨设备同步正常；
 - 公开注册关闭，不加入公开联邦；
@@ -64,7 +64,7 @@ Windows 登录
 
 `start.ps1`、计划任务脚本和相关 bat 都是有效运维文件，必须保留。
 
-CMX 5000 字符上限使用版本锁定的 Mastodon v4.6.3 validator 覆盖文件，分别只读挂载到 `web` 和 `sidekiq`。不 fork Mastodon，不维护大型自定义镜像。升级 Mastodon 时必须重新对比该覆盖文件与对应上游版本。
+CMX 5000 字符上限使用版本锁定的 Mastodon v4.6.4 validator 覆盖文件，分别只读挂载到 `web` 和 `sidekiq`。上一版 `mastodon-overrides/v4.6.3/` 保留作回滚。不 fork Mastodon，不维护大型自定义镜像。升级 Mastodon 时必须重新对比该覆盖文件与对应上游版本。
 
 ## 5. CMX 网页
 
@@ -272,6 +272,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 项目 | 状态 |
 |---|---|
 | 基础 Mastodon 网页 MVP | 已验证 |
+| Mastodon v4.6.3 → v4.6.4 安全升级 | 2026-07-28 目标 Windows 已部署验证：备份完成、`stop.ps1`/`start.ps1` 重建、web/sidekiq/streaming 均为 v4.6.4 且 healthy，`/api/v2/instance` 为 version=4.6.4 / domain=pi.invalid / max_characters=5000，容器内 `StatusLengthValidator::MAX_CHARS`=5000（web 与 sidekiq），5000 合法 / 5001 拒绝，无待执行迁移，`gpt` MCP smoke 与 self 发文往返通过。网页/手机浏览器登录 smoke 需 Owner 本人执行，尚未验证 |
 | 文字、图片、同步 | 已验证 |
 | 首次完整备份 | 已验证 |
 | Windows 重启恢复 | 已验证 |

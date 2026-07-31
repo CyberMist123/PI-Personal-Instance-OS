@@ -12,7 +12,7 @@
 
 ### 当前 MVP
 
-- 使用 Mastodon v4.6.3 官方容器作为稳定后端，当前不 fork 上游。
+- 使用 Mastodon v4.6.4 官方容器作为稳定后端，当前不 fork 上游。
 - 部署在家中闲置 Windows 电脑，本地目录为 `D:\AI\PI-Personal-Instance-OS`。
 - 手机通过浏览器访问网页，不使用 Mastodon App。
 - 通过 Cloudflare Named Tunnel 提供 HTTPS，不开放家庭路由器入站端口。

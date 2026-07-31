@@ -2,7 +2,7 @@
 
 ## 一句话
 
-PI OS 不是重新开发社交平台内核，而是把 Mastodon v4.6.3 当作稳定的私人时间线后端，用 Docker 管理依赖、Nginx 统一入口、Cloudflare Tunnel 供手机浏览器访问，并把永久内部身份与可替换公网门牌分离。
+PI OS 不是重新开发社交平台内核，而是把 Mastodon v4.6.4 当作稳定的私人时间线后端，用 Docker 管理依赖、Nginx 统一入口、Cloudflare Tunnel 供手机浏览器访问，并把永久内部身份与可替换公网门牌分离。
 
 当前网页是 Mastodon Web。独立 CMX 前端尚未加入；以后作为同源网页层接入，不改变数据库和核心容器职责。
 
