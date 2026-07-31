@@ -234,12 +234,16 @@ mcp/runtime/cmx.sqlite3
 ├─ mcp_oauth_invites
 ├─ filebox_files
 ├─ cmx_settings
-└─ worker_done
+├─ worker_done
+├─ image_recognition
+└─ status_media
 ```
 
 SQLite 不保存明文 Token、图片、完整 REST 历史或 Mastodon 数据库。Mastodon/PostgreSQL 始终是账号、动态、关系和媒体的事实源。
 
-当前 schema version 为 `5`：v3（从 v2 原地创建 `browse_state`/`browse_seen`/`browse_visits`）之上原地新增 `mcp_oauth_invites`、`filebox_files`、`cmx_settings`（v4），再原地新增帮工去重表 `worker_done`（v5），不删除既有缓存、Bot、OAuth 或去重数据。浏览状态和 visit 均按 `bot_id` 隔离。文件柜实体存 `mcp/filebox/`（不提交 Git，属备份集），SQLite 只存元数据与配额。
+当前 schema version 为 `6`：v3（从 v2 原地创建 `browse_state`/`browse_seen`/`browse_visits`）之上原地新增 `mcp_oauth_invites`、`filebox_files`、`cmx_settings`（v4），再原地新增帮工去重表 `worker_done`（v5），再原地新增 `image_recognition` 与 `status_media`（v6），不删除既有缓存、Bot、OAuth 或去重数据。v6 已用生产库副本实测：所有既有表行数不变，仅新增两张表。**注意这是单向门**——生产库升到 v6 后，v6 之前的代码会因版本闸 fail closed 拒绝启动，回滚需同时恢复数据库备份。`image_recognition` 按图片 SHA-256 全局存储、**故意不按 `bot_id` 隔离**，使多个居民共享同一次识别结果；`status_media` 把 Mastodon 附件映射到内容哈希，是「按图中文字搜到动态」所依赖的连接，多个附件可指向同一哈希。
+
+Gemini API key 由 `cmx-admin gemini-key` 交互式录入并经 DPAPI 加密存于 `mcp/runtime/secrets/gemini.key.dpapi`，只有写入它的那个 Windows 用户可解密；不进 Git、不进环境变量、不进 shell 历史。未配置 key 是受支持的状态：本机 OCR 照常对每张图运行，只是云端列留空。浏览状态和 visit 均按 `bot_id` 隔离。文件柜实体存 `mcp/filebox/`（不提交 Git，属备份集），SQLite 只存元数据与配额。
 
 Token 存于 `mcp/runtime/secrets/<bot>.token.dpapi`，只允许同一 Windows 用户通过 DPAPI 解密。
 
@@ -313,7 +317,7 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 网页语音条播放器（接管 Mastodon 原生播放器） | **v16 已部署（`etag: "voice-16"` 已核）、Owner 确认可用**：波形、播放、画中画规避三项均已在真机通过。历程如下——**v15 修好波形**：波形采样改为可重试是根因修复——原来 `if (audio.currentSrc …)` 在 decorate 里只判一次，而 decorate 每元素只跑一次，判空即永久跳过。**v16 修「点了没声音、声音却从弹出播放器出来」**：根因确诊为 Mastodon 画中画——`features/audio/index.tsx` 在「元素播放中被 React 卸载」时 `deployPictureInPicture`，而我们驱动的正是它自己的 `<audio>`。v16 改为在自己的 host 里建自己的 `<audio>`（同源同 src），Mastodon 那个永远保持 paused，该分支永不成立；配套 `playOnly` 全局单播与「host 被丢弃时先暂停」。复现环境静置实测 `natives 0 / gap 0 / 7 个播放器全部有真实波形 / anyNativePlaying false / 同时发声数 1`。**B（PC 完全没接管）仍未定位**，`window.__piVoiceDebug()` 可一次性定位断点（含画中画占位符计数）。iOS 真机、真实 MP3 解码耗时未验证。详见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，收口后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
 | 中文子串搜索 | 2026-08-01 本机 `188 passed`；bug 已在生产实例取证（「摸鱼」0 条 /「摸鱼打卡」1 条）。修复本身待目标 Windows 重启 `cmx-mcp-http` 后复测 |
 | 链接占位符 `【url-xhs】` | 2026-08-01 本机 `188 passed`，未部署；真实帖子上的显示效果与 `cmx_status(view="links")` 取回链路待验收 |
-| 图片 OCR / 画面理解 | 计划中：本机 RapidOCR 打底（全自动、不出网）+ 付费 Gemini 补画面理解；结果按图片 SHA-256 全局缓存，不按 `bot_id` 隔离；不接智谱。识别须走 `/files/transcribe` 那种「调用者自己登录态」的模式，不走帮工账号，否则 `self`/`direct` 图片是盲区 |
+| 图片 OCR / 画面理解 | 2026-08-01 组件级已实现并实跑，**尚未接入上传流程、未部署**。本机 RapidOCR（PP-OCRv6，onnxruntime 单线程）实图验证：small 档 1.02s/张、置信度 0.955，medium 档 4.4s/张、置信度 0.979，权重在 `D:\AI\models\rapidocr\`，模块从不联网取权重。Gemini `gemini-3.1-flash-lite` 免费档实调通过，一次调用同时返回校正文字、画面描述、关键词与不确定内容。全链实跑：本机 OCR→入库(pending)→云端→入库(done)→正文不含「鸡翅」的动态可被「鸡翅」「honey」「recipe」搜到、「红烧肉」无误报；时间线只给 `ocr_chars`，全文仅在 `cmx_status(view="media")` 展开时花费。**待做**：接入图片上传流程（须走 `/files/transcribe` 那种「调用者自己登录态」的模式，不走帮工账号，否则 `self`/`direct` 图片是盲区）、把 `CMX_OCR_MODEL_TIER=medium` 配进服务环境 |
 | 独立 CMX 前端 | 计划中 |
 | 网页录音 / 本机中文转写 v17 | 2026-07-31 已部署到目标 Windows：定向测试 59 passed，本机/公网脚本均为 `voice-17`，HTTP MCP 与 `gpt` worker 正常；iOS/Windows 浏览器交互及真实普通话字错率待验收 |
 | 公共联邦 | 永不实施 |
