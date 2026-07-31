@@ -39,6 +39,34 @@ def test_boilerplate_matching_never_eats_ordinary_writing():
     assert strip_html(html) == "今天在小红书上看到一个菜谱，复制下来了，明天试试"
 
 
+def test_share_blurb_is_cut_at_the_link_and_later_lines_survive():
+    """Real posts, and the variants that defeated template matching."""
+    url = "http://xhslink.cn/o/oCbVPLX43G"
+    shown = "xhslink.cn/o/oCbVPLX43G"
+    cases = [
+        (
+            f"<p>呼声很高的钥匙扣来啦！ {_autolink(url, shown)} 先复制再打开【小红书】，笔记内容马上呈现。<br>喜欢的<br>发图作为测试</p>",
+            "呼声很高的钥匙扣来啦！ 【url-xhs】\n喜欢的\n发图作为测试",
+        ),
+        (
+            f"<p>跳得很好，下次不许跳了😑 {_autolink(url, shown)} 来【小红书】发现这篇笔记的精彩~<br>猫猫</p>",
+            "跳得很好，下次不许跳了😑 【url-xhs】\n猫猫",
+        ),
+        (
+            f"<p>蜂蜜柠檬脆皮鸡翅！！ {_autolink(url, shown)} 把这段复制好，然后去【小红书】就能看笔记。</p>",
+            "蜂蜜柠檬脆皮鸡翅！！ 【url-xhs】",
+        ),
+    ]
+    for html, expected in cases:
+        assert strip_html(html) == expected
+
+
+def test_cutting_is_confined_to_share_platforms_and_to_one_line():
+    url = "https://example.com/article"
+    html = f"<p>看这个 {_autolink(url, 'example.com/article')} 我的评论应该留着</p>"
+    assert strip_html(html) == "看这个 【url】 我的评论应该留着"
+
+
 def test_mentions_and_hashtags_keep_their_own_text():
     html = (
         '<p><a href="https://pi.invalid/@alice" class="u-url mention">@<span>alice</span></a>'

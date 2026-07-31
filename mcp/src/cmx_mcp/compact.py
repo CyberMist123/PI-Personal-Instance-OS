@@ -15,13 +15,29 @@ LINK_ALIASES = {
     "xiaohongshu.com": "xhs",
 }
 
-# Share blurbs are matched as whole known templates, never by keyword. "复制" and
-# "小红书" both appear in ordinary writing ("今天在小红书上看到一个菜谱，复制下来了"),
-# so keyword matching would eat the resident's own words. Missing a template is
-# recoverable; deleting someone's sentence is not.
-_SHARE_BOILERPLATE = re.compile(
-    r"[，,]?\s*(?:复制本条信息|把这段复制好|复制这段内容|复制打开)[^。！!？?\n]*[。！!]?"
-)
+# Platforms whose share format is "title, link, then instructions to open the
+# app". For those, everything after the link on that same line is boilerplate:
+# matching the blurbs by template failed on real posts, because the variants are
+# open-ended ("先复制再打开…", "来【小红书】发现…") and a pattern loose enough to
+# catch them all also ate the writer's own sentence when it had no full stop.
+# Cutting at the link is bounded by construction — it can only ever remove what
+# the platform appended, and only on the line the link is on.
+TRAILING_BLURB_ALIASES = frozenset({"xhs"})
+
+
+def _cut_trailing_blurb(line: str) -> str:
+    """Drop whatever a share platform appended after its own link on this line.
+
+    Safe because the owner writes their own remarks on a separate line: anything
+    sharing a line with, and following, a share link came from the platform.
+    """
+    cut = -1
+    for alias in TRAILING_BLURB_ALIASES:
+        marker = f"【url-{alias}】"
+        found = line.rfind(marker)
+        if found >= 0:
+            cut = max(cut, found + len(marker))
+    return line[:cut].rstrip() if cut >= 0 else line
 
 
 def link_placeholder(url: str) -> str:
@@ -76,8 +92,7 @@ class _TextExtractor(HTMLParser):
             self.parts.append(data)
 
     def text(self) -> str:
-        joined = _SHARE_BOILERPLATE.sub("", "".join(self.parts))
-        lines = [" ".join(line.split()) for line in joined.splitlines()]
+        lines = [_cut_trailing_blurb(" ".join(line.split())) for line in "".join(self.parts).splitlines()]
         return "\n".join(line for line in lines if line).strip()
 
 
