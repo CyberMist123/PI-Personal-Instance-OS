@@ -32,9 +32,16 @@ from starlette.routing import Route
 from .clipboard_api import build_clipboard_routes
 from .config import InstanceSettings, Paths, validate_remote_profile
 from .db import Database
+from .ocr import (
+    model_dir_ready as ocr_model_dir_ready,
+    ocr_image,
+    resolve_model_dir as resolve_ocr_model_dir,
+    resolve_tier as resolve_ocr_tier,
+)
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 from .transcribe import model_dir_ready, transcribe_file
+from .vision_cloud import MAX_IMAGE_BYTES, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .web_auth import verify_web_bearer
@@ -46,7 +53,7 @@ CLIPBOARD_SWEEP_SECONDS = 600
 _BOT_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 _MCP_PATH_RE = re.compile(r"^/mcp/([a-z0-9_-]+)$")
 _BEARER_RE = re.compile(r"^Bearer\s+([^\s]+)$", re.IGNORECASE)
-_AUDIO_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+_UPLOAD_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
 _FONT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\.woff2$")
 # Fonts ship with the code, not with the runtime directory: CMX_MCP_HOME
 # points at mutable state, while this is a versioned build artefact.
@@ -548,6 +555,134 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             {"text": str(result.get("text") or "").strip()}, headers={"Cache-Control": "no-store"}
         )
 
+    async def image_recognize(request: Request) -> Response:
+        # Same rule as voice_transcribe: the caller's own Mastodon web session
+        # bearer, verified against the instance and then dropped (never
+        # stored, never logged). The caller already holds the image bytes —
+        # they uploaded them — so there is no separate "may this caller see
+        # this image" check to add, and the server never fetches anything
+        # from Mastodon on this path.
+        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+        verified = bool(bearer) and await run_in_threadpool(
+            _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+        )
+        if not verified:
+            return JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
+            )
+
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return JSONResponse(
+                {"error": "multipart field 'file' is required"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        status_id = str(form.get("status_id") or "").strip()
+        media_id = str(form.get("media_id") or "").strip()
+
+        stream = upload.file
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(0)
+        if size < 1:
+            return JSONResponse(
+                {"error": "empty_file"}, status_code=400, headers={"Cache-Control": "no-store"}
+            )
+        if size > MAX_IMAGE_BYTES:
+            return JSONResponse(
+                {"error": "file_too_large", "max_bytes": MAX_IMAGE_BYTES},
+                status_code=413,
+                headers={"Cache-Control": "no-store"},
+            )
+        image_bytes = stream.read()
+        sha256 = hashlib.sha256(image_bytes).hexdigest()
+
+        # Content-hash cache: the owner's requirement is that the same image
+        # is recognised once and the result is shared by every resident, so a
+        # hit here skips both the local model and Gemini entirely.
+        existing = database.get_image_recognition(sha256)
+        if existing is not None:
+            if status_id and media_id:
+                database.link_status_media(status_id, media_id, sha256)
+            return JSONResponse(
+                _recognition_response(existing, cache_hit=True, cloud_error=None),
+                headers={"Cache-Control": "no-store"},
+            )
+
+        model_dir = resolve_ocr_model_dir()
+        tier = resolve_ocr_tier()
+        if not ocr_model_dir_ready(model_dir, tier):
+            return JSONResponse(
+                {"error": "recognizer_unavailable"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        temp_dir = paths.runtime / "recognize-tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / f"{secrets.token_urlsafe(12)}{_image_suffix(upload.filename)}"
+        try:
+            temp_path.write_bytes(image_bytes)
+            # RapidOCR is CPU-bound and synchronous: keep it off the event
+            # loop for the same reason voice_transcribe threads Whisper.
+            local_result = await run_in_threadpool(
+                ocr_image, temp_path, model_dir=model_dir, tier=tier
+            )
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if local_result.get("error"):
+            return JSONResponse(
+                {"error": "ocr_failed", "detail": str(local_result["error"])},
+                status_code=502,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        local_text = str(local_result.get("text") or "")
+        database.record_local_ocr(
+            sha256,
+            text=local_text,
+            line_count=int(local_result.get("line_count") or 0),
+            mean_confidence=local_result.get("mean_confidence"),
+        )
+
+        cloud_error: str | None = None
+        if gemini_key_configured(paths):
+            cloud_result = await run_in_threadpool(
+                recognize_image,
+                image_bytes,
+                local_ocr_text=local_text,
+                paths=paths,
+                mime_type=str(upload.content_type or "image/jpeg"),
+            )
+            if cloud_result.get("error"):
+                # Recognition must never block or fail a post: the row stays
+                # pending and the caller learns why via cloud_error in the
+                # 200 body, never via an HTTP error status.
+                cloud_error = str(cloud_result["error"])
+            else:
+                database.record_cloud_recognition(
+                    sha256,
+                    corrected_text=cloud_result.get("corrected_text"),
+                    description=cloud_result.get("description"),
+                    keywords=cloud_result.get("keywords"),
+                    uncertain_text=cloud_result.get("uncertain_text"),
+                )
+
+        if status_id and media_id:
+            database.link_status_media(status_id, media_id, sha256)
+
+        row = database.get_image_recognition(sha256)
+        return JSONResponse(
+            _recognition_response(row, cache_hit=False, cloud_error=cloud_error),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def voice_font(request: Request) -> Response:
         # Kai ships with Windows and macOS but not with iOS or Android, so the
         # transcript would silently fall back to a serif on exactly the devices
@@ -701,6 +836,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # never match "voice.js" but would shadow future single-segment files.
         Route("/files/voice.js", voice_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
+        Route("/files/recognize", image_recognize, methods=["POST"]),
         Route("/files/voice-remux", voice_remux, methods=["POST"]),
         Route("/files/fonts/{name}", voice_font, methods=["GET"]),
         Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
@@ -890,7 +1026,44 @@ def _loopback_origins(port: int) -> set[str]:
 
 def _audio_suffix(filename: str | None) -> str:
     suffix = Path(_safe_filename(str(filename or ""))).suffix
-    return suffix if _AUDIO_SUFFIX_RE.fullmatch(suffix) else ".audio"
+    return suffix if _UPLOAD_SUFFIX_RE.fullmatch(suffix) else ".audio"
+
+
+def _image_suffix(filename: str | None) -> str:
+    suffix = Path(_safe_filename(str(filename or ""))).suffix
+    return suffix if _UPLOAD_SUFFIX_RE.fullmatch(suffix) else ".img"
+
+
+def _recognition_response(
+    row: dict[str, Any], *, cache_hit: bool, cloud_error: str | None
+) -> dict[str, Any]:
+    """Shape one `image_recognition` row into the /files/recognize JSON body.
+
+    `local` is always present (local OCR always runs, cache hit or not);
+    `cloud` only appears once the state is 'done', and `cloud_error` only
+    when this call's own Gemini attempt failed -- it is never reconstructed
+    from history, so a cache hit never reports an error nobody just saw.
+    """
+    response: dict[str, Any] = {
+        "sha256": row["image_sha256"],
+        "cache_hit": cache_hit,
+        "state": row["state"],
+        "local": {
+            "text": row["local_ocr_text"],
+            "line_count": row["local_line_count"],
+            "mean_confidence": row["local_mean_confidence"],
+        },
+    }
+    if row["state"] == "done":
+        response["cloud"] = {
+            "description": row["cloud_description"],
+            "keywords": row["search_keywords"],
+            "corrected_text": row["cloud_corrected_text"],
+            "uncertain_text": row["uncertain_text"],
+        }
+    if cloud_error:
+        response["cloud_error"] = cloud_error
+    return response
 
 
 def _safe_filename(value: str) -> str:
