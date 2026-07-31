@@ -70,6 +70,17 @@ def test_search_treats_like_wildcards_as_literal_characters(tmp_path: Path):
     assert [item["id"] for item in db.search_statuses("gpt", "%", 5)] == ["1"]
 
 
+def test_later_cloud_pass_does_not_blank_an_earlier_one(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.record_local_ocr("abc123", text="菜单", line_count=1, mean_confidence=0.9)
+    db.record_cloud_recognition("abc123", corrected_text="今日菜单")
+    db.record_cloud_recognition("abc123", description="一张手写餐牌")
+    row = db.get_image_recognition("abc123")
+    assert row["cloud_corrected_text"] == "今日菜单"
+    assert row["cloud_description"] == "一张手写餐牌"
+
+
 def test_status_cache_isolated_by_bot_id(tmp_path: Path):
     db = Database(tmp_path / "cmx.sqlite3")
     db.initialize()
@@ -178,7 +189,7 @@ def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
     assert db.seen_status_ids("b", ["source"]) == set()
     assert db.get_visit("a", "vb") is None
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
 
 
 def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
@@ -246,7 +257,7 @@ def test_real_v2_database_migrates_to_v3_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
@@ -260,9 +271,112 @@ def test_future_schema_version_fails_closed(tmp_path: Path):
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as raw:
         raw.execute("CREATE TABLE schema_version(version INTEGER NOT NULL)")
-        raw.execute("INSERT INTO schema_version VALUES(6)")
+        raw.execute("INSERT INTO schema_version VALUES(7)")
     import pytest
     with pytest.raises(RuntimeError, match="future database schema version"):
         Database(path).initialize()
     with sqlite3.connect(path) as raw:
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+
+
+def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
+    import sqlite3
+    path = tmp_path / "v5.sqlite3"
+    with sqlite3.connect(path) as raw:
+        raw.executescript("""
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES(5);
+            CREATE TABLE bots(bot_id TEXT PRIMARY KEY, display_name TEXT, profile TEXT,
+                media_root TEXT, token_ref TEXT, default_audience TEXT, allow_public INTEGER,
+                enabled INTEGER, created_at INTEGER, updated_at INTEGER, remote_profile TEXT,
+                remote_polls INTEGER, remote_boosts INTEGER, remote_notifications INTEGER);
+            INSERT INTO bots VALUES('gpt','GPT','reader','.','token','residents',0,1,1,1,'reader',1,0,0);
+            CREATE TABLE status_cache(bot_id TEXT, status_id TEXT, author_id TEXT, author_acct TEXT,
+                text TEXT, spoiler_text TEXT, created_at TEXT, edited_at TEXT, visibility TEXT,
+                reply_to_id TEXT, payload_json TEXT, indexed_at INTEGER, PRIMARY KEY(bot_id,status_id));
+            INSERT INTO status_cache VALUES('gpt','s1','a','alice','kept','',NULL,NULL,'private',NULL,'{"id":"s1"}',1);
+            CREATE VIRTUAL TABLE status_fts USING fts5(bot_id UNINDEXED,status_id UNINDEXED,author_acct,text,spoiler_text);
+            INSERT INTO status_fts VALUES('gpt','s1','alice','kept','');
+            CREATE TABLE publish_dedup(bot_id TEXT,operation TEXT,request_id TEXT,state TEXT,status_id TEXT,
+                error_code TEXT,lease_expires_at INTEGER,created_at INTEGER,updated_at INTEGER,response_json TEXT,
+                PRIMARY KEY(bot_id,operation,request_id));
+            INSERT INTO publish_dedup VALUES('gpt','publish','r1','succeeded','s1',NULL,NULL,1,1,'{"id":"s1"}');
+            CREATE TABLE worker_done(bot_id TEXT, status_id TEXT, done_at INTEGER, PRIMARY KEY(bot_id,status_id));
+            INSERT INTO worker_done VALUES('gpt','s1',1);
+            CREATE TABLE filebox_files(bot_id TEXT, file_id TEXT, file_name TEXT, size_bytes INTEGER,
+                created_at INTEGER, PRIMARY KEY(bot_id,file_id));
+            INSERT INTO filebox_files VALUES('gpt','f1','kept.zip',10,1);
+            CREATE TABLE cmx_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO cmx_settings VALUES('filebox_pass','kept-hash');
+        """)
+    Database(path).initialize()
+    with sqlite3.connect(path) as raw:
         assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+        assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
+        assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
+        assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
+        assert raw.execute("SELECT done_at FROM worker_done WHERE status_id='s1'").fetchone()[0] == 1
+        assert raw.execute("SELECT file_name FROM filebox_files WHERE file_id='f1'").fetchone()[0] == "kept.zip"
+        assert raw.execute("SELECT value FROM cmx_settings WHERE key='filebox_pass'").fetchone()[0] == "kept-hash"
+        tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "image_recognition" in tables
+
+
+def test_image_recognition_shared_across_bots_by_sha256(tmp_path: Path):
+    import sqlite3
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.record_local_ocr("abc123", text="hello", line_count=1, mean_confidence=0.9)
+    # No bot_id column at all: every resident that looks up this hash sees the one
+    # shared row, rather than each bot paying to recognise the same image again.
+    for bot_id in ("gpt", "claude", "grok"):
+        assert db.get_image_recognition("abc123")["local_ocr_text"] == "hello"
+    with sqlite3.connect(db.path) as raw:
+        count = raw.execute(
+            "SELECT COUNT(*) FROM image_recognition WHERE image_sha256='abc123'"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_image_recognition_pending_state_roundtrips(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.record_local_ocr("h1", text="local text", line_count=3, mean_confidence=0.8)
+    pending = db.list_pending_image_recognition()
+    assert [row["image_sha256"] for row in pending] == ["h1"]
+    row = db.get_image_recognition("h1")
+    assert row["state"] == "pending"
+    assert row["cloud_corrected_text"] is None
+    assert row["cloud_description"] is None
+
+    db.record_cloud_recognition("h1", corrected_text="fixed", description="a cat", keywords="cat,photo")
+    row = db.get_image_recognition("h1")
+    assert row["state"] == "done"
+    assert row["cloud_corrected_text"] == "fixed"
+    assert row["cloud_description"] == "a cat"
+    assert row["search_keywords"] == "cat,photo"
+    assert db.list_pending_image_recognition() == []
+
+
+def test_image_recognition_rerecording_same_hash_does_not_duplicate(tmp_path: Path):
+    import sqlite3
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.record_local_ocr("dup", text="first pass", line_count=1, mean_confidence=0.5)
+    db.record_local_ocr("dup", text="second pass", line_count=2, mean_confidence=0.7)
+    with sqlite3.connect(db.path) as raw:
+        count = raw.execute(
+            "SELECT COUNT(*) FROM image_recognition WHERE image_sha256='dup'"
+        ).fetchone()[0]
+    assert count == 1
+    row = db.get_image_recognition("dup")
+    assert row["local_ocr_text"] == "second pass"
+    assert row["local_line_count"] == 2
+
+
+def test_image_recognition_cloud_result_requires_existing_local_row(tmp_path: Path):
+    import pytest
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    with pytest.raises(RuntimeError, match="Unknown image_sha256"):
+        db.record_cloud_recognition("missing", description="x")

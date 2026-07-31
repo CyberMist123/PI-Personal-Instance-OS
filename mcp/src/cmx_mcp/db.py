@@ -46,7 +46,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 5:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 6:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -145,6 +145,26 @@ class Database:
                     done_at INTEGER NOT NULL,
                     PRIMARY KEY (bot_id, status_id)
                 );
+
+                -- Keyed by image content, not bot_id: unlike every cache table above,
+                -- this one is deliberately shared across residents. Three bots looking
+                -- at the same photo must reuse one recognition result computed once,
+                -- rather than paying the local model (and any cloud pass) three times.
+                CREATE TABLE IF NOT EXISTS image_recognition (
+                    image_sha256 TEXT PRIMARY KEY,
+                    local_ocr_text TEXT NOT NULL DEFAULT '',
+                    local_line_count INTEGER NOT NULL DEFAULT 0,
+                    local_mean_confidence REAL,
+                    cloud_corrected_text TEXT,
+                    cloud_description TEXT,
+                    search_keywords TEXT,
+                    uncertain_text TEXT,
+                    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','done')),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_image_recognition_state
+                    ON image_recognition(state);
                 """
             )
             for name, definition in (
@@ -157,7 +177,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(5)")
+            db.execute("INSERT INTO schema_version(version) VALUES(6)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -611,3 +631,83 @@ class Database:
         with self.connect() as db:
             cur = db.execute("DELETE FROM publish_dedup WHERE updated_at<?", (int(time.time()) - ttl_seconds,))
             return cur.rowcount
+
+    def record_local_ocr(
+        self,
+        image_sha256: str,
+        *,
+        text: str,
+        line_count: int,
+        mean_confidence: float | None,
+    ) -> None:
+        """Insert or refresh the local-model pass for one image's content hash.
+
+        Re-recording the same hash (e.g. re-OCRing after a model upgrade) refreshes
+        only the local columns; it never clears an existing cloud result or resets
+        state back to 'pending', and it never creates a second row for the hash.
+        """
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO image_recognition(
+                    image_sha256, local_ocr_text, local_line_count, local_mean_confidence,
+                    state, created_at, updated_at
+                ) VALUES(?,?,?,?,'pending',?,?)
+                ON CONFLICT(image_sha256) DO UPDATE SET
+                    local_ocr_text=excluded.local_ocr_text,
+                    local_line_count=excluded.local_line_count,
+                    local_mean_confidence=excluded.local_mean_confidence,
+                    updated_at=excluded.updated_at
+                """,
+                (image_sha256, text, int(line_count), mean_confidence, now, now),
+            )
+
+    def record_cloud_recognition(
+        self,
+        image_sha256: str,
+        *,
+        corrected_text: str | None = None,
+        description: str | None = None,
+        keywords: str | None = None,
+        uncertain_text: str | None = None,
+    ) -> None:
+        """Attach a cloud (Gemini) pass onto a row that local OCR already created.
+
+        Every argument is optional and an omitted one leaves the stored column
+        alone, so attaching a description later cannot silently blank a
+        correction written by an earlier call. Nothing needs to clear a column
+        back to NULL, so COALESCE is the whole story.
+        """
+        now = int(time.time())
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE image_recognition SET
+                    cloud_corrected_text=COALESCE(?, cloud_corrected_text),
+                    cloud_description=COALESCE(?, cloud_description),
+                    search_keywords=COALESCE(?, search_keywords),
+                    uncertain_text=COALESCE(?, uncertain_text),
+                    state='done', updated_at=?
+                WHERE image_sha256=?
+                """,
+                (corrected_text, description, keywords, uncertain_text, now, image_sha256),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"Unknown image_sha256: {image_sha256}")
+
+    def get_image_recognition(self, image_sha256: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM image_recognition WHERE image_sha256=?", (image_sha256,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_pending_image_recognition(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Rows still waiting on (or stuck without) a cloud pass. Posting never waits on these."""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM image_recognition WHERE state='pending' ORDER BY created_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
