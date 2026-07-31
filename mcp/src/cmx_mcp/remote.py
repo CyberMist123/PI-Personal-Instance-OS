@@ -44,7 +44,8 @@ from .transcribe import model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
-from .web_auth import verify_web_bearer
+from .site_search import search_site
+from .web_auth import verify_web_bearer, verify_web_identity
 from .workers import WorkerConfig
 
 CLIPBOARD_SWEEP_SECONDS = 600
@@ -683,6 +684,52 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             headers={"Cache-Control": "no-store"},
         )
 
+    async def site_search_endpoint(request: Request) -> Response:
+        # Unlike the other /files routes, this one answers with content the caller
+        # did not supply, read straight out of PostgreSQL and therefore past every
+        # visibility rule Mastodon would otherwise apply. So a valid session is not
+        # enough: holding a token only proves membership, and a resident's own
+        # Mastodon token passes that check. The caller must not be a resident.
+        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+        identity = await run_in_threadpool(
+            verify_web_identity, instance_settings.public_base_url, bearer.group(1)
+        ) if bearer else None
+        if identity is None:
+            return JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
+            )
+        resident_accts = {bot.bot_id for bot in database.list_bots()}
+        if identity.acct in resident_accts:
+            return JSONResponse(
+                {"error": "residents_may_not_search_the_site"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        query = str(request.query_params.get("q") or "").strip()
+        if not query:
+            return JSONResponse(
+                {"error": "query 'q' is required"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            limit = int(request.query_params.get("limit") or 30)
+        except ValueError:
+            limit = 30
+        try:
+            hits = await run_in_threadpool(search_site, query, limit=limit)
+        except RuntimeError as exc:
+            return JSONResponse(
+                {"error": "search_unavailable", "detail": str(exc)[:200]},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {"query": query, "count": len(hits), "items": hits},
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def voice_font(request: Request) -> Response:
         # Kai ships with Windows and macOS but not with iOS or Android, so the
         # transcript would silently fall back to a serif on exactly the devices
@@ -837,6 +884,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         Route("/files/voice.js", voice_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
         Route("/files/recognize", image_recognize, methods=["POST"]),
+        Route("/files/search", site_search_endpoint, methods=["GET"]),
         Route("/files/voice-remux", voice_remux, methods=["POST"]),
         Route("/files/fonts/{name}", voice_font, methods=["GET"]),
         Route("/files/{bot_id}/{file_id}/{name}", filebox_download, methods=["GET"]),
