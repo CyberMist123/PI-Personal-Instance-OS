@@ -17,6 +17,7 @@ IMAGE_WIDGET_JS = r"""
     var DB_VERSION = 1;
     var STORE_NAME = "images";
     var proto = window.XMLHttpRequest.prototype;
+    var memoryRecords = Object.create(null);
 
     function openDb() {
       return new Promise(function (resolve, reject) {
@@ -47,28 +48,42 @@ IMAGE_WIDGET_JS = r"""
     }
 
     function saveUpload(mediaId, file) {
+      var record = {
+        mediaId: String(mediaId),
+        blob: file,
+        name: String(file.name || "image"),
+        type: String(file.type || "image/jpeg"),
+        statusId: ""
+      };
+      /* Keep the record synchronously as well as durably. A very fast publish
+         can otherwise observe the media response before IndexedDB finishes its
+         first transaction, leaving the just-created status unlinked forever. */
+      memoryRecords[record.mediaId] = record;
       return withStore("readwrite", function (store) {
-        return store.put({
-          mediaId: String(mediaId),
-          blob: file,
-          name: String(file.name || "image"),
-          type: String(file.type || "image/jpeg"),
-          statusId: ""
-        });
+        return store.put(record);
       });
     }
 
     function getUpload(mediaId) {
+      var key = String(mediaId);
+      if (memoryRecords[key]) {
+        return Promise.resolve(memoryRecords[key]);
+      }
       return withStore("readonly", function (store) {
-        return store.get(String(mediaId));
+        return store.get(key);
+      }).then(function (record) {
+        if (record) { memoryRecords[key] = record; }
+        return record;
       });
     }
 
     function saveRecord(record) {
+      memoryRecords[String(record.mediaId)] = record;
       return withStore("readwrite", function (store) { return store.put(record); });
     }
 
     function deleteRecord(mediaId) {
+      delete memoryRecords[String(mediaId)];
       return withStore("readwrite", function (store) {
         return store.delete(String(mediaId));
       });
@@ -153,6 +168,10 @@ IMAGE_WIDGET_JS = r"""
       };
       proto.__cmxImageRecognitionHook = true;
     }
+
+    /* Harmless readiness marker for browser smoke tests. It exposes neither
+       the page bearer nor any recognition result. */
+    document.documentElement.setAttribute("data-cmx-image-recognition", "20");
 
     function retryOutbox() {
       allRecords().then(function (records) {

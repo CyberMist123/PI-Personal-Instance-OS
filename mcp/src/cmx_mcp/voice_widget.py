@@ -51,9 +51,9 @@ from .voice_player import VOICE_PLAYER_JS
 from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "19"
+VOICE_WIDGET_VERSION = "20"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v19 - voice outbox plus passive image recognition. */
+VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image recognition. */
 (function () {
   "use strict";
 

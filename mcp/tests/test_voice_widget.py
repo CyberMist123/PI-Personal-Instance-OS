@@ -19,7 +19,7 @@ NGINX_CONF = REPOSITORY_ROOT / "nginx" / "default.conf"
 # now injects the Clip Brain site-switch script alongside the voice widget, and
 # pinning the whole line makes this test break every time a widget is added.
 SUB_FILTER_START = "sub_filter '</body>' "
-VOICE_SCRIPT_TAG = '<script src="/files/voice.js?cmx-v=19" defer></script>'
+VOICE_SCRIPT_TAG = '<script src="/files/voice.js?cmx-v=20" defer></script>'
 
 
 def _paths(tmp_path) -> Paths:
@@ -161,7 +161,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "19" and "voice widget v19" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "20" and "voice widget v20" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -174,7 +174,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert VOICE_WIDGET_JS.count("(") == VOICE_WIDGET_JS.count(")")
 
 
-def test_v19_observes_native_image_posts_without_blocking_or_replacing_xhr() -> None:
+def test_v20_observes_native_image_posts_without_blocking_or_replacing_xhr() -> None:
     assert 'xhr.__cmxPath === "/api/v2/media"' in VOICE_WIDGET_JS
     assert 'xhr.__cmxPath === "/api/v1/statuses"' in VOICE_WIDGET_JS
     assert 'form.append("status_id", record.statusId)' in VOICE_WIDGET_JS
@@ -182,6 +182,8 @@ def test_v19_observes_native_image_posts_without_blocking_or_replacing_xhr() -> 
     assert 'fetch("/files/recognize", {' in VOICE_WIDGET_JS
     assert 'if (result && result.alt_error)' in VOICE_WIDGET_JS
     assert 'var DB_NAME = "cmx-image-recognition-outbox";' in VOICE_WIDGET_JS
+    assert "memoryRecords[record.mediaId] = record;" in VOICE_WIDGET_JS
+    assert 'setAttribute("data-cmx-image-recognition", "20")' in VOICE_WIDGET_JS
     assert "return originalSend.apply(this, arguments);" in VOICE_WIDGET_JS
     assert "responseText =" not in VOICE_WIDGET_JS
 
