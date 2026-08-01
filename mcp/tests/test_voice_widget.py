@@ -363,6 +363,8 @@ def test_nginx_never_caches_the_service_worker_across_mastodon_upgrades() -> Non
     block = conf[start : conf.index("\n  }", start)]
     assert 'proxy_hide_header Cache-Control;' in block
     assert 'Cache-Control "no-cache, no-store, must-revalidate"' in block
+    assert 'url="/sw.js?cmx-sw=4.6.4-1"' in conf
+    assert conf.index("sub_filter '<head>'") < conf.index("sub_filter '</body>'")
 
 
 def test_webm_is_preferred_over_mp4_for_recording() -> None:
