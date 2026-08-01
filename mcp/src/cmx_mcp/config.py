@@ -61,6 +61,7 @@ class InstanceSettings:
     browse_visit_ttl_seconds: int = 1800
     filebox_max_bytes: int = 1024**3
     filebox_quota_bytes: int = 20 * 1024**3
+    site_search_owner_username: str = ""
 
     @property
     def public_base_url(self) -> str:
@@ -127,6 +128,10 @@ class InstanceSettings:
             ),
             filebox_quota_bytes=_bounded_int(
                 "CMX_FILEBOX_QUOTA_BYTES", 20 * 1024**3, 16 * 1024 * 1024, 2 * 1024**4
+            ),
+            site_search_owner_username=(
+                os.getenv("CMX_SITE_SEARCH_OWNER_USERNAME", "").strip()
+                or values.get("CMX_SITE_SEARCH_OWNER_USERNAME", "").strip()
             ),
         )
 

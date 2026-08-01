@@ -54,6 +54,7 @@ Mastodon Rails Web 服务：
 - 账号、设置和后台管理；
 - 页面与静态资源；
 - 图片上传请求；
+- 通过 v4.6.4 版本锁定 initializer，让 `CMX_SITE_SEARCH_OWNER_USERNAME` 明确指定的本地 Owner 在原生 `/api/v2/search` 中使用 PostgreSQL 子串搜索；其他账号保持上游搜索行为；
 - 根据启动时读取的 `WEB_DOMAIN` 生成 URL、CSP、WebAuthn origin 和网页元数据。
 
 域名切换后必须 recreate。

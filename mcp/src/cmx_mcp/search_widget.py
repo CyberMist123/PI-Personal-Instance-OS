@@ -1,66 +1,10 @@
-"""The script that teaches Mastodon's own search box about CMX's whole-instance
-search, injected the same way `voice_widget` is: a single same-origin
-`<script src="/files/search.js" defer>` tag, served by this process and (per
-the Owner's nginx, which this module does not touch) appended to Mastodon's
-HTML by the same `sub_filter` that already injects `/files/voice.js`.
+"""Legacy rollback-only browser search patch.
 
-The Owner does not want a second search UI living next to Mastodon's. Mastodon
-already ships one, backed by `GET /api/v2/search`, and its result list already
-renders accounts, hashtags and statuses. So instead of building a new box, this
-patches `window.fetch` and rewrites the *answer* to that one request: the
-`statuses` array Mastodon's own search returns is index-limited (own posts and
-ones you interacted with; `ES_ENABLED=false` here), so it is replaced with
-results from `GET /files/search` (`site_search.search_site`, a `psql` substring
-scan across every status in PostgreSQL — see that module's docstring for why
-AI/MCP may not reach it directly and why this may). `accounts` and `hashtags`
-come back from Mastodon's own search untouched, because those already work on
-this instance.
-
-The same two hard rules as the voice widget apply, for the same reason:
-
-* only relative, same-origin paths are ever fetched, so the script inherits
-  whatever origin the browser is already on;
-* the bearer is the page's own `#initial-state` token (`meta.access_token`),
-  read at call time and never stored, copied or sent anywhere else. A
-  logged-out page has no token, and the widget never touches `window.fetch`
-  at all.
-
-A third rule is specific to this widget: **never break search**. Mastodon's
-own request is always issued and awaited regardless of what CMX's side does.
-If `/files/search` 401s (bad/expired page token), 403s (the caller is a
-resident's Mastodon account, not the Owner's own — the same site-search
-endpoint answers both, see `site_search.py`), times out, or the follow-up
-`GET /api/v1/statuses` batch comes back malformed, the fetch override falls
-back to Mastodon's own untouched response. The failure mode is "search behaves
-exactly as it does today", never a blank or broken result list. Because the
-override reads the native response through `.clone().json()`, the original
-`Response` object's body is never disturbed by a failed enhancement attempt
-and can still be handed back and read once, normally, by Mastodon's own code.
-
-Full status objects are fetched through Mastodon's own
-`GET /api/v1/statuses?id[]=...`, in chunks of 20 ids per request (this instance
-has never been asked to accept more, so nothing here assumes it would), which
-both re-applies Mastodon's visibility rules to the viewing account (unlike the
-raw `psql` scan behind `/files/search`) and reuses the shapes Mastodon's own
-status components already know how to render. Batches do not preserve
-request order, so the ids returned by `/files/search` (already newest-first)
-are used to re-sort the merged statuses afterward; an id Mastodon silently
-drops (not visible to this viewer) is simply absent from the result, not an
-error.
-
-Mastodon's web client has used `fetch`, not `XMLHttpRequest`, for its own API
-calls (including search) since it dropped axios; this repository does not
-vendor the Mastodon frontend source to grep, so that is prior knowledge about
-Mastodon's codebase rather than something checked against this instance's
-actual bundle. Patching only `window.fetch` is therefore expected to be
-sufficient. If a future Mastodon release reintroduces XHR for search, the
-practical effect is simply that this widget stops enhancing results — Mastodon's
-own search keeps working unmodified, which is exactly the required fallback
-behaviour anyway.
-
-Plain ES2017, no build step, no external dependency, no backticks (the source
-must stay safe to embed in any HTML or config context) — matching
-`voice_widget.py`.
+Nginx no longer injects this asset. The production path is Mastodon's native
+`GET /api/v2/search`, extended inside the v4.6.4 Rails `SearchService` by
+`cmx_owner_search.rb`. The script and `/files/search` route stay temporarily so
+rollback can be file-only; the endpoint now uses the same explicit Owner
+username and fails closed for every other account.
 """
 
 from __future__ import annotations

@@ -9,6 +9,7 @@ from cmx_mcp.config import Paths
 from cmx_mcp.db import Database
 from cmx_mcp.remote import create_remote_app
 from cmx_mcp.search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
+from cmx_mcp.web_auth import WebIdentity
 
 
 def _paths(tmp_path) -> Paths:
@@ -82,6 +83,55 @@ def test_search_js_route_is_not_shadowed_by_the_filebox_download_route(tmp_path,
         # must keep answering independently of the new /files/search.js script
         # route; unauthenticated, it is a 401, not a 404 or a JS payload.
         assert client.get("/files/search").status_code == 401
+
+
+def test_legacy_site_search_fails_closed_without_an_explicit_owner(tmp_path, monkeypatch):
+    monkeypatch.delenv("CMX_SITE_SEARCH_OWNER_USERNAME", raising=False)
+    monkeypatch.setattr(
+        "cmx_mcp.remote.verify_web_identity",
+        lambda *_args: WebIdentity(account_id="owner-id", acct="owner"),
+    )
+    app = _app(tmp_path, monkeypatch)
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.get("/files/search?q=test", headers={"Authorization": "Bearer token"})
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "owner_only"}
+
+
+def test_legacy_site_search_rejects_other_real_accounts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_SITE_SEARCH_OWNER_USERNAME", "owner")
+    monkeypatch.setattr(
+        "cmx_mcp.remote.verify_web_identity",
+        lambda *_args: WebIdentity(account_id="other-id", acct="other"),
+    )
+    app = _app(tmp_path, monkeypatch)
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.get("/files/search?q=test", headers={"Authorization": "Bearer token"})
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "owner_only"}
+
+
+def test_legacy_site_search_allows_only_the_configured_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_SITE_SEARCH_OWNER_USERNAME", "owner")
+    monkeypatch.setattr(
+        "cmx_mcp.remote.verify_web_identity",
+        lambda *_args: WebIdentity(account_id="owner-id", acct="owner"),
+    )
+    monkeypatch.setattr(
+        "cmx_mcp.remote.search_site",
+        lambda query, *, limit: [{"id": "1", "text": query, "limit": limit}],
+    )
+    app = _app(tmp_path, monkeypatch)
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.get("/files/search?q=test&limit=7", headers={"Authorization": "Bearer token"})
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [{"id": "1", "text": "test", "limit": 7}]
 
 
 def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> None:

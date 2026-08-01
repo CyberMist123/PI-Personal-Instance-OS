@@ -702,8 +702,9 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # Unlike the other /files routes, this one answers with content the caller
         # did not supply, read straight out of PostgreSQL and therefore past every
         # visibility rule Mastodon would otherwise apply. So a valid session is not
-        # enough: holding a token only proves membership, and a resident's own
-        # Mastodon token passes that check. The caller must not be a resident.
+        # enough: holding a token only proves membership. This rollback-only
+        # endpoint therefore uses the same explicit Owner username as the native
+        # Rails search path and fails closed when it is missing.
         bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
         identity = await run_in_threadpool(
             verify_web_identity, instance_settings.public_base_url, bearer.group(1)
@@ -712,10 +713,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             return JSONResponse(
                 {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
             )
-        resident_accts = {bot.bot_id for bot in database.list_bots()}
-        if identity.acct in resident_accts:
+        expected_owner = instance_settings.site_search_owner_username
+        if not expected_owner or not secrets.compare_digest(identity.acct, expected_owner):
             return JSONResponse(
-                {"error": "residents_may_not_search_the_site"},
+                {"error": "owner_only"},
                 status_code=403,
                 headers={"Cache-Control": "no-store"},
             )

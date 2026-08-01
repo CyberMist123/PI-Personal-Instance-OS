@@ -29,6 +29,7 @@ LOCAL_DOMAIN=pi.invalid
 WEB_DOMAIN=<当前公网域名>
 STREAMING_API_BASE_URL=wss://<当前公网域名>
 ALTERNATE_DOMAINS=
+CMX_SITE_SEARCH_OWNER_USERNAME=<Owner 本地用户名；留空则关闭 Owner 全站搜索>
 ```
 
 `LOCAL_DOMAIN` 永远不改。以后更换公网门牌只能使用 `change-access-domain.ps1`。

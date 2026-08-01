@@ -93,7 +93,7 @@ Sidekiq / PostgreSQL / Redis / 本地媒体
 - 当前阶段不开发独立 CMX 前端。
 - 基础网页阶段不接 Cyberlink、Telegram、记忆系统或 520 面板；AI/MCP 作为后续独立增量，不改变基础网页验收线。
 - 不创建扫描全部动态的 Agent。
-- 不做全文搜索、S3、Elasticsearch、Kubernetes、VPS 迁移或复杂监控栈。
+- 不做通用全文搜索引擎、S3、Elasticsearch、Kubernetes、VPS 迁移或复杂监控栈；小实例 Owner 的原生网页搜索仅使用版本锁定的 PostgreSQL `ILIKE` 子串查询。
 - 不开启公共联邦。
 - 不把 WebAuthn/passkey 作为唯一认证方式。
 - 不为了“以后也许需要”提前增加额外服务。

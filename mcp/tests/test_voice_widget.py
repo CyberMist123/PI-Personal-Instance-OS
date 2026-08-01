@@ -338,7 +338,9 @@ def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     assert "base-uri 'none'" in csp_line
     assert "frame-ancestors 'none'" in csp_line
     # object-src is intentionally omitted so it inherits default-src 'none'.
-    assert "form-action 'none'" in csp_line
+    # Same-origin forms must keep working: form-action 'none' silently blocked
+    # Mastodon's password login POST during the two-account browser smoke.
+    assert "form-action 'self'" in csp_line
     assert "object-src" not in csp_line
 
 
