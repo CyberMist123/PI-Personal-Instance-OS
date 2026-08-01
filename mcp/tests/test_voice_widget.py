@@ -19,7 +19,7 @@ NGINX_CONF = REPOSITORY_ROOT / "nginx" / "default.conf"
 # now injects the Clip Brain site-switch script alongside the voice widget, and
 # pinning the whole line makes this test break every time a widget is added.
 SUB_FILTER_START = "sub_filter '</body>' "
-VOICE_SCRIPT_TAG = '<script src="/files/voice.js" defer></script>'
+VOICE_SCRIPT_TAG = '<script src="/files/voice.js?cmx-v=18" defer></script>'
 
 
 def _paths(tmp_path) -> Paths:
