@@ -144,7 +144,7 @@ D:\AI\PI-Personal-Instance-OS\mcp
   - 硬性细节：参数**必须用哈希表 splat**，`& script.ps1 @array` 在 PowerShell 5.1 下按**位置**绑定，`-Profile` 这种字面量会被当成值塞进 `$BotId`，用户名则落到 `$Profile` 上触发 ValidateSet 报错（2026-07-31 实际踩到）；重启会检测是否已提权，未提权时用 `Start-Process -Verb RunAs` 只把这一步拉起管理员窗口，而不是让整个控制台提权；脚本不含任何域名，公网地址运行时经 `InstanceSettings.public_base_url` 从 `.env.production` 解析；文件必须保持 UTF-8 **BOM**，否则 PowerShell 5.1 会按 GBK 解、菜单全是乱码；
 - `http-enable.ps1` / `http-disable.ps1` 控制是否随 PI OS 启停，`http-status.ps1` 检查本地服务；
 - 帮工（worker）v1 + 中文语音转写（2026-07-31 已部署到目标 Windows；模型目录与 OpenCC 已验证，真实普通话录音效果仍待实测）：常驻进程 `cmx-worker --bot <id>` 用居民 DPAPI Token 轮询主页时间线；带音频且正文为空的动态经同域下载后由**本机 faster-whisper**转写，并以原帖可见性回复 `🎙️ 语音转写：` + 正文。模型永不自动下载，`CMX_WHISPER_MODEL_DIR` 必须指向含非空 `model.bin` 的完整 CTranslate2 目录；可选依赖仍只在 `pip install -e .[workers]` 安装。中文默认固定 `language=zh`（`CMX_WHISPER_LANGUAGE=auto` 可恢复自动识别），使用简体中文初始提示、`CMX, PI OS` 默认热词、beam 5 和 VAD；可用 `CMX_WHISPER_INITIAL_PROMPT`、`CMX_WHISPER_HOTWORDS`、`CMX_WHISPER_BEAM_SIZE` 覆盖。输出经 OpenCC 转简体并清理汉字间空格；同一 `cmx-worker` / `cmx-mcp-http` 进程内按模型目录、设备和计算类型复用已加载模型，避免每条录音重复冷启动。音频与文字不经过云端模型。
-- 网页悬浮录音键 v17（2026-07-31 已部署到目标 Windows，目标环境定向测试 `59 passed`，手机/Windows 浏览器真实录音仍待验收）：保留 v16 的录音 MP3 转封装、播放器与波形修复，以及 64px 大麦克风、44px ✓/✕、inline 样式与 Nginx CSP 边界；第一次点麦克风开始录音，第二次点同一麦克风或点 ✓ 即停止并上传。发布链仍为 `POST /api/v2/media` → `POST /api/v1/statuses` 空正文语音 → 后台 `POST /files/transcribe` → `PUT /api/v1/statuses/<id>` 补正文与 alt。每条录音在上传前写入浏览器 IndexedDB `cmx-voice-outbox`，保存 Blob、阶段、media/status id 和稳定幂等键，绝不保存 token；上传、发布、转写或编辑失败时保留，页面重开或 `online` 事件后按当前登录账号自动续传，成功补文字后删除。脚本仍只用相对同源 API 与当前页面 bearer；原生 App 不加载，手机需用浏览器。
+- 网页悬浮录音键 v20（2026-08-01 已部署到目标 Windows，录音链语义与 v17 一致，v20 只增加图片识别观察器与缓存版本键；手机/Windows 浏览器真实录音仍待验收）：保留录音、播放器、`cmx-voice-outbox`、本机转写与编辑回填语义；脚本只用相对同源 API 与当前页 bearer，原生 App 不加载。
 - 中文子串搜索（2026-08-01）：`cmx_search` 改为对 `status_cache` 做多字段子串扫描，不再走 `status_fts MATCH`。根因已在生产实例取证——搜「摸鱼」返回 0 条，搜「摸鱼打卡」返回 1 条：FTS5 的 `unicode61` 分词器不切分 CJK，一整段连续汉字（到标点为止）是**一个 token**，只有原样打回整个 token 才命中；且 MATCH 在这种情况下**不抛错、只返回空**，因此 `except OperationalError` 的 LIKE 兜底从未触发，故障长期静默。同一判断已记录在 `clipboard_search.py`，两边语义现已统一。**同时修掉一个隐私缺陷**：旧兜底路径没有可见性过滤（FTS 路径有），而查询含 `"`、`(`、`AND`、`:` 确实会抛 `OperationalError` 并落到兜底，使设计上排除在搜索外的 `direct` / `self` 条目可能浮现；新查询在 SQL 里做 null 安全的 `visibility IS NOT 'direct'`。`status_fts` 表仍在每次写缓存时维护但已无任何读取方，可在后续 migration 中删除。
 - 链接占位符与分享文案净化（2026-08-01）：`strip_html` 现在把裸链接锚点替换为 `【url-xhs】`（未知站点为 `【url】`，别名表见 `compact.LINK_ALIASES`），完整 href 由新增的 `cmx_status(view="links")` 按需返回——**不新增 MCP 工具**，Reader 仍恰好 3 个工具。一条小红书分享由 64 字符降到 20 字符，其中居民自己写的只有 10 个字。**不截断 URL**：`xsec_token` 是小红书的访问凭证而非跟踪参数，截断会产生居民无法察觉的死链，因此链接要么完整取回、要么不出现。分享广告语按**完整已知模板**匹配（`复制本条信息` / `把这段复制好` / `复制这段内容` / `复制打开`），绝不按关键词——「复制」和「小红书」在正常写作中都会出现，漏掉模板可恢复，吃掉居民原话不可恢复。
 - editable install 生成的 `*.egg-info/` 已加入忽略规则，不再污染 Git 工作区。
@@ -207,7 +207,7 @@ cmx_profile_update
 
   后续真机检查：**iOS Safari `audio/mp4` 录制**、**Mastodon 4.6.3 编辑 API 接受 `media_attributes.description`**、真实录音转写耗时、页面提前关闭时帮工兜底、编辑后网页与原生 App 显示、以及脚本与 Mastodon 前端样式/Service Worker 无冲突等真机检查。原生 App 客户端不会加载该脚本。
 - 帮工 v1 与中文语音转写（SQLite v5 `worker_done`、`cmx-worker` 入口、`worker-*.ps1`）已在目标 Windows 重装 `pip install -e .[workers]`（OpenCC、faster-whisper >=1.1），确认 `D:\AI\models\faster-whisper-small` 含可用 `model.bin`，并重启 `gpt` worker 与 `cmx-mcp-http`；目标环境定向测试 `59 passed`。仍需用 Owner 真实普通话录音比较字错率、专有词命中率、首次/后续转写耗时与内存；`direct`/`self` 对帮工账号不可见的边界不变。
-- 网页悬浮录音键 v17（`cmx_mcp.voice_widget` + `cmx-voice-outbox`）已部署到目标 Windows：本机与公网 `GET /files/voice.js?v=17` 均为 HTTP 200、ETag `"voice-17"`，内容包含 `cmx-voice-outbox`；HTTP MCP、`gpt` worker 与公网 MCP 健康检查通过。仍需分别在 iOS Safari 与 Windows 浏览器验证：第二次点麦克风即上传、离线/HTTP 失败后重开页面续传、幂等重传不重复发帖、IndexedDB 成功后清理、`audio/mp4`/WebM、Mastodon 编辑正文与 alt、真实中文转写耗时，以及清除站点数据会删除未发送 outbox 的预期行为。
+- 网页悬浮录音键 v20（`cmx_mcp.voice_widget` + `cmx-voice-outbox`）已部署到目标 Windows：公网 `GET /files/voice.js?cmx-v=20` 为 HTTP 200、ETag `"voice-20"`，内容包含语音 outbox 与图片识别钩子；HTTP MCP、`gpt` worker 与公网 MCP 健康检查通过。语音路径仍需分别在 iOS Safari 与 Windows 浏览器验证：录制/重传、`audio/mp4`/WebM、Mastodon 编辑正文与 alt、真实中文转写耗时，以及清除站点数据会删除未发送 outbox 的预期行为。
 - 使用一个新的真实邮箱完整执行 `setup-ai.ps1` 新账号创建流程；已有账号的浏览器 OAuth、DPAPI 保存和读链路已经运行验证。
 - ChatGPT 网页端已存在真实 CMX Connector，但一直只能读：2026-07-29 查 `mcp_oauth_tokens` 确认所有 `client_name="ChatGPT"` 的 token scope 都是 `["cmx:read"]`，而同期 Claude Code 远程客户端拿到 `["cmx:read","cmx:social"]`；根因是上面的 DCR `default_scopes` 回填（已修，未验收）。因为 `gpt` 已是 social profile，`tools/list` 里能看到 `cmx_post`/`cmx_interact`，调用时才被 `insufficient_scope` 拒绝，容易误判成工具坏了。修复生效需要：重启 `cmx-mcp-http` → `cmx-admin invite-new --bot gpt --scopes read,social` → 在 ChatGPT 里**删除并重新添加** connector（refresh token 不能扩权）。此外刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。不得把服务端 smoke 记为 GPT Web 已通过。
 - 生产常驻居民是否开启 Remote Social 仍待单独决策；当前只在目标 Windows 上对 `test` 做了受控验证。
@@ -236,12 +236,13 @@ mcp/runtime/cmx.sqlite3
 ├─ cmx_settings
 ├─ worker_done
 ├─ image_recognition
-└─ status_media
+├─ status_media
+└─ gemini_daily_usage
 ```
 
 SQLite 不保存明文 Token、图片、完整 REST 历史或 Mastodon 数据库。Mastodon/PostgreSQL 始终是账号、动态、关系和媒体的事实源。
 
-当前 schema version 为 `6`：v3（从 v2 原地创建 `browse_state`/`browse_seen`/`browse_visits`）之上原地新增 `mcp_oauth_invites`、`filebox_files`、`cmx_settings`（v4），再原地新增帮工去重表 `worker_done`（v5），再原地新增 `image_recognition` 与 `status_media`（v6），不删除既有缓存、Bot、OAuth 或去重数据。v6 已用生产库副本实测：所有既有表行数不变，仅新增两张表。**注意这是单向门**——生产库升到 v6 后，v6 之前的代码会因版本闸 fail closed 拒绝启动，回滚需同时恢复数据库备份。`image_recognition` 按图片 SHA-256 全局存储、**故意不按 `bot_id` 隔离**，使多个居民共享同一次识别结果；`status_media` 把 Mastodon 附件映射到内容哈希，是「按图中文字搜到动态」所依赖的连接，多个附件可指向同一哈希。
+当前 schema version 为 `7`：v3（从 v2 原地创建 `browse_state`/`browse_seen`/`browse_visits`）之上原地新增 `mcp_oauth_invites`、`filebox_files`、`cmx_settings`（v4），再新增 `worker_done`（v5）、`image_recognition`/`status_media`（v6）与 `gemini_daily_usage`（v7），不删除既有缓存、Bot、OAuth 或去重数据。v7 迁移前已对生产 SQLite 做 online backup 并通过 integrity check，迁移后目标 Windows 服务健康。**注意这是单向门**——回滚旧代码时需同时恢复对应版本的数据库备份。`image_recognition` 按图片 SHA-256 全局存储、**故意不按 `bot_id` 隔离**，使多个居民共享同一次识别结果；`status_media` 把 Mastodon 附件映射到内容哈希；`gemini_daily_usage` 按 UTC 日计数云端尝试次数，达到本地上限后仅降级为本机 OCR，不阻塞发布。
 
 Gemini API key 由 `cmx-admin gemini-key` 交互式录入并经 DPAPI 加密存于 `mcp/runtime/secrets/gemini.key.dpapi`，只有写入它的那个 Windows 用户可解密；不进 Git、不进环境变量、不进 shell 历史。未配置 key 是受支持的状态：本机 OCR 照常对每张图运行，只是云端列留空。浏览状态和 visit 均按 `bot_id` 隔离。文件柜实体存 `mcp/filebox/`（不提交 Git，属备份集），SQLite 只存元数据与配额。
 
@@ -294,7 +295,7 @@ Owner 上传页    https://<WEB_DOMAIN>/files/up（cmx-admin filebox-pass 设置
 录音容器转换    POST /files/voice-remux（网页登录态 bearer；WebM/MP4 → Ogg/Opus）
 网页录音转写    POST /files/transcribe（调用者自己的网页登录态 bearer，只临时校验不存不记；转写回来后由网页 PUT /api/v1/statuses/<id> 补正文与 alt）
 图片识别        POST /files/recognize（同 transcribe 的 bearer 规则；multipart `file` + 可选 status_id/media_id。调用者自带字节，服务端不代抓，因此无需额外可见性判定——这正是 self/direct 图片不成为盲区的原因）
-Owner 全站搜索  GET /api/v2/search?q=&type=statuses&limit=&offset=（Mastodon 原生网页/API；仅显式 Owner 的 statuses 分支使用 PostgreSQL ILIKE）
+Owner 全站搜索  GET /api/v2/search?q=&type=statuses&limit=&offset=（Mastodon 原生网页/API；仅显式 Owner 的 statuses 分支对正文和媒体 alt 使用 PostgreSQL ILIKE）
 旧搜索回滚端点 GET /files/search?q=&limit=（不再注入页面；仅显式 Owner，其他账号 403）
 ```
 
@@ -337,10 +338,11 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | 网页语音条播放器（接管 Mastodon 原生播放器） | **v16 已部署（`etag: "voice-16"` 已核）、Owner 确认可用**：波形、播放、画中画规避三项均已在真机通过。历程如下——**v15 修好波形**：波形采样改为可重试是根因修复——原来 `if (audio.currentSrc …)` 在 decorate 里只判一次，而 decorate 每元素只跑一次，判空即永久跳过。**v16 修「点了没声音、声音却从弹出播放器出来」**：根因确诊为 Mastodon 画中画——`features/audio/index.tsx` 在「元素播放中被 React 卸载」时 `deployPictureInPicture`，而我们驱动的正是它自己的 `<audio>`。v16 改为在自己的 host 里建自己的 `<audio>`（同源同 src），Mastodon 那个永远保持 paused，该分支永不成立；配套 `playOnly` 全局单播与「host 被丢弃时先暂停」。复现环境静置实测 `natives 0 / gap 0 / 7 个播放器全部有真实波形 / anyNativePlaying false / 同时发声数 1`。**B（PC 完全没接管）仍未定位**，`window.__piVoiceDebug()` 可一次性定位断点（含画中画占位符计数）。iOS 真机、真实 MP3 解码耗时未验证。详见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，收口后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
 | 中文子串搜索 | 2026-08-01 本机 `188 passed`；bug 已在生产实例取证（「摸鱼」0 条 /「摸鱼打卡」1 条）。修复本身待目标 Windows 重启 `cmx-mcp-http` 后复测 |
 | 链接占位符 `【url-xhs】` | 2026-08-01 本机 `188 passed`，未部署；真实帖子上的显示效果与 `cmx_status(view="links")` 取回链路待验收 |
-| 图片 OCR / 画面理解 | 2026-08-01 组件级已实现并实跑，**尚未接入上传流程、未部署**。本机 RapidOCR（PP-OCRv6，onnxruntime 单线程）实图验证：small 档 1.02s/张、置信度 0.955，medium 档 4.4s/张、置信度 0.979，权重在 `D:\AI\models\rapidocr\`，模块从不联网取权重。Gemini `gemini-3.1-flash-lite` 免费档实调通过，一次调用同时返回校正文字、画面描述、关键词与不确定内容。全链实跑：本机 OCR→入库(pending)→云端→入库(done)→正文不含「鸡翅」的动态可被「鸡翅」「honey」「recipe」搜到、「红烧肉」无误报；时间线只给 `ocr_chars`，全文仅在 `cmx_status(view="media")` 展开时花费。`POST /files/recognize` 已接入并**已部署到目标 Windows**：公网 401（无凭据）、本机真实 Token 调用 HTTP 200 走完本机 OCR + Gemini 全链耗时 6.0s，同一图片改文件名重传 **3ms 且 `cache_hit=true`**（证明键是内容不是文件名）。`CMX_OCR_MODEL_TIER=medium` 已设为 User 级环境变量并随服务重启生效。生产库已迁至 v6（迁移由该次冒烟触发，非计划时点；`status_cache` 108 行、`bots` 2 行等既有数据均未变，探针行已清理）。**待做**：网页端触发——目前没有任何东西自动调用该端点，需在注入脚本里于带图动态发布后调用，与 voice.js 同形状；原生 App 不加载脚本，因此仍需浏览器发图 |
-| Owner 全站搜索 | **2026-08-01 已在目标 Windows 部署并运行验证**：v4.6.4 initializer 已挂进 `web`，`SearchService` 仅 prepend 一次，显式 Owner=`owner`。Ruby 合同测试 `8 runs / 30 assertions`，MCP 全套 `257 passed`；生产 service probe 通过「摸鱼」子串、完整短语、`%/_` 字面搜索、10+10 offset 无重复、accounts-only、非 Owner 与缺配置 fail closed。Chrome Owner 原生搜索框显示完整 status 卡片并可点开；账号 `gpt`、话题 `#cmx` 仍正常；“加载更多”真实请求带 `type=statuses&offset`；独立桌面浏览器中 `test` 搜同词无该结果。Nginx 日志只见 `/api/v2/search`，未调用 `/files/search`。同时把阻断登录 POST 的 CSP `form-action 'none'` 收紧式修正为 `form-action 'self'`，Owner/`test` 密码登录均已实测。旧 Python 搜索路由只作回滚且已改为显式 Owner 白名单，并从 `.env.production` 读取同一配置、缺失时 fail closed |
+| 图片 OCR / Gemini 画面理解 | **2026-08-01 已部署并用桌面浏览器运行验证**：v20 同源脚本被动观察 Mastodon 原生图片上传/发布，图片 Blob 先入 IndexedDB outbox，发布不等识图；后台 `POST /files/recognize` 用当前页 bearer 临时校验，RapidOCR + Gemini 结果通过动态编辑写入媒体 alt。真实 PNG 发布后网页显示 `AI识图`、中英文描述与「青柠汽水」 OCR；Owner 原生搜索框用该图中词直接命中动态。同图复测命中 SHA-256 缓存，Gemini 日计数仍为 1。`CMX_GEMINI_DAILY_LIMIT=100`，按 UTC 日计“尝试”；超限/未配 key/云端失败都只降级为本机 OCR，不阻塞发布。生产 SQLite 已备份后迁至 v7。限制：注入只在网页生效，原生 Mastodon App 发图不会自动识别；手机浏览器仍未实测 |
+| Owner 全站搜索 | **2026-08-01 已在目标 Windows 部署并运行验证**：v4.6.4 initializer 已挂进 `web`，仅显式 Owner=`owner` 的 statuses 分支对 `statuses.text` 与 `media_attachments.description` 做 `ILIKE`，非 Owner 保持上游行为。Ruby 合同测试 `8 runs / 30 assertions`，MCP 全套 `263 passed`；Chrome Owner 原生搜索框以图中词「青柠汽水」命中 v20 图片帖。原有子串、字面 `%/_`、offset、accounts-only、非 Owner 与缺配置 fail closed 合同仍通过；旧 `/files/search` 仅作回滚 |
+| 网页首次加载 / 缓存 | 2026-08-01 已定位并修复：Cloudflare 长期缓存的旧 `/sw.js` 仍引用已不存在的 `isSymbol-CKsQkssC.js`，导致新页服务工作线程注册 404/失败。Nginx 现为 `/sw.js` 强制 `no-cache, no-store, must-revalidate`，注入注册 URL 带 Mastodon 版本键；`voice.js` 也用 `cmx-v=20` 绕开边缘旧对象。Cloudflare 已按单 URL 清除旧 `/sw.js`，公网复测为 `BYPASS` 且仅引用当前 chunk；新桌面浏览器标本 `load=1.247s`，无旧 chunk/404 错误（该单次数字只是冒烟证据，非 SLA） |
 | 独立 CMX 前端 | 计划中 |
-| 网页录音 / 本机中文转写 v17 | 2026-07-31 已部署到目标 Windows：定向测试 59 passed，本机/公网脚本均为 `voice-17`，HTTP MCP 与 `gpt` worker 正常；iOS/Windows 浏览器交互及真实普通话字错率待验收 |
+| 网页录音 / 本机中文转写 v20 | 注入资源已升到 `voice-20`，仅合并图片识别观察器与缓存版本键；录音、本机转写、播放器语义未改。HTTP MCP 与 `gpt` worker 正常；iOS/Windows 真实录音及普通话字错率仍待验收 |
 | 公共联邦 | 永不实施 |
 
 ## 10. 当前实施顺序

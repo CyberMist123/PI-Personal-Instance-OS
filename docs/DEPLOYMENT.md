@@ -30,6 +30,7 @@ WEB_DOMAIN=<当前公网域名>
 STREAMING_API_BASE_URL=wss://<当前公网域名>
 ALTERNATE_DOMAINS=
 CMX_SITE_SEARCH_OWNER_USERNAME=<Owner 本地用户名；留空则关闭 Owner 全站搜索>
+CMX_GEMINI_DAILY_LIMIT=100
 ```
 
 `LOCAL_DOMAIN` 永远不改。以后更换公网门牌只能使用 `change-access-domain.ps1`。
@@ -50,6 +51,8 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 ```
 
 主网页域名不要套 Cloudflare Access、Challenge 或 Cache Everything。
+
+`/sw.js` 必须遵守源站的 `no-cache, no-store, must-revalidate`；不得为它设长 TTL。若曾经缓存过旧 Mastodon Service Worker，部署当前 Nginx 规则后在 Cloudflare 仅按精确 URL `<WEB_DOMAIN>/sw.js` 做 Custom Purge，不需要 Purge Everything。`voice.js` 的 `cmx-v=<版本>` 与代码 ETag 必须同步递增。
 
 ## 4. 首次初始化
 
@@ -88,6 +91,7 @@ docker compose run --rm --no-deps web `
 - PostgreSQL：Docker named volume `pi-os_postgres_data`；
 - Redis：Docker named volume `pi-os_redis_data`；
 - 图片和视频：`data\media`；
+- MCP SQLite v7：`mcp\runtime\cmx.sqlite3`（含图片识别缓存与 UTC Gemini 尝试计数）；生产迁移前先做 SQLite online backup 并执行 integrity check；
 - 数据库导出、媒体归档和密钥快照：`backups`；
 - 自动启动日志：`logs\autostart.log`。
 

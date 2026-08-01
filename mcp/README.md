@@ -285,7 +285,19 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 - iOS 用 Safari（录音格式走 `audio/mp4`）；Android Chrome 走 `audio/webm`；
 - 必须是 HTTPS 页面浏览器才允许用麦克风，第一次点会弹权限询问。
 
-**限制**：原生 App（Ice Cubes、Tusky、Mona 等）用自己的界面，Nginx 注入的脚本进不去，**原生 App 里看不到这个录音键**——要录语音就用浏览器或主屏幕图标打开网页。改动脚本后需要 `nginx -s reload`，并强刷网页（脚本缓存 5 分钟）。
+**限制**：原生 App（Ice Cubes、Tusky、Mona 等）不加载 Nginx 注入脚本，因此没有网页录音键，也不会自动触发识图。改动脚本后需 `nginx -s reload`，并同步递增 `VOICE_WIDGET_VERSION` 与 Nginx 注入 URL 的 `cmx-v=<版本>`。
+
+## 网页图片 OCR 与 Gemini 识图
+
+v20 同源脚本除语音外，还被动观察 Mastodon 原生图片上传和发布；不替换 XHR、不改请求/响应，也不让发布等待识别。图片 Blob 与 media id 先写入当前浏览器 IndexedDB `cmx-image-recognition-outbox`；状态发布成功后才异步调用同源 `POST /files/recognize`。识别成功时，服务端使用调用者自己的页 bearer 读取原始正文并编辑该状态，把 `AI识图：…` 写入媒体 alt，保留正文、CW、媒体列表、语言、敏感标志和用户原有 alt。
+
+- 本机 RapidOCR 是主路，权重不联网下载；
+- Gemini 是可选增强，key 经 `cmx-admin gemini-key` 写入 DPAPI 文件，不进 Git/环境变量/shell 历史；
+- `CMX_GEMINI_DAILY_LIMIT=100` 按 UTC 日计尝试次数；值为 `0` 可禁用云端，超限、未配 key 或 Gemini 失败时仅降级为本机 OCR，不影响发布；
+- SQLite schema v7 的 `image_recognition` 按图片 SHA-256 共享缓存，`status_media` 映射 Mastodon 附件，`gemini_daily_usage` 只存 UTC 日计数；
+- Owner 原生 `/api/v2/search` 同时查正文与 media description，可按 OCR、画面描述或关键词找回动态；非 Owner 保持上游搜索行为。
+
+原生 Mastodon App 不加载 Nginx 注入脚本，因此不会自动触发识图。修改该脚本时必须同步递增 `VOICE_WIDGET_VERSION` 与 Nginx 的 `cmx-v=<版本>`，避免 Cloudflare 边缘缓存继续发送旧脚本。
 
 ## 媒体
 

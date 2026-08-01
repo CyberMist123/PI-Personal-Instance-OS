@@ -54,7 +54,7 @@ Mastodon Rails Web 服务：
 - 账号、设置和后台管理；
 - 页面与静态资源；
 - 图片上传请求；
-- 通过 v4.6.4 版本锁定 initializer，让 `CMX_SITE_SEARCH_OWNER_USERNAME` 明确指定的本地 Owner 在原生 `/api/v2/search` 中使用 PostgreSQL 子串搜索；其他账号保持上游搜索行为；
+- 通过 v4.6.4 版本锁定 initializer，让 `CMX_SITE_SEARCH_OWNER_USERNAME` 明确指定的本地 Owner 在原生 `/api/v2/search` 中对动态正文与媒体 alt 使用 PostgreSQL `ILIKE` 子串搜索；其他账号保持上游搜索行为；
 - 根据启动时读取的 `WEB_DOMAIN` 生成 URL、CSP、WebAuthn origin 和网页元数据。
 
 域名切换后必须 recreate。
@@ -104,6 +104,8 @@ PostgreSQL 保存长期结构化事实：
 - 普通请求转给 `web:3000`；
 - streaming 路径转给 `streaming:4000`；
 - 明确的 MCP/OAuth 路径转给 Windows `host.docker.internal:8766`；
+- 向 Mastodon 网页注入带版本键的同源 `/files/voice.js`，同时承载语音与图片识别增量；
+- 对 `/sw.js` 强制 `no-cache, no-store, must-revalidate`，并将注册 URL 绑定 Mastodon 版本键，避免门牌前的旧 Service Worker 继续引用已删除 chunk；
 - 保留公网 HTTPS、真实客户端 IP 和 WebSocket 头；
 - 本机调试入口限制在 `127.0.0.1:8080`；
 - 配置不写死公网域名，因此换门牌通常无需 reload。
@@ -118,7 +120,7 @@ PostgreSQL 保存长期结构化事实：
 - Tunnel token 只在本机 `.env`；
 - dashboard-managed route 决定哪些公网域名进入同一 `nginx:80`。
 
-### CMX（计划中，未实现）
+### 独立 CMX（计划中，未实现）
 
 CMX 是未来的移动网页体验层，不是新的数据后端。
 
@@ -130,6 +132,17 @@ CMX 是未来的移动网页体验层，不是新的数据后端。
 - streaming 与媒体从当前 origin/后端元数据获得；
 - 不硬编码 `WEB_DOMAIN`；
 - 不注册长期绑定某门牌的 OAuth application。
+
+已实现的网页增量不是独立前端：Nginx 只注入一个同源脚本，它被动观察 Mastodon 原生语音/图片发布。图片链为：
+
+```text
+POST /api/v2/media 成功 → Blob 写入当前浏览器 IndexedDB outbox
+POST /api/v1/statuses 成功 → 后台 POST /files/recognize
+本机 RapidOCR → 可选 Gemini 校正/画面理解 → PUT /api/v1/statuses/<id> 写回媒体 alt
+Owner 原生搜索 → PostgreSQL 正文 + media description ILIKE
+```
+
+发布不等识图；失败保留 outbox 后续重试。页 bearer 只在当次同源请求中临时使用，不入 SQLite。识别结果按图片 SHA-256 共享缓存；Gemini 尝试按 UTC 日计数，超限仅降级本机 OCR。原生 App 不加载该脚本。
 
 ### AI / MCP（已实现读链路）
 
@@ -169,7 +182,7 @@ D:\AI\PI-Personal-Instance-OS
 ├─ data\media            上传图片和视频
 ├─ backups               数据库导出、媒体归档和密钥快照
 ├─ logs                   自动启动日志
-├─ mcp\runtime           Bot 配置、搜索缓存、OAuth hash 与 DPAPI Token 文件（不进 Git）
+├─ mcp\runtime           Bot 配置、搜索/图片识别缓存、Gemini 日额计数、OAuth hash 与 DPAPI Token 文件（不进 Git）
 ├─ mcp\spool             每居民允许上传的临时媒体目录（不进 Git）
 ├─ .env                   Docker / Tunnel 密钥
 └─ .env.production        身份、门牌和 Mastodon 加密密钥
