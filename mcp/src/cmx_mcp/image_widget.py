@@ -16,7 +16,6 @@ IMAGE_WIDGET_JS = r"""
     var DB_NAME = "cmx-image-recognition-outbox";
     var DB_VERSION = 1;
     var STORE_NAME = "images";
-    var ALT_LIMIT = 1500;
     var proto = window.XMLHttpRequest.prototype;
 
     function openDb() {
@@ -54,8 +53,7 @@ IMAGE_WIDGET_JS = r"""
           blob: file,
           name: String(file.name || "image"),
           type: String(file.type || "image/jpeg"),
-          statusId: "",
-          description: ""
+          statusId: ""
         });
       });
     }
@@ -90,46 +88,6 @@ IMAGE_WIDGET_JS = r"""
       catch (ignored) { return ""; }
     }
 
-    function clean(value) {
-      return typeof value === "string" ? value.trim() : "";
-    }
-
-    function recognitionDescription(original, result) {
-      var cloud = result && result.cloud ? result.cloud : {};
-      var local = result && result.local ? result.local : {};
-      var parts = [];
-      var description = clean(cloud.description);
-      var corrected = clean(cloud.corrected_text);
-      var keywords = clean(cloud.keywords);
-      var localText = clean(local.text);
-      if (description) { parts.push(description); }
-      if (corrected) { parts.push("文字：" + corrected); }
-      else if (localText) { parts.push("OCR：" + localText); }
-      if (keywords) { parts.push("关键词：" + keywords); }
-      if (!parts.length) { return clean(original); }
-
-      var base = clean(original);
-      var marker = "AI识图：";
-      var markerAt = base.indexOf(marker);
-      if (markerAt >= 0) { base = clean(base.slice(0, markerAt)); }
-      var generated = marker + parts.join("；");
-      var combined = base ? base + "\n\n" + generated : generated;
-      return combined.slice(0, ALT_LIMIT);
-    }
-
-    function updateMediaDescription(mediaId, description) {
-      var form = new FormData();
-      form.append("description", description);
-      return fetch("/api/v1/media/" + encodeURIComponent(mediaId), {
-        method: "PUT",
-        headers: { Authorization: "Bearer " + token },
-        body: form,
-        credentials: "same-origin"
-      }).then(function (response) {
-        if (!response.ok) { throw new Error("media description HTTP " + response.status); }
-      });
-    }
-
     function recognizeRecord(record) {
       if (!record || !record.statusId || !record.blob) { return Promise.resolve(); }
       var form = new FormData();
@@ -145,10 +103,7 @@ IMAGE_WIDGET_JS = r"""
         if (!response.ok) { throw new Error("recognition HTTP " + response.status); }
         return response.json();
       }).then(function (result) {
-        var description = recognitionDescription(record.description, result);
-        if (!description) { return null; }
-        return updateMediaDescription(record.mediaId, description);
-      }).then(function () {
+        if (result && result.alt_error) { throw new Error(result.alt_error); }
         return deleteRecord(record.mediaId);
       }).catch(function (error) {
         warn("image recognition will retry later", error);
@@ -162,7 +117,6 @@ IMAGE_WIDGET_JS = r"""
         getUpload(attachment.id).then(function (record) {
           if (!record) { return; }
           record.statusId = String(status.id);
-          record.description = clean(attachment.description);
           return saveRecord(record).then(function () { return recognizeRecord(record); });
         }).catch(function (error) { warn("could not attach image recognition", error); });
       });
@@ -186,7 +140,7 @@ IMAGE_WIDGET_JS = r"""
         xhr.addEventListener("load", function () {
           if (xhr.status < 200 || xhr.status >= 300) { return; }
           var response = parseJson(xhr);
-          if (file && response && response.id && clean(file.type).indexOf("image/") === 0) {
+          if (file && response && response.id && String(file.type || "").indexOf("image/") === 0) {
             saveUpload(response.id, file).catch(function (error) {
               warn("could not save image recognition outbox", error);
             });

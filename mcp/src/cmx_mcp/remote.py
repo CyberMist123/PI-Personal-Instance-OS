@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+import httpx
 import uvicorn
 from mcp.server.auth.routes import create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
@@ -619,11 +620,22 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # hit here skips both the local model and Gemini entirely.
         existing = database.get_image_recognition(sha256)
         if existing is not None:
+            alt_error: str | None = None
             if status_id and media_id:
                 database.link_status_media(status_id, media_id, sha256)
+                alt_error = await run_in_threadpool(
+                    _write_recognition_alt,
+                    instance_settings.public_base_url,
+                    bearer.group(1),
+                    status_id,
+                    media_id,
+                    existing,
+                )
+            response_body = _recognition_response(existing, cache_hit=True, cloud_error=None)
+            if alt_error:
+                response_body["alt_error"] = alt_error
             return JSONResponse(
-                _recognition_response(existing, cache_hit=True, cloud_error=None),
-                headers={"Cache-Control": "no-store"},
+                response_body, headers={"Cache-Control": "no-store"}
             )
 
         model_dir = resolve_ocr_model_dir()
@@ -699,8 +711,21 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             database.link_status_media(status_id, media_id, sha256)
 
         row = database.get_image_recognition(sha256)
+        alt_error: str | None = None
+        if status_id and media_id:
+            alt_error = await run_in_threadpool(
+                _write_recognition_alt,
+                instance_settings.public_base_url,
+                bearer.group(1),
+                status_id,
+                media_id,
+                row,
+            )
+        response_body = _recognition_response(row, cache_hit=False, cloud_error=cloud_error)
+        if alt_error:
+            response_body["alt_error"] = alt_error
         return JSONResponse(
-            _recognition_response(row, cache_hit=False, cloud_error=cloud_error),
+            response_body,
             headers={"Cache-Control": "no-store"},
         )
 
@@ -1134,6 +1159,76 @@ def _recognition_response(
     if cloud_error:
         response["cloud_error"] = cloud_error
     return response
+
+
+def _recognition_alt_text(row: dict[str, Any], original: str = "") -> str:
+    parts: list[str] = []
+    description = str(row.get("cloud_description") or "").strip()
+    corrected = str(row.get("cloud_corrected_text") or "").strip()
+    keywords = str(row.get("search_keywords") or "").strip()
+    local_text = str(row.get("local_ocr_text") or "").strip()
+    if description:
+        parts.append(description)
+    if corrected:
+        parts.append(f"文字：{corrected}")
+    elif local_text:
+        parts.append(f"OCR：{local_text}")
+    if keywords:
+        parts.append(f"关键词：{keywords}")
+    if not parts:
+        return original.strip()
+    marker = "AI识图："
+    base = original.split(marker, 1)[0].strip()
+    generated = marker + "；".join(parts)
+    return (((base + "\n\n") if base else "") + generated)[:1500]
+
+
+def _write_recognition_alt(
+    base_url: str,
+    token: str,
+    status_id: str,
+    media_id: str,
+    row: dict[str, Any],
+) -> str | None:
+    """Update an attached image through the owning page session's status edit.
+
+    Mastodon intentionally returns 404 from ``PUT /api/v1/media/:id`` once a
+    media attachment belongs to a status. Its supported post-publication path
+    is ``PUT /api/v1/statuses/:id`` with ``media_attributes``. Read the source
+    first so adding generated alt text cannot blank or HTML-escape the post.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with httpx.Client(base_url=base_url, headers=headers, timeout=VERIFY_TIMEOUT_SECONDS) as client:
+            status_response = client.get(f"/api/v1/statuses/{quote(status_id, safe='')}")
+            source_response = client.get(f"/api/v1/statuses/{quote(status_id, safe='')}/source")
+            if status_response.status_code != 200 or source_response.status_code != 200:
+                return f"status_read_{status_response.status_code}_{source_response.status_code}"
+            status = status_response.json()
+            source = source_response.json()
+            attachments = status.get("media_attachments") or []
+            target = next((item for item in attachments if str(item.get("id")) == media_id), None)
+            if target is None:
+                return "media_not_found"
+            description = _recognition_alt_text(row, str(target.get("description") or ""))
+            if not description:
+                return None
+            payload = {
+                "status": str(source.get("text") or ""),
+                "spoiler_text": str(source.get("spoiler_text") or ""),
+                "media_ids": [str(item.get("id")) for item in attachments],
+                "media_attributes": [{"id": media_id, "description": description}],
+                "sensitive": bool(status.get("sensitive")),
+                "language": status.get("language"),
+            }
+            update_response = client.put(
+                f"/api/v1/statuses/{quote(status_id, safe='')}", json=payload
+            )
+            if update_response.status_code != 200:
+                return f"status_update_{update_response.status_code}"
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        return f"status_update_unavailable:{type(exc).__name__}"
+    return None
 
 
 def _safe_filename(value: str) -> str:

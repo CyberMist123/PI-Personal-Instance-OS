@@ -53,6 +53,7 @@ def _app(tmp_path, monkeypatch):
     # never be touched from the test suite.
     monkeypatch.setattr(remote_module, "ocr_model_dir_ready", lambda model_dir, tier: True)
     monkeypatch.setattr(remote_module, "gemini_key_configured", lambda paths: False)
+    monkeypatch.setattr(remote_module, "_write_recognition_alt", lambda *args: None)
     return create_remote_app(paths), paths, database
 
 
@@ -301,3 +302,68 @@ def test_status_media_linking_when_ids_are_supplied(tmp_path, monkeypatch):
         )
         assert only_status.status_code == 200, only_status.text
     assert database.recognitions_for_status("status-2") == {}
+
+
+def test_recognition_alt_uses_status_edit_and_preserves_source_and_existing_alt(monkeypatch):
+    calls: dict[str, object] = {}
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.status_code = 200
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, path):
+            if path.endswith("/source"):
+                return FakeResponse({"text": "原帖正文", "spoiler_text": "提醒"})
+            return FakeResponse(
+                {
+                    "sensitive": True,
+                    "language": "zh",
+                    "media_attachments": [
+                        {"id": "m1", "description": "居民原有 ALT"},
+                        {"id": "m2", "description": None},
+                    ],
+                }
+            )
+
+        def put(self, path, json):
+            calls["put"] = (path, json)
+            return FakeResponse({})
+
+    monkeypatch.setattr(remote_module.httpx, "Client", FakeClient)
+    error = remote_module._write_recognition_alt(
+        "https://pi.example",
+        "page-token",
+        "s1",
+        "m1",
+        {
+            "cloud_description": "一杯青柠汽水",
+            "cloud_corrected_text": "青柠汽水",
+            "search_keywords": "饮料 绿色",
+            "local_ocr_text": "",
+        },
+    )
+
+    assert error is None
+    path, payload = calls["put"]
+    assert path == "/api/v1/statuses/s1"
+    assert payload["status"] == "原帖正文"
+    assert payload["spoiler_text"] == "提醒"
+    assert payload["media_ids"] == ["m1", "m2"]
+    description = payload["media_attributes"][0]["description"]
+    assert description.startswith("居民原有 ALT\n\nAI识图：")
+    assert "青柠汽水" in description and "饮料 绿色" in description
+    assert calls["client"]["headers"]["Authorization"] == "Bearer page-token"
