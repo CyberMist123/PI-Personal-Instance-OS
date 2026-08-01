@@ -62,6 +62,7 @@ class InstanceSettings:
     filebox_max_bytes: int = 1024**3
     filebox_quota_bytes: int = 20 * 1024**3
     site_search_owner_username: str = ""
+    gemini_daily_limit: int = 100
 
     @property
     def public_base_url(self) -> str:
@@ -133,6 +134,7 @@ class InstanceSettings:
                 os.getenv("CMX_SITE_SEARCH_OWNER_USERNAME", "").strip()
                 or values.get("CMX_SITE_SEARCH_OWNER_USERNAME", "").strip()
             ),
+            gemini_daily_limit=_bounded_int("CMX_GEMINI_DAILY_LIMIT", 100, 0, 10_000),
         )
 
 

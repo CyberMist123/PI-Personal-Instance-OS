@@ -248,6 +248,31 @@ def test_a_gemini_failure_still_returns_200_with_the_local_result_pending(tmp_pa
     assert stored is not None and stored["state"] == "pending"
 
 
+def test_daily_limit_keeps_local_ocr_and_skips_gemini(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_GEMINI_DAILY_LIMIT", "0")
+    app, _paths, database = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
+    monkeypatch.setattr(remote_module, "gemini_key_configured", lambda paths: True)
+    monkeypatch.setattr(remote_module, "ocr_image", _fake_ocr(text="本机文字"))
+    cloud_calls: list[int] = []
+    monkeypatch.setattr(
+        remote_module,
+        "recognize_image",
+        lambda *args, **kwargs: cloud_calls.append(1) or {"description": "must not run"},
+    )
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/recognize", headers={"Authorization": "Bearer web"}, files=_image()
+        )
+
+    assert response.status_code == 200
+    assert response.json()["local"]["text"] == "本机文字"
+    assert response.json()["cloud_error"] == "daily_limit_reached"
+    assert cloud_calls == []
+    assert database.gemini_daily_attempts() == 0
+
+
 def test_status_media_linking_when_ids_are_supplied(tmp_path, monkeypatch):
     app, paths, database = _app(tmp_path, monkeypatch)
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)

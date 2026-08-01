@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -46,7 +47,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 6:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 7:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -179,6 +180,16 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_status_media_sha
                     ON status_media(image_sha256);
+
+                -- A local guardrail for the owner's metered Gemini free tier.
+                -- Count attempts, not successes, because rejected/invalid replies
+                -- still consumed an upstream request. UTC makes the rollover
+                -- deterministic across Windows timezone or daylight changes.
+                CREATE TABLE IF NOT EXISTS gemini_daily_usage (
+                    day_utc TEXT PRIMARY KEY,
+                    attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             for name, definition in (
@@ -191,7 +202,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(6)")
+            db.execute("INSERT INTO schema_version(version) VALUES(7)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -766,3 +777,40 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def claim_gemini_daily_attempt(self, limit: int, *, day_utc: str | None = None) -> bool:
+        """Atomically reserve one Gemini call under the UTC daily ceiling.
+
+        A zero limit explicitly disables cloud recognition. Old counters are
+        discarded after 35 days; they are operational telemetry, not content.
+        """
+        if limit <= 0:
+            return False
+        today = day_utc or datetime.now(timezone.utc).date().isoformat()
+        cutoff = (
+            datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=35)
+        ).isoformat()
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM gemini_daily_usage WHERE day_utc < ?", (cutoff,))
+            cursor = db.execute(
+                """
+                INSERT INTO gemini_daily_usage(day_utc, attempts, updated_at)
+                VALUES(?, 1, ?)
+                ON CONFLICT(day_utc) DO UPDATE SET
+                    attempts=gemini_daily_usage.attempts + 1,
+                    updated_at=excluded.updated_at
+                WHERE gemini_daily_usage.attempts < ?
+                """,
+                (today, now, limit),
+            )
+            return cursor.rowcount == 1
+
+    def gemini_daily_attempts(self, *, day_utc: str | None = None) -> int:
+        today = day_utc or datetime.now(timezone.utc).date().isoformat()
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT attempts FROM gemini_daily_usage WHERE day_utc=?", (today,)
+            ).fetchone()
+        return int(row[0]) if row else 0

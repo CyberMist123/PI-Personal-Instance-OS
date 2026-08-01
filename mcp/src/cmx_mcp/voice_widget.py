@@ -45,14 +45,15 @@ must stay safe to embed in any HTML or config context).
 
 from __future__ import annotations
 
+from .image_widget import IMAGE_WIDGET_JS
 from .voice_owner import VOICE_OWNER_JS
 from .voice_player import VOICE_PLAYER_JS
 from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "17"
+VOICE_WIDGET_VERSION = "18"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v17 - same-origin, relative API, durable local outbox. */
+VOICE_WIDGET_JS = """/* CMX voice widget v18 - voice outbox plus passive image recognition. */
 (function () {
   "use strict";
 
@@ -992,6 +993,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v17 - same-origin, relative API, durabl
   }
 
 /*__VOICE_PLAYER__*/
+/*__IMAGE_RECOGNITION__*/
 
   function boot() {
     var state = readInitialState();
@@ -1009,6 +1011,11 @@ VOICE_WIDGET_JS = """/* CMX voice widget v17 - same-origin, relative API, durabl
       watchTimeline(state);
     } catch (error) {
       warn("voice player failed to start", error);
+    }
+    try {
+      startImageRecognition(state);
+    } catch (error) {
+      warn("image recognition hook failed to start", error);
     }
   }
 
@@ -1031,3 +1038,4 @@ _PLAYER_SOURCE = "\n".join([
     VOICE_SCAN_JS.strip("\n"),
 ])
 VOICE_WIDGET_JS = VOICE_WIDGET_JS.replace("/*__VOICE_PLAYER__*/", _PLAYER_SOURCE)
+VOICE_WIDGET_JS = VOICE_WIDGET_JS.replace("/*__IMAGE_RECOGNITION__*/", IMAGE_WIDGET_JS.strip("\n"))

@@ -15,10 +15,16 @@ module CmxOwnerSearch
     return super unless cmx_owner_site_search?
 
     escaped_query = ActiveRecord::Base.sanitize_sql_like(@query)
+    pattern = "%#{escaped_query}%"
 
     Status
+      .left_outer_joins(:media_attachments)
       .where(deleted_at: nil)
-      .where('statuses.text ILIKE ?', "%#{escaped_query}%")
+      .where(
+        'statuses.text ILIKE :pattern OR media_attachments.description ILIKE :pattern',
+        pattern: pattern
+      )
+      .distinct
       .order(created_at: :desc, id: :desc)
       .offset(@offset)
       .limit(@limit)

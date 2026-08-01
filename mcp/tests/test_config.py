@@ -36,6 +36,7 @@ def test_loads_web_domain_from_env_production_and_defaults_to_https(
     assert settings.base_url == "https://pi.example.test"
     assert settings.max_status_chars == 5000
     assert settings.site_search_owner_username == "owner"
+    assert settings.gemini_daily_limit == 100
 
 
 def test_owner_username_environment_overrides_env_production(
@@ -52,6 +53,17 @@ def test_owner_username_environment_overrides_env_production(
     settings = InstanceSettings.load(_paths(home))
 
     assert settings.site_search_owner_username == "environment-owner"
+
+
+def test_gemini_daily_limit_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "mcp"
+    home.mkdir()
+    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    monkeypatch.setenv("CMX_GEMINI_DAILY_LIMIT", "101")
+    assert InstanceSettings.load(_paths(home)).gemini_daily_limit == 101
+    monkeypatch.setenv("CMX_GEMINI_DAILY_LIMIT", "10001")
+    with pytest.raises(RuntimeError, match="between 0 and 10000"):
+        InstanceSettings.load(_paths(home))
 
 
 def test_allows_explicit_loopback_http(tmp_path: Path, monkeypatch) -> None:

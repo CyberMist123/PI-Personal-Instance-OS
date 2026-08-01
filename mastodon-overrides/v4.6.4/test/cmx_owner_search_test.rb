@@ -51,6 +51,16 @@ class FakeRelation
     self
   end
 
+  def left_outer_joins(*args)
+    @calls << [:left_outer_joins, args]
+    self
+  end
+
+  def distinct
+    @calls << [:distinct]
+    self
+  end
+
   def order(*args)
     @calls << [:order, args]
     self
@@ -75,6 +85,12 @@ class Status
       raise failure if failure
 
       relation.where(*args)
+    end
+
+    def left_outer_joins(*args)
+      raise failure if failure
+
+      relation.left_outer_joins(*args)
     end
   end
 end
@@ -143,8 +159,13 @@ class CmxOwnerSearchTest < Minitest::Test
 
     assert_equal [:owner_status], results[:statuses]
     assert_equal [
+      [:left_outer_joins, [:media_attachments]],
       [:where, [{ deleted_at: nil }]],
-      [:where, ['statuses.text ILIKE ?', '%100\\%\\_完成%']],
+      [:where, [
+        'statuses.text ILIKE :pattern OR media_attachments.description ILIKE :pattern',
+        { pattern: '%100\\%\\_完成%' },
+      ]],
+      [:distinct],
       [:order, [{ created_at: :desc, id: :desc }]],
       [:offset, 10],
       [:limit, 10],

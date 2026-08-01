@@ -668,26 +668,32 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
 
         cloud_error: str | None = None
         if gemini_key_configured(paths):
-            cloud_result = await run_in_threadpool(
-                recognize_image,
-                image_bytes,
-                local_ocr_text=local_text,
-                paths=paths,
-                mime_type=str(upload.content_type or "image/jpeg"),
+            claimed = database.claim_gemini_daily_attempt(
+                instance_settings.gemini_daily_limit
             )
-            if cloud_result.get("error"):
-                # Recognition must never block or fail a post: the row stays
-                # pending and the caller learns why via cloud_error in the
-                # 200 body, never via an HTTP error status.
-                cloud_error = str(cloud_result["error"])
+            if not claimed:
+                cloud_error = "daily_limit_reached"
             else:
-                database.record_cloud_recognition(
-                    sha256,
-                    corrected_text=cloud_result.get("corrected_text"),
-                    description=cloud_result.get("description"),
-                    keywords=cloud_result.get("keywords"),
-                    uncertain_text=cloud_result.get("uncertain_text"),
+                cloud_result = await run_in_threadpool(
+                    recognize_image,
+                    image_bytes,
+                    local_ocr_text=local_text,
+                    paths=paths,
+                    mime_type=str(upload.content_type or "image/jpeg"),
                 )
+                if cloud_result.get("error"):
+                    # Recognition must never block or fail a post: the row stays
+                    # pending and the caller learns why via cloud_error in the
+                    # 200 body, never via an HTTP error status.
+                    cloud_error = str(cloud_result["error"])
+                else:
+                    database.record_cloud_recognition(
+                        sha256,
+                        corrected_text=cloud_result.get("corrected_text"),
+                        description=cloud_result.get("description"),
+                        keywords=cloud_result.get("keywords"),
+                        uncertain_text=cloud_result.get("uncertain_text"),
+                    )
 
         if status_id and media_id:
             database.link_status_media(status_id, media_id, sha256)

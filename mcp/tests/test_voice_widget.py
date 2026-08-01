@@ -161,7 +161,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "17" and "voice widget v17" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "18" and "voice widget v18" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
@@ -172,6 +172,19 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert VOICE_WIDGET_JS.count("(function () {") >= 1
     assert VOICE_WIDGET_JS.count("{") == VOICE_WIDGET_JS.count("}")
     assert VOICE_WIDGET_JS.count("(") == VOICE_WIDGET_JS.count(")")
+
+
+def test_v18_observes_native_image_posts_without_blocking_or_replacing_xhr() -> None:
+    assert 'xhr.__cmxPath === "/api/v2/media"' in VOICE_WIDGET_JS
+    assert 'xhr.__cmxPath === "/api/v1/statuses"' in VOICE_WIDGET_JS
+    assert 'form.append("status_id", record.statusId)' in VOICE_WIDGET_JS
+    assert 'form.append("media_id", record.mediaId)' in VOICE_WIDGET_JS
+    assert 'fetch("/files/recognize", {' in VOICE_WIDGET_JS
+    assert 'fetch("/api/v1/media/" + encodeURIComponent(mediaId), {' in VOICE_WIDGET_JS
+    assert 'var DB_NAME = "cmx-image-recognition-outbox";' in VOICE_WIDGET_JS
+    assert "return originalSend.apply(this, arguments);" in VOICE_WIDGET_JS
+    assert "responseText =" not in VOICE_WIDGET_JS
+    assert "AI识图：" in VOICE_WIDGET_JS
 
 
 def _audio(size: int = 64):
@@ -342,6 +355,14 @@ def test_nginx_injects_the_widget_into_mastodon_html() -> None:
     # Mastodon's password login POST during the two-account browser smoke.
     assert "form-action 'self'" in csp_line
     assert "object-src" not in csp_line
+
+
+def test_nginx_never_caches_the_service_worker_across_mastodon_upgrades() -> None:
+    conf = NGINX_CONF.read_text(encoding="utf-8")
+    start = conf.index("location = /sw.js")
+    block = conf[start : conf.index("\n  }", start)]
+    assert 'proxy_hide_header Cache-Control;' in block
+    assert 'Cache-Control "no-cache, no-store, must-revalidate"' in block
 
 
 def test_webm_is_preferred_over_mp4_for_recording() -> None:

@@ -218,7 +218,7 @@ def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
     assert db.seen_status_ids("b", ["source"]) == set()
     assert db.get_visit("a", "vb") is None
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
 
 
 def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
@@ -286,7 +286,7 @@ def test_real_v2_database_migrates_to_v3_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
@@ -300,12 +300,12 @@ def test_future_schema_version_fails_closed(tmp_path: Path):
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as raw:
         raw.execute("CREATE TABLE schema_version(version INTEGER NOT NULL)")
-        raw.execute("INSERT INTO schema_version VALUES(7)")
+        raw.execute("INSERT INTO schema_version VALUES(8)")
     import pytest
     with pytest.raises(RuntimeError, match="future database schema version"):
         Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 8
 
 
 def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
@@ -340,7 +340,7 @@ def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
@@ -349,6 +349,20 @@ def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
         assert raw.execute("SELECT value FROM cmx_settings WHERE key='filebox_pass'").fetchone()[0] == "kept-hash"
         tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "image_recognition" in tables
+        assert "gemini_daily_usage" in tables
+
+
+def test_gemini_daily_attempt_limit_is_atomic_and_rolls_by_day(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+
+    assert db.claim_gemini_daily_attempt(2, day_utc="2026-08-01") is True
+    assert db.claim_gemini_daily_attempt(2, day_utc="2026-08-01") is True
+    assert db.claim_gemini_daily_attempt(2, day_utc="2026-08-01") is False
+    assert db.gemini_daily_attempts(day_utc="2026-08-01") == 2
+    assert db.claim_gemini_daily_attempt(2, day_utc="2026-08-02") is True
+    assert db.gemini_daily_attempts(day_utc="2026-08-02") == 1
+    assert db.claim_gemini_daily_attempt(0, day_utc="2026-08-03") is False
 
 
 def test_image_recognition_shared_across_bots_by_sha256(tmp_path: Path):
