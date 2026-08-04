@@ -485,10 +485,18 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # transcript is then edited into that same status. The
         # bearer here is the caller's OWN Mastodon web session token, verified
         # against the instance and then dropped (never stored, never logged).
-        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
-        verified = bool(bearer) and await run_in_threadpool(
-            _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
-        )
+        # A same-machine caller (e.g. cyberboss on 127.0.0.1) may skip that
+        # bearer entirely when CMX_LOCAL_TRUSTED_MEDIA is on; see
+        # _local_trusted_media_enabled.
+        if _is_loopback_host(
+            request.headers.get("host", ""), settings.port
+        ) and _local_trusted_media_enabled():
+            verified = True
+        else:
+            bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+            verified = bool(bearer) and await run_in_threadpool(
+                _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+            )
         if not verified:
             return JSONResponse(
                 {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
@@ -578,10 +586,18 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # they uploaded them — so there is no separate "may this caller see
         # this image" check to add, and the server never fetches anything
         # from Mastodon on this path.
-        bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
-        verified = bool(bearer) and await run_in_threadpool(
-            _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
-        )
+        # A same-machine caller (e.g. cyberboss on 127.0.0.1) may skip that
+        # bearer entirely when CMX_LOCAL_TRUSTED_MEDIA is on; see
+        # _local_trusted_media_enabled.
+        if _is_loopback_host(
+            request.headers.get("host", ""), settings.port
+        ) and _local_trusted_media_enabled():
+            verified = True
+        else:
+            bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+            verified = bool(bearer) and await run_in_threadpool(
+                _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+            )
         if not verified:
             return JSONResponse(
                 {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
@@ -1117,6 +1133,15 @@ def _loopback_origins(port: int) -> set[str]:
         f"http://localhost:{port}",
         f"http://[::1]:{port}",
     }
+
+
+def _local_trusted_media_enabled() -> bool:
+    """Explicit opt-in for same-machine callers to skip the page bearer on
+    recognize/transcribe. Off by default; when on it still only applies to
+    requests whose Host header is loopback, the same trust boundary
+    RemoteBoundaryMiddleware and /oauth/approve already rely on.
+    """
+    return os.getenv("CMX_LOCAL_TRUSTED_MEDIA", "").strip() == "1"
 
 
 def _audio_suffix(filename: str | None) -> str:
