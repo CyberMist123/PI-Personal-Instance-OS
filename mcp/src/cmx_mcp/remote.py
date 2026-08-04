@@ -42,7 +42,7 @@ from .ocr import (
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server
 from .transcribe import model_dir_ready, transcribe_file
-from .vision_cloud import MAX_IMAGE_BYTES, gemini_key_configured, recognize_image
+from .vision_cloud import MAX_IMAGE_BYTES, ask_image, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
@@ -63,6 +63,29 @@ _FONT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\.woff2$")
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 MAX_REQUEST_BYTES = 1024 * 1024
 VERIFY_TIMEOUT_SECONDS = 10.0
+MAX_ASK_QUESTION_CHARS = 2000
+
+
+def _append_vision_qa_log(paths: Paths, *, sha256: str, question: str, result: dict) -> None:
+    """One JSONL line per /files/ask exchange, so the owner can read what was
+    asked and answered without a database query. Best-effort: a logging
+    failure never fails the request."""
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "sha256": sha256,
+        "question": question,
+    }
+    if result.get("error"):
+        record["error"] = str(result["error"])
+    else:
+        record["answer"] = str(result.get("answer") or "")
+    try:
+        log_path = paths.runtime / "vision-qa.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _verify_mastodon_bearer(base_url: str, token: str) -> bool:
@@ -745,6 +768,107 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             headers={"Cache-Control": "no-store"},
         )
 
+    async def image_ask(request: Request) -> Response:
+        # Same trust rule as image_recognize above: loopback caller with
+        # CMX_LOCAL_TRUSTED_MEDIA on, or a verified Mastodon web session
+        # bearer that is checked and then dropped.
+        if _is_loopback_host(
+            request.headers.get("host", ""), settings.port
+        ) and _local_trusted_media_enabled():
+            verified = True
+        else:
+            bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
+            verified = bool(bearer) and await run_in_threadpool(
+                _verify_mastodon_bearer, instance_settings.public_base_url, bearer.group(1)
+            )
+        if not verified:
+            return JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
+            )
+
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            return JSONResponse(
+                {"error": "multipart field 'file' is required"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        question = str(form.get("question") or "").strip()
+        if not question:
+            return JSONResponse(
+                {"error": "multipart field 'question' is required"},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        if len(question) > MAX_ASK_QUESTION_CHARS:
+            return JSONResponse(
+                {"error": "question_too_long", "max_chars": MAX_ASK_QUESTION_CHARS},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        stream = upload.file
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(0)
+        if size < 1:
+            return JSONResponse(
+                {"error": "empty_file"}, status_code=400, headers={"Cache-Control": "no-store"}
+            )
+        if size > MAX_IMAGE_BYTES:
+            return JSONResponse(
+                {"error": "file_too_large", "max_bytes": MAX_IMAGE_BYTES},
+                status_code=413,
+                headers={"Cache-Control": "no-store"},
+            )
+        image_bytes = stream.read()
+        sha256 = hashlib.sha256(image_bytes).hexdigest()
+
+        if not gemini_key_configured(paths):
+            return JSONResponse(
+                {"error": "not_configured"}, status_code=503, headers={"Cache-Control": "no-store"}
+            )
+        # Q&A spends from the same daily Gemini pool as recognition; a burst
+        # of questions must not starve the recognition path silently, so the
+        # refusal is explicit here rather than a pending row.
+        if not database.claim_gemini_daily_attempt(instance_settings.gemini_daily_limit):
+            return JSONResponse(
+                {"error": "daily_limit_reached"},
+                status_code=429,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        # A bare multipart part arrives as application/octet-stream, which
+        # Gemini rejects outright; fall back to the filename suffix then jpeg.
+        mime_type = str(upload.content_type or "").strip().lower()
+        if not mime_type.startswith("image/"):
+            suffix = Path(str(upload.filename or "")).suffix.lower()
+            mime_type = {
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }.get(suffix, "image/jpeg")
+
+        result = await run_in_threadpool(
+            ask_image,
+            image_bytes,
+            question=question,
+            paths=paths,
+            mime_type=mime_type,
+        )
+        _append_vision_qa_log(paths, sha256=sha256, question=question, result=result)
+        if result.get("error"):
+            return JSONResponse(
+                {"error": str(result["error"]), "detail": str(result.get("detail") or "")},
+                status_code=502,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {"answer": str(result.get("answer") or ""), "sha256": sha256},
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def site_search_endpoint(request: Request) -> Response:
         # Unlike the other /files routes, this one answers with content the caller
         # did not supply, read straight out of PostgreSQL and therefore past every
@@ -947,6 +1071,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         Route("/files/search.js", search_widget, methods=["GET"]),
         Route("/files/transcribe", voice_transcribe, methods=["POST"]),
         Route("/files/recognize", image_recognize, methods=["POST"]),
+        Route("/files/ask", image_ask, methods=["POST"]),
         Route("/files/search", site_search_endpoint, methods=["GET"]),
         Route("/files/voice-remux", voice_remux, methods=["POST"]),
         Route("/files/fonts/{name}", voice_font, methods=["GET"]),
