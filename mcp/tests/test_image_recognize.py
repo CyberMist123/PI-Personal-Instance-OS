@@ -95,6 +95,52 @@ def test_recognize_rejects_a_missing_or_invalid_page_bearer(tmp_path, monkeypatc
         assert seen == [("https://pi.example", "not-a-real-web-token")]
 
 
+def test_recognize_local_trusted_media_skips_the_bearer_on_loopback_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    app, _paths, _database = _app(tmp_path, monkeypatch)
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        remote_module, "_verify_mastodon_bearer", lambda base, token: seen.append((base, token)) or True
+    )
+    monkeypatch.setattr(remote_module, "ocr_image", _fake_ocr())
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/recognize",
+            headers={"Host": "127.0.0.1:8766"},
+            files=_image(),
+        )
+        assert response.status_code == 200, response.text
+        assert seen == []  # local trust short-circuits before the instance is ever asked
+
+        # A dummy bearer must not be treated any differently from no bearer at all.
+        response = client.post(
+            "/files/recognize",
+            headers={"Host": "127.0.0.1:8766", "Authorization": "Bearer dummy"},
+            files=_image(name="b.jpg"),
+        )
+        assert response.status_code == 200, response.text
+        assert seen == []
+
+
+def test_recognize_local_trusted_media_does_not_weaken_the_public_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    app, _paths, _database = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: False)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post("/files/recognize", files=_image())
+    assert response.status_code == 401 and response.json() == {"error": "unauthorized"}
+
+
+def test_recognize_requires_a_bearer_on_loopback_host_when_the_flag_is_off(tmp_path, monkeypatch):
+    app, _paths, _database = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: False)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/recognize", headers={"Host": "127.0.0.1:8766"}, files=_image()
+        )
+    assert response.status_code == 401 and response.json() == {"error": "unauthorized"}
+
+
 def test_recognize_requires_the_file_field(tmp_path, monkeypatch):
     app, _paths, _database = _app(tmp_path, monkeypatch)
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
