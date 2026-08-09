@@ -6,7 +6,7 @@ Phase 0、Phase A 与 Phase A+ 已随 #6/#8/#7 合并链于 2026-07-22 进入 `m
 
 > 本文件是需求、边界、架构、进度和下一步的唯一当前事实入口。
 >
-> 当前版本：`v0.3.0-rc.2`。最后更新：2026-07-31。
+> 当前版本：`v0.3.0-rc.2`。最后更新：2026-08-10。
 
 ## 1. 项目
 
@@ -113,7 +113,7 @@ D:\AI\PI-Personal-Instance-OS\mcp
 
 - 官方 MCP Python SDK v1 + STDIO；
 - Mastodon v4.6 REST 直连；
-- SQLite Bot 配置、FTS5 搜索缓存、最小审计和发布去重；
+- SQLite Bot 配置、居民 token 驱动的本地动态镜像/子串搜索、最小审计和发布去重；
 - Windows DPAPI 加密居民 Token；DPAPI 仅在 Windows 实际读写凭据时延迟初始化，非 Windows 可正常导入 MCP 服务模块，实际调用明确 fail closed，不提供明文降级；
 - compact 返回、Link 分页、时间线/context/数组上限；
 - Mastodon REST 默认使用已验证的当前 `WEB_DOMAIN` HTTPS；显式配置时只允许同 Host HTTPS 或 loopback HTTP；
@@ -143,9 +143,10 @@ D:\AI\PI-Personal-Instance-OS\mcp
   - 浏览器授权这一步（`cmx-authorize`）2026-07-31 重做了可用性：**授权链接一定打印并复制到剪贴板**（`webbrowser.open` 在 Windows 上几乎永远返回成功，旧的「失败才打印」兜底等于没有），等待时有倒计时（TTY 用 `\r` 刷新，管道里每 30 秒一行），并明确提示三件事——这次该由哪个账号点、浏览器里若已是 Owner 登录态就用无痕窗口、链接只能在跑脚本的这台机器上打开（回调落在 `127.0.0.1` 临时端口）。账号不匹配的报错改为中文并给出解法。配套：居民管理和流水线都能调 `tootctl accounts modify <用户名> --reset-password` 现场发一个新登录密码，解决「账号建好了但没有密码，无法以该账号登录授权页」的死路。
   - 硬性细节：参数**必须用哈希表 splat**，`& script.ps1 @array` 在 PowerShell 5.1 下按**位置**绑定，`-Profile` 这种字面量会被当成值塞进 `$BotId`，用户名则落到 `$Profile` 上触发 ValidateSet 报错（2026-07-31 实际踩到）；重启会检测是否已提权，未提权时用 `Start-Process -Verb RunAs` 只把这一步拉起管理员窗口，而不是让整个控制台提权；脚本不含任何域名，公网地址运行时经 `InstanceSettings.public_base_url` 从 `.env.production` 解析；文件必须保持 UTF-8 **BOM**，否则 PowerShell 5.1 会按 GBK 解、菜单全是乱码；
 - `http-enable.ps1` / `http-disable.ps1` 控制是否随 PI OS 启停，`http-status.ps1` 检查本地服务；
-- 帮工（worker）v1 + 中文语音转写（2026-07-31 已部署到目标 Windows；模型目录与 OpenCC 已验证，真实普通话录音效果仍待实测）：常驻进程 `cmx-worker --bot <id>` 用居民 DPAPI Token 轮询主页时间线；带音频且正文为空的动态经同域下载后由**本机 faster-whisper**转写，并以原帖可见性回复 `🎙️ 语音转写：` + 正文。模型永不自动下载，`CMX_WHISPER_MODEL_DIR` 必须指向含非空 `model.bin` 的完整 CTranslate2 目录；可选依赖仍只在 `pip install -e .[workers]` 安装。中文默认固定 `language=zh`（`CMX_WHISPER_LANGUAGE=auto` 可恢复自动识别），使用简体中文初始提示、`CMX, PI OS` 默认热词、beam 5 和 VAD；可用 `CMX_WHISPER_INITIAL_PROMPT`、`CMX_WHISPER_HOTWORDS`、`CMX_WHISPER_BEAM_SIZE` 覆盖。输出经 OpenCC 转简体并清理汉字间空格；同一 `cmx-worker` / `cmx-mcp-http` 进程内按模型目录、设备和计算类型复用已加载模型，避免每条录音重复冷启动。音频与文字不经过云端模型。
+- CapsWriter 全局语音输入（2026-08-06）：`D:\AI\tools\CapsWriter-Offline\start_client.exe` 已配置连接 `127.0.0.1:6016`、`language='chinese'`、`traditional_convert=False`、粘贴后恢复剪贴板；CapsLock 与 X2 保持启用。客户端当前进程已与 6016 建立连接，已注册隐藏的用户登录计划任务 `CapsWriter Client` 与 `CapsWriter Server`，分别通过 wscript 隐藏包装器启动；旧 `.lnk` 已移出 Startup 文件夹，当前进程无主窗口。用户已实际完成一次当前 ChatGPT 输入框与一次记事本输入测试；本轮没有安装 Telegram，也没有修改 CMX 接口。
+- 帮工（worker）v1 + 中文语音转写（2026-08-06）：在保留 faster-whisper 兜底的前提下，`cmx-worker` 与 `/files/transcribe` 可优先调用本机 CapsWriter-Offline v2.6 的 Qwen3-ASR-GGUF 常驻 WebSocket 服务（`CMX_QWEN_ASR_URL`，默认不启用；本机验证值为 `ws://127.0.0.1:6016`），请求固定 `language=Chinese`，结果统一经 OpenCC 转简体；服务不可用时记录 warning 并回退 faster-whisper。CapsWriter 返回包含 `duration`、`tokens`、`timestamps`，没有可用 confidence/no-speech 字段；CMX 因此在发送前加入最小 16 kHz 音频活动检查，并拒绝 Qwen 原样回显 context 的结果，统一返回 `no_speech`，HTTP 仍返回 200 但正文为空，不会编辑或发布脑补文字。模型永不由 CMX 自动下载；Qwen 模型文件位于 `D:\AI\models\Qwen3-ASR-1.7B`，Whisper 仍由 `CMX_WHISPER_MODEL_DIR` 指向含非空 `model.bin` 的目录。Qwen 的五段既有真人录音对比已完成，HTTP 与网页录音请求均确认使用 Qwen；worker 的真实空正文跨居民消息验证受当前 bot 可见性/Token scope 限制，尚未证明完成。音频与文字不经过云端模型。
 - 网页悬浮录音键 v20（2026-08-01 已部署到目标 Windows，录音链语义与 v17 一致，v20 只增加图片识别观察器与缓存版本键；手机/Windows 浏览器真实录音仍待验收）：保留录音、播放器、`cmx-voice-outbox`、本机转写与编辑回填语义；脚本只用相对同源 API 与当前页 bearer，原生 App 不加载。
-- 中文子串搜索（2026-08-01）：`cmx_search` 改为对 `status_cache` 做多字段子串扫描，不再走 `status_fts MATCH`。根因已在生产实例取证——搜「摸鱼」返回 0 条，搜「摸鱼打卡」返回 1 条：FTS5 的 `unicode61` 分词器不切分 CJK，一整段连续汉字（到标点为止）是**一个 token**，只有原样打回整个 token 才命中；且 MATCH 在这种情况下**不抛错、只返回空**，因此 `except OperationalError` 的 LIKE 兜底从未触发，故障长期静默。同一判断已记录在 `clipboard_search.py`，两边语义现已统一。**同时修掉一个隐私缺陷**：旧兜底路径没有可见性过滤（FTS 路径有），而查询含 `"`、`(`、`AND`、`:` 确实会抛 `OperationalError` 并落到兜底，使设计上排除在搜索外的 `direct` / `self` 条目可能浮现；新查询在 SQL 里做 null 安全的 `visibility IS NOT 'direct'`。`status_fts` 表仍在每次写缓存时维护但已无任何读取方，可在后续 migration 中删除。
+- 本地统一搜索（2026-08-10，当前 Windows 已运行验证）：`cmx_search` 和同源网页 `/files/search` 首次用**当前调用居民自己的 Mastodon token**分页读取 `home_timeline`，并将该居民的 `search_home` 水位写入既有 SQLite `browse_state`；之后仅以该水位的 `min_id` 读取新动态，不重扫旧 home 分页。每次仍分页读取该账号 `account_statuses`，写入既有 SQLite `status_cache` 后再本机检索；不读 PostgreSQL、不使用 Owner token、不建第二数据库或后台同步。查询先使用字面量转义的 SQLite `LIKE` 子串语义（而非 `status_fts MATCH`，因 `unicode61` 不切 CJK）；结果不足才在同一可见 cache 上用 RapidFuzz 中文同长度窗口 `ratio`（阈值 66）和 pypinyin 无声调全拼/首字母 fallback（拼音 typo `partial_ratio` 阈值 85）。拼音只在进程内有界缓存派生值，不写回 SQLite 或 Mastodon。覆盖作者、正文、CW、媒体 alt/description，以及 `status_media → image_recognition` 已持久化的 OCR/vision 文本。结果返回原动态并逐条用同一 token REST 复核；失去可见性的缓存项立即删除。`direct` 默认仍不进入结果；仅 `author_id` 等于当前 token 本人的 direct/self 日记可搜，其他 direct 消息即使曾进入本机 cache 也始终排除。网页语音转写本身不存独立表：它回填原帖正文和音频 alt；worker fallback 的「语音转写」回复作为普通动态索引。`/files/recognize` 的本地 OCR 与可选 vision 文字在同一 SQLite `image_recognition`，通过 `status_media(status_id, media_id)` 关联原动态，并在可用时写回媒体 alt。Mastodon 4.6 网页搜索实际经 Axios/XHR：Nginx 将精确路径 `/api/v2/search` 透明代理到 `/files/search?format=mastodon`，该端点仍用页面 bearer 返回 Mastodon 所需的 `accounts`、`hashtags`、`collections`、`statuses` 结构；已在登录网页用 `意大力面` 命中 status `117063973006150174`。
 - 链接占位符与分享文案净化（2026-08-01）：`strip_html` 现在把裸链接锚点替换为 `【url-xhs】`（未知站点为 `【url】`，别名表见 `compact.LINK_ALIASES`），完整 href 由新增的 `cmx_status(view="links")` 按需返回——**不新增 MCP 工具**，Reader 仍恰好 3 个工具。一条小红书分享由 64 字符降到 20 字符，其中居民自己写的只有 10 个字。**不截断 URL**：`xsec_token` 是小红书的访问凭证而非跟踪参数，截断会产生居民无法察觉的死链，因此链接要么完整取回、要么不出现。分享广告语按**完整已知模板**匹配（`复制本条信息` / `把这段复制好` / `复制这段内容` / `复制打开`），绝不按关键词——「复制」和「小红书」在正常写作中都会出现，漏掉模板可恢复，吃掉居民原话不可恢复。
 - editable install 生成的 `*.egg-info/` 已加入忽略规则，不再污染 Git 工作区。
 
@@ -200,13 +201,13 @@ cmx_profile_update
 - 2026-07-26 的 SDK 兼容与 OAuth 加固改动（PR #12）已合并并部署到目标 Windows：重装 install 通过、`status.ps1` 检查 passed；当日一次 smoke 失败发生在 Mastodon 栈未运行时，完整 `smoke.ps1` 通过仍待确认。远程 `cmx_home` schema 有变化，远程客户端需刷新工具列表（与既有 `status_ids` schema 刷新属同一批）。
 - 邀请码接入（含 `/oauth/invite` 公网页、`invite-*` CLI、`一键更新.bat`/`一键新居民.bat`）已通过云端 Linux 自动测试，未在目标 Windows 实测；部署需要 Nginx 重载以放行 `/oauth/invite`（`一键更新.bat` 已包含该步骤）。
 - `self` 私密日记受众与大文件柜 v1（SQLite v4、`/files/*` 路由、Owner 口令页）已通过云端 Linux 自动测试（92 passed），未在目标 Windows 实测；部署需 Nginx 重载放行 `/files/`，Owner 需运行一次 `cmx-admin filebox-pass`；远程 `cmx_post` schema 新增 `self` 枚举，远程客户端需刷新工具列表。
-- 帮工 v1 与语音转写（SQLite v5 `worker_done`、`cmx-worker` 入口、`worker-*.ps1`）已通过云端 Linux 自动测试（109 passed），未在目标 Windows 实测：部署需在 `mcp\` 执行一次 `pip install -e .[workers]`、准备本机 CTranslate2 模型目录并设置 `CMX_WHISPER_MODEL_DIR`，再用 `worker-start.ps1 -BotId <居民>` 启动；真实语音帖的下载、转写耗时与回复可见性仍待 Windows 实测。回帖现为**兜底**（正文非空的语音动态直接跳过），需实测确认网页录音键补完文字的动态不会再被回复，以及「发出语音 → 补上文字」窗口内被轮到时的重复回帖是否可接受。`direct`/`self` 私密语音日记对帮工账号不可见，本轮不覆盖。
+- 帮工 v1 与语音转写（SQLite v5 `worker_done`、`cmx-worker` 入口、`worker-*.ps1`）已通过自动测试；目标 Windows 已安装 `websockets`，并真实启动 Qwen WebSocket 服务、重启 HTTP 服务、调用 `/files/transcribe` 与运行 worker `--once`。HTTP 路径确认使用 `qwen3-asr` 且 `runtime\voice-tmp`/`runtime\worker-tmp` 用后为空；worker 这次只遇到自身消息或正文已有文字的消息，未完成“另一个居民空正文音频 → worker Qwen 回复”的真机闭环，原因是现有两个 bot 的时间线隔离与 Token scope 不允许临时建立可见性。`direct`/`self` 私密语音日记对帮工账号不可见，本轮不覆盖。
 - 网页悬浮录音键 v5（含 v4 CSP 修复）「秒发语音 + 后台补文字」（`cmx_mcp.voice_widget` + `GET /files/voice.js` + `POST /files/transcribe` + `PUT /api/v1/statuses/<id>` 编辑 + Nginx `sub_filter` 注入）已在目标 Windows 完成 `pytest` `119 passed`、Nginx reload、`cmx-mcp-http` 重启与 loopback `GET /files/voice.js`=`voice-5`、公网首页 CSP/脚本标签检查：`Content-Security-Policy` 已变为 `'unsafe-inline'` 版本，`<script src="/files/voice.js" defer></script>` 仍在 HTML 中。**Cloudflare 旧缓存已于 2026-07-29 复测确认解除**：公网 `/files/voice.js` 现为 `etag: "voice-5"`，与源站一致，脚本注入与 `'unsafe-inline'` CSP 均在位——原记录的 `etag: "voice-3"` 阻塞点已作废。
 
   2026-07-29 排查发现转写从未真正工作过，根因与缓存无关：`CMX_WHISPER_MODEL_DIR` 被指向 `voice-kit`（一个走云端 API 的 Node STT/TTS 工具包），其中没有 `model.bin`。旧守卫只检查目录存在，于是放行后在加载模型时失败，表现为 502（转写器报错）而非 503（转写器未配置），因此长期被误读为偶发故障。已修：真实模型（`Systran/faster-whisper-small`，原在 `AppData\Local\cyberboss\faster-whisper` 的 HF 缓存中）复制到固定路径 `D:\AI\models\faster-whisper-small`，`CMX_WHISPER_MODEL_DIR` 改指该路径；`transcribe.model_dir_ready()` 现要求 `model.bin` 存在，`/files/transcribe` 与 `cmx-worker` 均改用它，并有回归测试锁定。`transcribe_file` 已用该模型实测通过（无 error）。**仍待 `cmx-mcp-http` 重启后由 Owner 用真实录音验收。**
 
   后续真机检查：**iOS Safari `audio/mp4` 录制**、**Mastodon 4.6.3 编辑 API 接受 `media_attributes.description`**、真实录音转写耗时、页面提前关闭时帮工兜底、编辑后网页与原生 App 显示、以及脚本与 Mastodon 前端样式/Service Worker 无冲突等真机检查。原生 App 客户端不会加载该脚本。
-- 帮工 v1 与中文语音转写（SQLite v5 `worker_done`、`cmx-worker` 入口、`worker-*.ps1`）已在目标 Windows 重装 `pip install -e .[workers]`（OpenCC、faster-whisper >=1.1），确认 `D:\AI\models\faster-whisper-small` 含可用 `model.bin`，并重启 `gpt` worker 与 `cmx-mcp-http`；目标环境定向测试 `59 passed`。仍需用 Owner 真实普通话录音比较字错率、专有词命中率、首次/后续转写耗时与内存；`direct`/`self` 对帮工账号不可见的边界不变。
+- 本轮 Qwen3-ASR 实施：已从 CapsWriter-Offline 官方 Models Release 下载并校验 `Qwen3-ASR-1.7B-q5_k`，CapsWriter 使用 Vulkan 将 GGUF Decoder 放到 RTX 4050，ONNX Encoder 配置为 DirectML；CMX 只增加直接 WebSocket 适配、最小音频活动检查、context 回显保护、engine/no_speech 结果和 `websockets` 可选依赖，不复制 CapsWriter、不引入 provider registry。真实静音、4 秒本机环境噪声和真人录音的 HTTP 测试均通过：前两者返回 `no_speech`，真人语音正常转写；网页麦克风流程真实发布过一次，但该次录音未能确认捕获到有效人声，不能作为准确率样本。worker 跨居民空正文闭环仍是直接阻塞。
 - 网页悬浮录音键 v20（`cmx_mcp.voice_widget` + `cmx-voice-outbox`）已部署到目标 Windows：公网 `GET /files/voice.js?cmx-v=20` 为 HTTP 200、ETag `"voice-20"`，内容包含语音 outbox 与图片识别钩子；HTTP MCP、`gpt` worker 与公网 MCP 健康检查通过。语音路径仍需分别在 iOS Safari 与 Windows 浏览器验证：录制/重传、`audio/mp4`/WebM、Mastodon 编辑正文与 alt、真实中文转写耗时，以及清除站点数据会删除未发送 outbox 的预期行为。
 - 使用一个新的真实邮箱完整执行 `setup-ai.ps1` 新账号创建流程；已有账号的浏览器 OAuth、DPAPI 保存和读链路已经运行验证。
 - ChatGPT 网页端已存在真实 CMX Connector，但一直只能读：2026-07-29 查 `mcp_oauth_tokens` 确认所有 `client_name="ChatGPT"` 的 token scope 都是 `["cmx:read"]`，而同期 Claude Code 远程客户端拿到 `["cmx:read","cmx:social"]`；根因是上面的 DCR `default_scopes` 回填（已修，未验收）。因为 `gpt` 已是 social profile，`tools/list` 里能看到 `cmx_post`/`cmx_interact`，调用时才被 `insufficient_scope` 拒绝，容易误判成工具坏了。修复生效需要：重启 `cmx-mcp-http` → `cmx-admin invite-new --bot gpt --scopes read,social` → 在 ChatGPT 里**删除并重新添加** connector（refresh token 不能扩权）。此外刷新后仍显示缓存的旧 `cmx_status(status_id=...)` schema，与服务端当前新 schema 不一致。不得把服务端 smoke 记为 GPT Web 已通过。
@@ -258,22 +259,13 @@ Token 存于 `mcp/runtime/secrets/<bot>.token.dpapi`，只允许同一 Windows �
 
 详细设计：`docs/CMX_MCP_SMALL_INSTANCE_DESIGN.md`。
 
-### 6.6 两种搜索，边界相反
+### 6.6 本地统一搜索
 
-CMX 有**两套彼此独立、方向相反**的搜索，混淆它们会得出错误结论：
+`cmx_search` 与网页搜索共用同一条链：首次由当前居民自己的 Mastodon token 分页读取 `home_timeline` 并记录独立的 `search_home` 水位，后续只用 `min_id` 读取水位之后的 home 动态；本人 `account_statuses` 仍每次分页读取 → 写既有 SQLite `status_cache` → SQLite 字面量 `LIKE` 子串检索 → 用同一 token 逐条 REST 复核返回。网页保留 Mastodon 原生搜索框；因 Mastodon 4.6 实际经 Axios/XHR 请求，Nginx 精确代理 `/api/v2/search` 到同源 `/files/search?format=mastodon`，由后者返回原生所需的四个结果数组；不使用 Mastodon 的全文搜索后端。
 
-| | 居民搜索 `cmx_search` | Owner 网页全站搜索 `/api/v2/search` |
-|---|---|---|
-| 数据源 | CMX 自己的 SQLite 缓存 | Mastodon 的 PostgreSQL |
-| 覆盖范围 | **该居民已经读过的** | **整站全部动态** |
-| `direct` / `self` | 排除，且必须保持排除 | 包含——Owner 本来就能看自己的日记 |
-| 调用者 | AI 居民 | 仅 `.env.production` 中 `CMX_SITE_SEARCH_OWNER_USERNAME` 明确指定的本地 Owner |
+查询覆盖作者、正文、CW、媒体 alt/description，以及已在 `image_recognition` 持久化并由 `status_media` 关联的 OCR/vision 文字。`unicode61` FTS 不切分 CJK，因此 `status_fts` 仍维护兼容数据但不参与读取；SQLite `LIKE` 命中优先。LIKE 结果不足时，RapidFuzz 的中文同长度窗口 `ratio`（66）补一字错别字，pypinyin 生成的小写无声调、去空格全拼与首字母补全拼/首字母/轻微拼音 typo（`partial_ratio` 85）。派生值仅保留在进程内有界缓存，不新增 SQLite 字段。语音转写不保存独立副本：网页回填到原帖正文和音频 alt，worker fallback 则是普通回复动态。
 
-Mastodon 上游的 status 全文搜索在 `ES_ENABLED=false` 时关闭；本项目不安装 Elasticsearch，而是把 v4.6.4 版本锁定的 `cmx_owner_search.rb` 只读挂进 `web`。该 initializer 通过 `Module#prepend` 仅改写明确 Owner 的 `SearchService` status 分支，使用 `statuses.text ILIKE`、`sanitize_sql_like`、`deleted_at IS NULL`、`created_at/id DESC` 以及上游的 `limit/offset`；accounts、hashtags、collections、URL resolve、序列化和其他账号全部保持 Mastodon 原生逻辑。查询失败只记录 `[cmx-owner-search]` 并返回空 statuses，不把整个 `/api/v2/search` 变成 500。
-
-这条查询运行在 Mastodon `web` 进程内，不给 AI/MCP PostgreSQL 连接。旧 `GET /files/search` 与 `/files/search.js` 暂留作文件级回滚，但 Nginx 不再注入 `search.js`；旧端点也已收紧为同一个显式 Owner username，配置缺失或任意其他真人/居民账号一律 403。Nginx 仍把初始状态中的 `"search_enabled":false` 改为 true，使原生网页愿意发 `/api/v2/search`。
-
-psql 经参数数组调用、不经 shell，检索词用 `:'term'` 绑定，且语句从 stdin 送入（`-c` 会把 SQL 原样交给服务端，占位符将成为语法错误）。注入已实测而非假设：`'; DROP TABLE statuses; --` 返回 0 条且表完好。
+本地 cache 按居民隔离；刷新和复核都只使用当前居民 token。`direct` 默认排除，只有 `author_id` 为当前 token 本人的 direct/self 日记可被该居民搜索，其他 direct 即使曾缓存也不返回。没有 PostgreSQL 搜索覆盖、Owner token、第二数据库、向量库、后台 worker 或定时同步。
 
 ## 7. 远程 MCP 接口
 
@@ -295,8 +287,7 @@ Owner 上传页    https://<WEB_DOMAIN>/files/up（cmx-admin filebox-pass 设置
 录音容器转换    POST /files/voice-remux（网页登录态 bearer；WebM/MP4 → Ogg/Opus）
 网页录音转写    POST /files/transcribe（调用者自己的网页登录态 bearer，只临时校验不存不记；转写回来后由网页 PUT /api/v1/statuses/<id> 补正文与 alt）
 图片识别        POST /files/recognize（同 transcribe 的 bearer 规则；multipart `file` + 可选 status_id/media_id。调用者自带字节，服务端不代抓，因此无需额外可见性判定——这正是 self/direct 图片不成为盲区的原因）
-Owner 全站搜索  GET /api/v2/search?q=&type=statuses&limit=&offset=（Mastodon 原生网页/API；仅显式 Owner 的 statuses 分支对正文和媒体 alt 使用 PostgreSQL ILIKE）
-旧搜索回滚端点 GET /files/search?q=&limit=（不再注入页面；仅显式 Owner，其他账号 403）
+网页本地搜索    GET /api/v2/search?q= → Nginx → /files/search?q=&format=mastodon（当前网页 bearer；REST 刷新后查 SQLite，返回原 Mastodon status 结构）
 ```
 
 边界：本机服务不监听局域网；Nginx 只代理列出的 MCP/OAuth 路由；公共资源必须携带 bearer token；token 的 subject、resource 和 `cmx:read` scope 必须同时匹配路径居民。远程默认使用 Reader profile；写能力只有在 resident `remote_profile`、`cmx:social`、resident Mastodon Token scope 和 capability 全部允许时才开放。
@@ -336,10 +327,9 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 | ChatGPT 网页端连接 | 已连接但只读：2026-07-31 Owner 实测 `public_explicit` / `residents` / `self` / `direct`（带与不带 @）/ 回复全部 `insufficient_scope`，读时间线、读状态、搜缓存正常——不是四种可见性的实现问题，是 token 缺 `cmx:social`。第一轮修复（DCR `default_scopes`）已部署但不足；第二轮「邀请码即授予」已实现并通过本机 `pytest 174 passed`，**尚未部署**：需提权重启 `cmx-mcp-http`，然后重走一次网页端授权（refresh 不能扩权）。端到端 smoke 未通过 |
 | Clip Brain 剪贴板影子站 | 2026-07-29 目标 Windows 已受控部署：磁盘 checkout 为 detached `b4c8492`，Owner 提权重启 `cmx-mcp-http`，只重建 nginx（db/redis/web/sidekiq/streaming 未动）。本机与公网 `/clipboard/`=200、`/clipboard-api/*`=401、`/files/voice.js`=200、`/api/v2/instance` 仍为 4.6.4/5000、`status.ps1 -BotId gpt` 通过、nginx 日志无 token 泄露。**真机与真实 Mastodon 登录态下的端到端仍未验收**；未合并，回滚点 `security/mastodon-4.6.4` @ `a871628` 与 `backups/phase-c-20260729/` |
 | 网页语音条播放器（接管 Mastodon 原生播放器） | **v16 已部署（`etag: "voice-16"` 已核）、Owner 确认可用**：波形、播放、画中画规避三项均已在真机通过。历程如下——**v15 修好波形**：波形采样改为可重试是根因修复——原来 `if (audio.currentSrc …)` 在 decorate 里只判一次，而 decorate 每元素只跑一次，判空即永久跳过。**v16 修「点了没声音、声音却从弹出播放器出来」**：根因确诊为 Mastodon 画中画——`features/audio/index.tsx` 在「元素播放中被 React 卸载」时 `deployPictureInPicture`，而我们驱动的正是它自己的 `<audio>`。v16 改为在自己的 host 里建自己的 `<audio>`（同源同 src），Mastodon 那个永远保持 paused，该分支永不成立；配套 `playOnly` 全局单播与「host 被丢弃时先暂停」。复现环境静置实测 `natives 0 / gap 0 / 7 个播放器全部有真实波形 / anyNativePlaying false / 同时发声数 1`。**B（PC 完全没接管）仍未定位**，`window.__piVoiceDebug()` 可一次性定位断点（含画中画占位符计数）。iOS 真机、真实 MP3 解码耗时未验证。详见 [`docs/clip-brain/VOICE_PLAYER_HANDOFF.md`](docs/clip-brain/VOICE_PLAYER_HANDOFF.md)（临时交接单，收口后并回本文件并删除）。录音 → 上传 → 转写 → 回填这条链不受影响 |
-| 中文子串搜索 | 2026-08-01 本机 `188 passed`；bug 已在生产实例取证（「摸鱼」0 条 /「摸鱼打卡」1 条）。修复本身待目标 Windows 重启 `cmx-mcp-http` 后复测 |
+| 本地统一搜索 | **2026-08-10 本机增量刷新与轻量 fuzzy/pinyin 验证完成，尚未重启目标 Windows 服务**：首次搜索分页刷新 `home_timeline`，随后以 SQLite `browse_state` 中独立 `search_home` 水位的 `min_id` 只读取新增 home 动态；本人 `account_statuses` 仍分页刷新后查 SQLite。连续真实 `Ponytail` 查询的第二次 `refresh_home_ms=82.3`，此前全量实测为 `6221.8`；真实 status `117063973006150174` 的中文 typo、全拼和首字母均命中，261 条 cache 上首次全拼 fallback 为 379.0ms、同进程后约 12ms；本轮相关测试 `94 passed`。 |
 | 链接占位符 `【url-xhs】` | 2026-08-01 本机 `188 passed`，未部署；真实帖子上的显示效果与 `cmx_status(view="links")` 取回链路待验收 |
 | 图片 OCR / Gemini 画面理解 | **2026-08-01 已部署并用桌面浏览器运行验证**：v20 同源脚本被动观察 Mastodon 原生图片上传/发布，图片 Blob 先入 IndexedDB outbox，发布不等识图；后台 `POST /files/recognize` 用当前页 bearer 临时校验，RapidOCR + Gemini 结果通过动态编辑写入媒体 alt。真实 PNG 发布后网页显示 `AI识图`、中英文描述与「青柠汽水」 OCR；Owner 原生搜索框用该图中词直接命中动态。同图复测命中 SHA-256 缓存，Gemini 日计数仍为 1。`CMX_GEMINI_DAILY_LIMIT=100`，按 UTC 日计“尝试”；超限/未配 key/云端失败都只降级为本机 OCR，不阻塞发布。生产 SQLite 已备份后迁至 v7。限制：注入只在网页生效，原生 Mastodon App 发图不会自动识别；手机浏览器仍未实测 |
-| Owner 全站搜索 | **2026-08-01 已在目标 Windows 部署并运行验证**：v4.6.4 initializer 已挂进 `web`，仅显式 Owner=`owner` 的 statuses 分支对 `statuses.text` 与 `media_attachments.description` 做 `ILIKE`，非 Owner 保持上游行为。Ruby 合同测试 `8 runs / 30 assertions`，MCP 全套 `263 passed`；Chrome Owner 原生搜索框以图中词「青柠汽水」命中 v20 图片帖。原有子串、字面 `%/_`、offset、accounts-only、非 Owner 与缺配置 fail closed 合同仍通过；旧 `/files/search` 仅作回滚 |
 | 网页首次加载 / 缓存 | 2026-08-01 已定位并修复：Cloudflare 长期缓存的旧 `/sw.js` 仍引用已不存在的 `isSymbol-CKsQkssC.js`，导致新页服务工作线程注册 404/失败。Nginx 现为 `/sw.js` 强制 `no-cache, no-store, must-revalidate`，注入注册 URL 带 Mastodon 版本键；`voice.js` 也用 `cmx-v=20` 绕开边缘旧对象。Cloudflare 已按单 URL 清除旧 `/sw.js`，公网复测为 `BYPASS` 且仅引用当前 chunk；新桌面浏览器标本 `load=1.247s`，无旧 chunk/404 错误（该单次数字只是冒烟证据，非 SLA） |
 | 独立 CMX 前端 | 计划中 |
 | 网页录音 / 本机中文转写 v20 | 注入资源已升到 `voice-20`，仅合并图片识别观察器与缓存版本键；录音、本机转写、播放器语义未改。HTTP MCP 与 `gpt` worker 正常；iOS/Windows 真实录音及普通话字错率仍待验收 |

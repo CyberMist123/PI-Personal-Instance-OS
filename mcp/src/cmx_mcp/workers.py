@@ -202,6 +202,7 @@ def _process_status(
             beam_size=config.beam_size,
             max_audio_seconds=float(config.max_audio_seconds),
         )
+        _log(f"status {source_id} ASR engine={result.get('engine', 'unknown')}")
         if result.get("error"):
             _log(f"status {source_id} transcription error: {result['error']} {result.get('detail', '')}".strip())
             runtime.db.worker_mark_done(bot_id, source_id)

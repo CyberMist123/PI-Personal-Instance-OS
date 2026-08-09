@@ -381,6 +381,75 @@ def test_transcribe_success_joins_segments_and_never_downloads_models(tmp_path):
     assert recorder["transcribe_kwargs"]["vad_filter"] is True
 
 
+def test_transcribe_prefers_local_qwen_and_normalizes_result(tmp_path, monkeypatch):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.bin").write_bytes(b"weights")
+    calls = {}
+
+    def fake_qwen(path, **kwargs):
+        calls["path"] = path
+        calls.update(kwargs)
+        return {"text": "繁體中文"}
+
+    monkeypatch.setattr(transcribe_module, "_transcribe_with_qwen", fake_qwen)
+    result = transcribe_file(tmp_path / "a.ogg", model_dir=model)
+
+    assert result["text"] == "繁体中文"
+    assert result["engine"] == "qwen3-asr"
+    assert calls["language"] == "zh"
+    assert calls["initial_prompt"] == SIMPLIFIED_PROMPT
+    assert calls["hotwords"] == DEFAULT_HOTWORDS
+
+
+def test_transcribe_falls_back_to_whisper_when_qwen_is_unavailable(tmp_path, monkeypatch):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.bin").write_bytes(b"weights")
+    monkeypatch.setattr(transcribe_module, "_transcribe_with_qwen", lambda *args, **kwargs: None)
+    recorder: dict = {}
+    had, previous = _install_fake_whisper([_FakeSegment("中文", 1.0)], recorder=recorder)
+    try:
+        result = transcribe_file(tmp_path / "a.ogg", model_dir=model)
+    finally:
+        _restore_whisper(had, previous)
+
+    assert result["text"] == "中文"
+    assert result["engine"] == "faster-whisper"
+    assert recorder["init_count"] == 1
+
+
+def test_qwen_audio_activity_rejects_silence_and_short_audio():
+    import numpy as np
+
+    assert transcribe_module._qwen_audio_activity_error(
+        np.zeros(32000, dtype=np.float32), np
+    ) == "audio_silent"
+    assert transcribe_module._qwen_audio_activity_error(
+        np.ones(1600, dtype=np.float32), np
+    ) == "audio_too_short"
+
+
+def test_qwen_audio_activity_accepts_voice_like_activity():
+    import numpy as np
+
+    audio = np.zeros(32000, dtype=np.float32)
+    audio[4000:12000] = 0.08
+    assert transcribe_module._qwen_audio_activity_error(audio, np) is None
+
+
+def test_qwen_context_echo_is_no_speech():
+    assert transcribe_module._qwen_result_is_context_echo(
+        SIMPLIFIED_PROMPT, SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
+    assert transcribe_module._qwen_result_is_context_echo(
+        "常用专有名词：CMX, PI OS。", SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
+    assert not transcribe_module._qwen_result_is_context_echo(
+        "今天下午我要去悉尼大学上课。", SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
+
+
 def test_transcribe_enforces_duration_and_output_limits(tmp_path):
     (tmp_path / "model").mkdir()
     (tmp_path / "model" / "model.bin").write_bytes(b"weights")
