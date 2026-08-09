@@ -1,24 +1,17 @@
-"""Legacy rollback-only browser search patch.
-
-Nginx no longer injects this asset. The production path is Mastodon's native
-`GET /api/v2/search`, extended inside the v4.6.4 Rails `SearchService` by
-`cmx_owner_search.rb`. The script and `/files/search` route stay temporarily so
-rollback can be file-only; the endpoint now uses the same explicit Owner
-username and fails closed for every other account.
-"""
+"""Same-origin browser search patch backed by CMX's local SQLite mirror."""
 
 from __future__ import annotations
 
-SEARCH_WIDGET_VERSION = "1"
+SEARCH_WIDGET_VERSION = "3"
 
-SEARCH_WIDGET_JS = """/* CMX search widget v1 - patches window.fetch so Mastodon's own search box also surfaces whole-instance results. */
+SEARCH_WIDGET_JS = """/* CMX search widget v3 - patches window.fetch so Mastodon's own search box also surfaces locally mirrored results. */
 (function () {
   "use strict";
 
   if (window.__piSearchWidget) {
     return;
   }
-  window.__piSearchWidget = "1";
+  window.__piSearchWidget = "2";
 
   var LOG = "[pi-search]";
   var SEARCH_PATH = "/api/v2/search";

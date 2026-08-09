@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import logging
 import html
 import json
 import os
@@ -32,7 +33,9 @@ from starlette.routing import Route
 
 from .clipboard_api import build_clipboard_routes
 from .config import InstanceSettings, Paths, validate_remote_profile
+from .compact import compact_status
 from .db import Database
+from .mastodon_client import MastodonApiError, MastodonClient
 from .ocr import (
     model_dir_ready as ocr_model_dir_ready,
     ocr_image,
@@ -40,17 +43,17 @@ from .ocr import (
     resolve_tier as resolve_ocr_tier,
 )
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
-from .server import Runtime, build_server
+from .server import Runtime, build_server, refresh_search_cache
 from .transcribe import model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, ask_image, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
-from .site_search import search_site
 from .web_auth import verify_web_bearer, verify_web_identity
 from .workers import WorkerConfig
 
 CLIPBOARD_SWEEP_SECONDS = 600
+_LOGGER = logging.getLogger(__name__)
 
 
 _BOT_ID_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -96,6 +99,10 @@ def _verify_mastodon_bearer(base_url: str, token: str) -> bool:
     account identity back instead of just a boolean.
     """
     return verify_web_bearer(base_url, token)
+
+
+def _visibility_failure(error: MastodonApiError) -> bool:
+    return error.status_code in {401, 403, 404}
 
 
 class _NoStoreResponse:
@@ -587,12 +594,18 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 beam_size=config.beam_size,
                 max_audio_seconds=float(config.max_audio_seconds),
             )
+            _LOGGER.info("/files/transcribe ASR engine=%s", result.get("engine", "unknown"))
         finally:
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
         if result.get("error"):
+            if result["error"] == "no_speech":
+                return JSONResponse(
+                    {"error": "no_speech", "text": ""},
+                    headers={"Cache-Control": "no-store"},
+                )
             return JSONResponse(
                 {"error": str(result["error"])},
                 status_code=502,
@@ -870,12 +883,9 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         )
 
     async def site_search_endpoint(request: Request) -> Response:
-        # Unlike the other /files routes, this one answers with content the caller
-        # did not supply, read straight out of PostgreSQL and therefore past every
-        # visibility rule Mastodon would otherwise apply. So a valid session is not
-        # enough: holding a token only proves membership. This rollback-only
-        # endpoint therefore uses the same explicit Owner username as the native
-        # Rails search path and fails closed when it is missing.
+        # This search is deliberately driven by the browser's own Mastodon token:
+        # REST decides the caller's current visibility, the local SQLite cache
+        # indexes only those returned statuses, and every hit is revalidated below.
         bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
         identity = await run_in_threadpool(
             verify_web_identity, instance_settings.public_base_url, bearer.group(1)
@@ -884,14 +894,6 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             return JSONResponse(
                 {"error": "unauthorized"}, status_code=401, headers={"Cache-Control": "no-store"}
             )
-        expected_owner = instance_settings.site_search_owner_username
-        if not expected_owner or not secrets.compare_digest(identity.acct, expected_owner):
-            return JSONResponse(
-                {"error": "owner_only"},
-                status_code=403,
-                headers={"Cache-Control": "no-store"},
-            )
-
         query = str(request.query_params.get("q") or "").strip()
         if not query:
             return JSONResponse(
@@ -903,12 +905,76 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             limit = int(request.query_params.get("limit") or 30)
         except ValueError:
             limit = 30
+        limit = max(1, min(limit, 100))
+        cache_key = f"web:{identity.account_id}"
+        client = MastodonClient(
+            base_url=instance_settings.base_url,
+            host_header=instance_settings.host_header,
+            token=bearer.group(1),
+            timeout=instance_settings.timeout_seconds,
+        )
         try:
-            hits = await run_in_threadpool(search_site, query, limit=limit)
-        except RuntimeError as exc:
+            timings: dict[str, float] = {}
+            self_author_id = await run_in_threadpool(
+                refresh_search_cache, database, cache_key, client, timings=timings
+            )
+            started = time.perf_counter()
+            candidates = await run_in_threadpool(
+                database.search_statuses,
+                cache_key,
+                query,
+                limit,
+                self_author_id=self_author_id,
+            )
+            timings["sqlite_search_ms"] = (time.perf_counter() - started) * 1000
+            hits: list[dict[str, Any]] = []
+            mastodon_statuses: list[dict[str, Any]] = []
+            started = time.perf_counter()
+            for cached in candidates:
+                status_id = str(cached.get("id") or "")
+                if not status_id:
+                    continue
+                try:
+                    raw = await run_in_threadpool(client.get_status, status_id)
+                except MastodonApiError as exc:
+                    if _visibility_failure(exc):
+                        await run_in_threadpool(database.invalidate_status, cache_key, status_id)
+                        continue
+                    raise
+                compact = compact_status(raw)
+                await run_in_threadpool(database.cache_statuses, cache_key, [compact])
+                mastodon_statuses.append(raw)
+                hits.append({
+                    "id": compact["id"],
+                    "at": compact.get("created_at"),
+                    "author": (compact.get("author") or {}).get("acct") or "",
+                    "visibility": compact.get("visibility"),
+                    "text": compact.get("text") or "",
+                })
+            timings["revalidate_ms"] = (time.perf_counter() - started) * 1000
+            _LOGGER.info(
+                "web_search timing refresh_home_ms=%.1f refresh_own_ms=%.1f "
+                "sqlite_search_ms=%.1f revalidate_ms=%.1f",
+                timings.get("refresh_home_ms", 0.0),
+                timings.get("refresh_own_ms", 0.0),
+                timings["sqlite_search_ms"],
+                timings["revalidate_ms"],
+            )
+        except (MastodonApiError, RuntimeError) as exc:
             return JSONResponse(
                 {"error": "search_unavailable", "detail": str(exc)[:200]},
                 status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        finally:
+            client.close()
+        if request.query_params.get("format") == "mastodon":
+            # Mastodon's current web client uses Axios/XHR rather than
+            # window.fetch. Nginx sends only its v2 status-search request here;
+            # return the native result shape so the existing UI renders the
+            # same revalidated, token-visible statuses.
+            return JSONResponse(
+                {"accounts": [], "hashtags": [], "collections": [], "statuses": mastodon_statuses},
                 headers={"Cache-Control": "no-store"},
             )
         return JSONResponse(

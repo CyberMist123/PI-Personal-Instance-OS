@@ -85,53 +85,105 @@ def test_search_js_route_is_not_shadowed_by_the_filebox_download_route(tmp_path,
         assert client.get("/files/search").status_code == 401
 
 
-def test_legacy_site_search_fails_closed_without_an_explicit_owner(tmp_path, monkeypatch):
-    monkeypatch.delenv("CMX_SITE_SEARCH_OWNER_USERNAME", raising=False)
+def test_search_widget_is_injected_and_the_postgres_search_override_is_not_mounted() -> None:
+    root = Path(__file__).resolve().parents[2]
+    nginx = (root / "nginx" / "default.conf").read_text(encoding="utf-8")
+    compose = (root / "compose.yml").read_text(encoding="utf-8")
+    assert '<script src="/files/search.js?cmx-v=3" defer></script>' in nginx
+    assert '"search_enabled":false' in nginx
+    assert "cmx_owner_search.rb" not in compose
+
+
+def test_site_search_uses_current_web_identity_not_an_owner_postgres_bypass(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "cmx_mcp.remote.verify_web_identity",
         lambda *_args: WebIdentity(account_id="owner-id", acct="owner"),
     )
+    raw = {
+        "id": "1", "created_at": "2026-08-09T00:00:00Z", "visibility": "private",
+        "content": "<p>今天修自行车</p>", "account": {"id": "owner-id", "acct": "owner"},
+    }
+    class Client:
+        def __init__(self, **kwargs): self.kwargs = kwargs
+        def get_status(self, status_id): return raw
+        def close(self): pass
+    monkeypatch.setattr("cmx_mcp.remote.MastodonClient", Client)
+    def refresh(database, cache_key, client, **_kwargs):
+        database.cache_statuses(cache_key, [{
+            "id": "1", "author": raw["account"], "text": "今天修自行车",
+            "visibility": "private", "created_at": raw["created_at"],
+        }])
+        return "owner-id"
+    monkeypatch.setattr("cmx_mcp.remote.refresh_search_cache", refresh)
     app = _app(tmp_path, monkeypatch)
 
     with TestClient(app, base_url="https://pi.example") as client:
-        response = client.get("/files/search?q=test", headers={"Authorization": "Bearer token"})
+        response = client.get("/files/search?q=自行車", headers={"Authorization": "Bearer token"})
 
-    assert response.status_code == 403
-    assert response.json() == {"error": "owner_only"}
+    assert response.status_code == 200
+    assert response.json()["items"] == [{
+        "id": "1", "at": "2026-08-09T00:00:00Z", "author": "owner",
+        "visibility": "private", "text": "今天修自行车",
+    }]
 
 
-def test_legacy_site_search_rejects_other_real_accounts(tmp_path, monkeypatch):
-    monkeypatch.setenv("CMX_SITE_SEARCH_OWNER_USERNAME", "owner")
+def test_site_search_can_return_mastodon_status_response_shape(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cmx_mcp.remote.verify_web_identity",
+        lambda *_args: WebIdentity(account_id="owner-id", acct="owner"),
+    )
+    raw = {
+        "id": "1", "created_at": "2026-08-09T00:00:00Z", "visibility": "private",
+        "content": "<p>今天做了一次大扫除</p>", "account": {"id": "owner-id", "acct": "owner"},
+    }
+    class Client:
+        def __init__(self, **kwargs): pass
+        def get_status(self, status_id): return raw
+        def close(self): pass
+    monkeypatch.setattr("cmx_mcp.remote.MastodonClient", Client)
+    def refresh(database, cache_key, client, **_kwargs):
+        database.cache_statuses(cache_key, [{
+            "id": "1", "author": raw["account"], "text": "今天做了一次大扫除",
+            "visibility": "private", "created_at": raw["created_at"],
+        }])
+        return "owner-id"
+    monkeypatch.setattr("cmx_mcp.remote.refresh_search_cache", refresh)
+    app = _app(tmp_path, monkeypatch)
+
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.get(
+            "/files/search?q=大扫厨&format=mastodon",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "accounts": [], "hashtags": [], "collections": [], "statuses": [raw],
+    }
+
+
+def test_site_search_is_scoped_to_the_current_web_account(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "cmx_mcp.remote.verify_web_identity",
         lambda *_args: WebIdentity(account_id="other-id", acct="other"),
     )
+    class Client:
+        def __init__(self, **kwargs): pass
+        def close(self): pass
+    monkeypatch.setattr("cmx_mcp.remote.MastodonClient", Client)
+    seen = []
+    def refresh(database, cache_key, client, **_kwargs):
+        seen.append(cache_key)
+        return "other-id"
+    monkeypatch.setattr("cmx_mcp.remote.refresh_search_cache", refresh)
     app = _app(tmp_path, monkeypatch)
 
     with TestClient(app, base_url="https://pi.example") as client:
         response = client.get("/files/search?q=test", headers={"Authorization": "Bearer token"})
 
-    assert response.status_code == 403
-    assert response.json() == {"error": "owner_only"}
-
-
-def test_legacy_site_search_allows_only_the_configured_owner(tmp_path, monkeypatch):
-    monkeypatch.setenv("CMX_SITE_SEARCH_OWNER_USERNAME", "owner")
-    monkeypatch.setattr(
-        "cmx_mcp.remote.verify_web_identity",
-        lambda *_args: WebIdentity(account_id="owner-id", acct="owner"),
-    )
-    monkeypatch.setattr(
-        "cmx_mcp.remote.search_site",
-        lambda query, *, limit: [{"id": "1", "text": query, "limit": limit}],
-    )
-    app = _app(tmp_path, monkeypatch)
-
-    with TestClient(app, base_url="https://pi.example") as client:
-        response = client.get("/files/search?q=test&limit=7", headers={"Authorization": "Bearer token"})
-
     assert response.status_code == 200
-    assert response.json()["items"] == [{"id": "1", "text": "test", "limit": 7}]
+    assert response.json()["items"] == []
+    assert seen == ["web:other-id"]
 
 
 def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> None:
@@ -146,7 +198,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "if (!token) {" in SEARCH_WIDGET_JS
     assert "window.fetch = function" in SEARCH_WIDGET_JS
 
-    assert SEARCH_WIDGET_VERSION == "1" and "search widget v1" in SEARCH_WIDGET_JS
+    assert SEARCH_WIDGET_VERSION == "3" and "search widget v3" in SEARCH_WIDGET_JS
     assert SEARCH_WIDGET_JS.count("{") == SEARCH_WIDGET_JS.count("}")
     assert SEARCH_WIDGET_JS.count("(") == SEARCH_WIDGET_JS.count(")")
 

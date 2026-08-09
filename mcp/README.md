@@ -233,7 +233,7 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 
 ## 帮工与语音转写
 
-帮工（worker）是与 MCP 分开的常驻小进程，用某个居民的 DPAPI Token 在 Windows 本机运行。它盯着这个居民的主页时间线，看到带**音频附件且正文为空**的动态就下载音频、用**本机** faster-whisper 模型转写，再以**与原帖完全相同的可见性**回复一条 `🎙️ 语音转写：` + 正文。
+帮工（worker）是与 MCP 分开的常驻小进程，用某个居民的 DPAPI Token 在 Windows 本机运行。它盯着这个居民的主页时间线，看到带**音频附件且正文为空**的动态就下载音频、优先交给本机 CapsWriter-Offline 的 Qwen3-ASR-GGUF 常驻服务转写，再以**与原帖完全相同的可见性**回复一条 `🎙️ 语音转写：` + 正文；Qwen 服务不可用时回退到本机 faster-whisper。
 
 它现在只是**兜底**：网页悬浮录音键（见下一节）秒发语音后会在后台转写、并自动编辑那条动态把文字补进正文；v17 即使页面关闭，也会在当前设备的浏览器 outbox 中保留录音，重新打开 CMX 后继续补写。只有本机 outbox 被清除、持续不可用，或语音来自别的客户端时，帮工才补上一条回复——效果仍是飞书那样的「语音气泡 + 文字」，只是署名是帮工而不是你。**源动态正文只要有文字（HTML 去标签后非空），帮工就直接记账跳过**，绝不重复贴一遍转写。
 
@@ -241,12 +241,12 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 
 音频与转写内容只在本机处理，**不经过任何云端模型**；模型也**永不自动下载**。
 
-- 装可选依赖：在 `mcp\` 下执行 `.venv\Scripts\pip install -e .[workers]`，安装 faster-whisper >=1.1 与 OpenCC；主安装仍不携带转写依赖；
+- 装可选依赖：在 `mcp\` 下执行 `.venv\Scripts\pip install -e .[workers]`，安装 faster-whisper >=1.1、OpenCC 与 WebSocket 客户端；主安装仍不携带转写依赖；
 - 备模型：自行准备一个 CTranslate2 格式的 faster-whisper 模型目录（中文准确率优先可选择比 `small` 更强的本地模型），目录必须含非空 `model.bin`；程序永不按模型名联网下载；
 - 中文默认：`CMX_WHISPER_LANGUAGE=zh`（默认值）、简体中文初始提示、热词 `CMX, PI OS`、beam 5、VAD，输出再经 OpenCC 转简体并清理汉字间空格；同一进程复用已加载模型，第二条开始不再重复冷启动；
-- 配环境变量：`CMX_WHISPER_MODEL_DIR` 必填；可选 `CMX_WHISPER_DEVICE`（默认 `cpu`）、`CMX_WHISPER_COMPUTE`（默认 `int8`）、`CMX_WHISPER_LANGUAGE`（设 `auto` 或空值可恢复自动识别）、`CMX_WHISPER_INITIAL_PROMPT`、`CMX_WHISPER_HOTWORDS`、`CMX_WHISPER_BEAM_SIZE`（1–10）、`CMX_WORKER_POLL_SECONDS`（默认 120，范围 30–3600）、`CMX_WHISPER_MAX_SECONDS`（默认 1800）、`CMX_WORKER_MAX_AUDIO_BYTES`（默认 200MB）；
+- 配环境变量：`CMX_QWEN_ASR_URL` 可指向本机 CapsWriter WebSocket（例如 `ws://127.0.0.1:6016`），`CMX_QWEN_ASR_TIMEOUT` 默认 30 秒；Qwen 请求固定识别语言为 Chinese，输出经 OpenCC 转简体。`CMX_WHISPER_MODEL_DIR` 供 worker 启动检查及 faster-whisper 兜底使用；其余可选项为 `CMX_WHISPER_DEVICE`（默认 `cpu`）、`CMX_WHISPER_COMPUTE`（默认 `int8`）、`CMX_WHISPER_LANGUAGE`（设 `auto` 或空值可恢复自动识别）、`CMX_WHISPER_INITIAL_PROMPT`、`CMX_WHISPER_HOTWORDS`、`CMX_WHISPER_BEAM_SIZE`（1–10）、`CMX_WORKER_POLL_SECONDS`（默认 120，范围 30–3600）、`CMX_WHISPER_MAX_SECONDS`（默认 1800）、`CMX_WORKER_MAX_AUDIO_BYTES`（默认 200MB）；
 - 启停：`worker-start.ps1 -BotId gpt` 启动，`worker-stop.ps1 -BotId gpt` 停止，`worker-status.ps1 -BotId gpt` 看状态；日志按天写入 `runtime\logs\worker-<bot>-<日期>.log`；PID 文件为 `runtime\cmx-worker-<bot>.pid`，重启后 PID 复用会被识别为过期记录，绝不误杀陌生进程；
-- 只跑一轮（冒烟）：`.venv\Scripts\cmx-worker.exe --bot gpt --once`。
+- 只跑一轮（冒烟）：`.venv\Scripts\cmx-worker.exe --bot gpt --once`。日志会标明 `ASR engine=qwen3-asr` 或 `ASR engine=faster-whisper`；Qwen 服务本身由 CapsWriter-Offline 独立启动和常驻，CMX 不负责复制、下载或管理模型。
 
 边界：
 
@@ -275,8 +275,8 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 `POST /files/transcribe`（走既有 `/files/` 路由，**不需要改 Nginx**）：
 
 - 鉴权：读 `Authorization: Bearer <token>`，这是**调用者自己的网页登录态 token**，服务端拿它去本实例 `GET /api/v1/accounts/verify_credentials` 临时校验，非 200 即 401；**这个 token 不入库、不写日志、不落盘**，用完即弃；
-- 转写：仍是**本机** faster-whisper，复用帮工全部 `CMX_WHISPER_*` 配置与 `CMX_WORKER_MAX_AUDIO_BYTES` 上限；音频写到 `runtime\voice-tmp\`，用完即删，模型在服务进程内常驻复用；
-- 模型目录未配置、缺少非空 `model.bin` → 503 `transcriber_unavailable`（录音留在浏览器 outbox）；转写器报错 → 502 带错误码；
+- 转写：优先调用 `CMX_QWEN_ASR_URL` 指向的本机 Qwen3-ASR 服务，失败时回退**本机** faster-whisper；发送给 Qwen 前做最小 16 kHz 音频活动检查，并拒绝 Qwen 原样回显 context 的结果；音频写到 `runtime\voice-tmp\`，用完即删，Qwen 模型由 CapsWriter 服务常驻，Whisper 模型在 CMX 进程内复用；
+- 静音、录音过短、无有效活动或 Qwen 返回空/纯 context 时返回 `no_speech` 与空 `text`，HTTP 状态保持 200，网页不会编辑出脑补文字；Qwen 服务不可用时会明确记录并回退 Whisper；两者都不可用才返回 503 `transcriber_unavailable` 或 502 转写错误（录音留在浏览器 outbox）；
 - **注意**：`CMX_WHISPER_MODEL_DIR` 是给 `cmx-mcp-http` 服务进程读的——**新设或改了这个变量必须重启 `cmx-mcp-http`（`http-stop.ps1` + `http-start.ps1`）**，否则它看不到该变量，网页录音键发出的语音永远补不上文字（只能靠帮工兜底）。
 
 手机怎么用：
@@ -295,7 +295,7 @@ v20 同源脚本除语音外，还被动观察 Mastodon 原生图片上传和发
 - Gemini 是可选增强，key 经 `cmx-admin gemini-key` 写入 DPAPI 文件，不进 Git/环境变量/shell 历史；
 - `CMX_GEMINI_DAILY_LIMIT=100` 按 UTC 日计尝试次数；值为 `0` 可禁用云端，超限、未配 key 或 Gemini 失败时仅降级为本机 OCR，不影响发布；
 - SQLite schema v7 的 `image_recognition` 按图片 SHA-256 共享缓存，`status_media` 映射 Mastodon 附件，`gemini_daily_usage` 只存 UTC 日计数；
-- Owner 原生 `/api/v2/search` 同时查正文与 media description，可按 OCR、画面描述或关键词找回动态；非 Owner 保持上游搜索行为。
+- 网页与 MCP 搜索都用当前居民 token 刷新既有 SQLite `status_cache`：首次分页读取 home 并记录独立水位，后续以 `min_id` 只读取新 home 动态；本人动态仍分页读取。SQLite LIKE 优先，结果不足时用 RapidFuzz 中文 typo 与 pypinyin 小写无声调全拼/首字母 fallback；拼音派生值只保留在进程内有界缓存。可按正文、媒体 alt、OCR、画面描述或关键词找回动态；不直连 PostgreSQL。
 
 原生 Mastodon App 不加载 Nginx 注入脚本，因此不会自动触发识图。修改该脚本时必须同步递增 `VOICE_WIDGET_VERSION` 与 Nginx 的 `cmx-v=<版本>`，避免 Cloudflare 边缘缓存继续发送旧脚本。
 

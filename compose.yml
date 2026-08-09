@@ -54,7 +54,6 @@ services:
     volumes:
       - ./data/media:/mastodon/public/system
       - ./mastodon-overrides/v4.6.4/app/validators/status_length_validator.rb:/opt/mastodon/app/validators/status_length_validator.rb:ro
-      - ./mastodon-overrides/v4.6.4/config/initializers/cmx_owner_search.rb:/opt/mastodon/config/initializers/cmx_owner_search.rb:ro
     expose:
       - "3000"
     networks:

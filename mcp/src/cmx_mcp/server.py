@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import secrets
 import time
@@ -27,6 +28,9 @@ from .scope import READ_SCOPE, SOCIAL_SCOPE, require_request_scope
 
 BasicInteractAction = Literal["like", "unlike", "bookmark", "unbookmark", "vote"]
 BoostInteractAction = Literal["like", "unlike", "bookmark", "unbookmark", "vote", "boost", "unboost"]
+SEARCH_REFRESH_PAGE_SIZE = 30
+SEARCH_HOME_WATERMARK_FEED = "search_home"
+_LOGGER = logging.getLogger(__name__)
 
 
 class Runtime:
@@ -528,14 +532,30 @@ def _build_remote_server(
 
     @mcp.tool()
     def cmx_search(query: str, limit: int = 5, ctx: Context = None) -> dict:
-        """Search only this resident's previously read, non-direct cache."""
+        """Refresh and search this resident's locally mirrored CMX statuses."""
         read_scope(ctx)
         query = query.strip()
         if not query:
             raise ValueError("query is required")
         requested = _limit(limit, 20)
-        candidates = runtime.db.search_statuses(runtime.bot.bot_id, query, min(requested * 3, 60))
+        timings: dict[str, float] = {}
+        self_author_id = refresh_search_cache(
+            runtime.db,
+            runtime.bot.bot_id,
+            runtime.client,
+            page_size=SEARCH_REFRESH_PAGE_SIZE,
+            timings=timings,
+        )
+        started = time.perf_counter()
+        candidates = runtime.db.search_statuses(
+            runtime.bot.bot_id,
+            query,
+            min(requested * 3, 60),
+            self_author_id=self_author_id,
+        )
+        timings["sqlite_search_ms"] = (time.perf_counter() - started) * 1000
         items: list[dict] = []
+        started = time.perf_counter()
         for cached in candidates:
             status_id = str(cached.get("id") or "")
             if not status_id:
@@ -552,8 +572,18 @@ def _build_remote_server(
             items.append(compact_v2_status(raw))
             if len(items) >= requested:
                 break
-        return {"items": items, "scope": "cache",
-                "coverage": "statuses previously read by this resident MCP"}
+        timings["revalidate_ms"] = (time.perf_counter() - started) * 1000
+        _LOGGER.info(
+            "cmx_search timing bot_id=%s refresh_home_ms=%.1f refresh_own_ms=%.1f "
+            "sqlite_search_ms=%.1f revalidate_ms=%.1f",
+            runtime.bot.bot_id,
+            timings.get("refresh_home_ms", 0.0),
+            timings.get("refresh_own_ms", 0.0),
+            timings["sqlite_search_ms"],
+            timings["revalidate_ms"],
+        )
+        return {"items": items, "scope": "resident",
+                "coverage": "current resident-visible CMX statuses mirrored locally"}
 
     if profile in {"social", "social_plus"}:
         if polls:
@@ -613,6 +643,73 @@ def _json_cost(value: Any) -> int:
 def _status_sort_key(raw: dict[str, Any]) -> tuple[int, str]:
     value = str(raw.get("id") or "")
     return (int(value), value) if value.isdigit() else (0, value)
+
+
+def refresh_search_cache(
+    db: Database,
+    bot_id: str,
+    client: MastodonClient,
+    *,
+    page_size: int = SEARCH_REFRESH_PAGE_SIZE,
+    timings: dict[str, float] | None = None,
+) -> str:
+    """Mirror the small, current resident-visible search corpus through REST.
+
+    The home timeline supplies what this resident can read; their account
+    timeline also supplies self/private diary entries which a home feed need
+    not show.  Every request uses the caller's existing Mastodon token.
+    """
+    if not 1 <= page_size <= 40:
+        raise ValueError("search refresh page_size must be between 1 and 40")
+    account = client.verify_credentials()
+    self_author_id = str(account.get("id") or "")
+    if not self_author_id:
+        raise RuntimeError("Mastodon credentials returned no account id")
+
+    def cache_pages(fetch: Any) -> str | None:
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        newest_id: str | None = None
+        while True:
+            page = fetch(cursor)
+            if page.items:
+                db.cache_statuses(bot_id, [compact_status(item) for item in page.items])
+                if newest_id is None:
+                    newest_id = str(page.items[0].get("id") or "") or None
+            next_cursor = page.next_cursor
+            if not next_cursor:
+                return newest_id
+            if next_cursor in seen_cursors:
+                raise RuntimeError("Mastodon search refresh pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+    started = time.perf_counter()
+    home_watermark = db.get_browse_watermark(bot_id, feed=SEARCH_HOME_WATERMARK_FEED)
+    if home_watermark is None:
+        newest_home_id = cache_pages(
+            lambda max_id: client.home_timeline(limit=page_size, max_id=max_id)
+        )
+    else:
+        page = client.home_timeline(limit=page_size, min_id=home_watermark)
+        if page.items:
+            db.cache_statuses(bot_id, [compact_status(item) for item in page.items])
+            newest_home_id = str(page.items[0].get("id") or "") or None
+        else:
+            newest_home_id = None
+    if newest_home_id:
+        db.set_browse_watermark(bot_id, newest_home_id, feed=SEARCH_HOME_WATERMARK_FEED)
+    if timings is not None:
+        timings["refresh_home_ms"] = (time.perf_counter() - started) * 1000
+    started = time.perf_counter()
+    cache_pages(
+        lambda max_id: client.account_statuses(
+            self_author_id, limit=page_size, max_id=max_id
+        )
+    )
+    if timings is not None:
+        timings["refresh_own_ms"] = (time.perf_counter() - started) * 1000
+    return self_author_id
 
 
 def _remote_timeline_funnel(runtime: Runtime, requested_limit: int | None = None) -> dict[str, Any]:

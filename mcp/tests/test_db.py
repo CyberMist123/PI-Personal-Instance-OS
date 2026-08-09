@@ -42,17 +42,38 @@ def test_search_matches_chinese_substrings_not_only_whole_sentences(tmp_path: Pa
     assert db.search_statuses("gpt", "游泳", 5) == []
 
 
+def test_chinese_substring_search_survives_an_fts_zero_result(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [{"id": "1", "account": {"acct": "a"}, "text": "今天去Commonwealth修自行车然后买了饮料"}])
+    with db.connect() as raw:
+        assert raw.execute("SELECT status_id FROM status_fts WHERE status_fts MATCH ?", ("修自行",)).fetchall() == []
+    assert [item["id"] for item in db.search_statuses("gpt", "修自行", 5)] == ["1"]
+    assert [item["id"] for item in db.search_statuses("gpt", "Common", 5)] == ["1"]
+
+
 def test_search_never_reaches_direct_or_self_entries(tmp_path: Path):
     db = Database(tmp_path / "cmx.sqlite3")
     db.initialize()
     db.cache_statuses(
         "gpt",
         [
-            {"id": "d", "account": {"acct": "a"}, "text": "烧菜的秘密", "visibility": "direct"},
+            {"id": "d", "account": {"id": "other", "acct": "a"}, "text": "烧菜的秘密", "visibility": "direct"},
             {"id": "p", "account": {"acct": "a"}, "text": "烧菜的公开笔记", "visibility": "private"},
         ],
     )
     assert [item["id"] for item in db.search_statuses("gpt", "烧菜", 5)] == ["p"]
+
+
+def test_search_includes_only_the_current_residents_own_direct_diary(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [
+        {"id": "mine", "account": {"id": "self", "acct": "gpt"}, "text": "自己的秘密日记", "visibility": "direct"},
+        {"id": "other", "account": {"id": "other", "acct": "alice"}, "text": "别人的秘密日记", "visibility": "direct"},
+    ])
+    assert [item["id"] for item in db.search_statuses("gpt", "秘密日记", 5, self_author_id="self")] == ["mine"]
+    assert db.search_statuses("gpt", "自己的秘密日记", 5) == []
 
 
 def test_search_treats_like_wildcards_as_literal_characters(tmp_path: Path):
@@ -89,6 +110,57 @@ def test_search_finds_a_status_by_text_recognised_inside_its_image(tmp_path: Pat
     db.link_status_media("s1", "m1", "sha-menu")
     assert [item["id"] for item in db.search_statuses("gpt", "鸡翅", 5)] == ["s1"]
     assert db.search_statuses("gpt", "红烧肉", 5) == []
+
+
+def test_search_finds_media_alt_and_voice_transcript_alt(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [
+        {"id": "image", "account": {"acct": "a"}, "text": "照片", "media": [{"description": "图片里写着 Commonwealth 单车维修"}]},
+        {"id": "voice", "account": {"acct": "a"}, "text": "明早去海边跑步", "media": [{"description": "明早去海边跑步"}]},
+    ])
+    assert [item["id"] for item in db.search_statuses("gpt", "单车维修", 5)] == ["image"]
+    assert [item["id"] for item in db.search_statuses("gpt", "海边跑步", 5)] == ["voice"]
+
+
+def test_search_fuzzy_chinese_and_pinyin_cover_status_media_ocr_and_voice(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [
+        {"id": "sweep", "account": {"acct": "a"}, "text": "今天做了一次大扫除", "created_at": "2026-08-10T00:00:00Z"},
+        {"id": "pasta", "account": {"acct": "a"}, "text": "晚餐吃意大利面", "created_at": "2026-08-09T00:00:00Z"},
+        {"id": "image", "account": {"acct": "a"}, "text": "照片", "media": [{"description": "图片里的青柠汽水"}]},
+        {"id": "voice", "account": {"acct": "a"}, "text": "语音转写：明早去海边跑步"},
+    ])
+    db.record_local_ocr("sha-menu", text="蜂蜜柠檬脆皮鸡翅", line_count=1, mean_confidence=0.9)
+    db.link_status_media("image", "m1", "sha-menu")
+
+    assert [item["id"] for item in db.search_statuses("gpt", "大扫除", 1)] == ["sweep"]
+    assert [item["id"] for item in db.search_statuses("gpt", "大扫厨", 1)] == ["sweep"]
+    assert [item["id"] for item in db.search_statuses("gpt", "意大力面", 1)] == ["pasta"]
+    assert [item["id"] for item in db.search_statuses("gpt", "dasaochu", 1)] == ["sweep"]
+    assert [item["id"] for item in db.search_statuses("gpt", "dasaocu", 1)] == ["sweep"]
+    assert [item["id"] for item in db.search_statuses("gpt", "dsc", 1)] == ["sweep"]
+    assert [item["id"] for item in db.search_statuses("gpt", "qingningqishui", 1)] == ["image"]
+    assert [item["id"] for item in db.search_statuses("gpt", "haibianpaobu", 1)] == ["voice"]
+    assert [item["id"] for item in db.search_statuses("gpt", "fengminingmengcuipijichi", 1)] == ["image"]
+
+
+def test_search_keeps_exact_before_fuzzy_deduplicates_and_filters_direct(tmp_path: Path):
+    db = Database(tmp_path / "cmx.sqlite3")
+    db.initialize()
+    db.cache_statuses("gpt", [
+        {"id": "exact", "account": {"acct": "a"}, "text": "大扫厨的错字记录", "created_at": "2026-08-10T00:00:00Z"},
+        {"id": "fuzzy", "account": {"acct": "a"}, "text": "今天做了一次大扫除", "created_at": "2026-08-09T00:00:00Z"},
+        {"id": "hidden", "account": {"id": "other", "acct": "b"}, "text": "今天做了一次大扫除", "visibility": "direct"},
+    ])
+    db.record_local_ocr("sha-1", text="大扫除", line_count=1, mean_confidence=0.9)
+    db.record_local_ocr("sha-2", text="大扫除", line_count=1, mean_confidence=0.9)
+    db.link_status_media("fuzzy", "m1", "sha-1")
+    db.link_status_media("fuzzy", "m2", "sha-2")
+
+    assert [item["id"] for item in db.search_statuses("gpt", "大扫厨", 5)] == ["exact", "fuzzy"]
+    assert [item["id"] for item in db.search_statuses("gpt", "dasaochu", 5)] == ["exact", "fuzzy"]
 
 
 def test_image_text_cannot_pull_a_direct_status_into_results(tmp_path: Path):

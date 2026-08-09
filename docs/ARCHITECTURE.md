@@ -54,7 +54,7 @@ Mastodon Rails Web 服务：
 - 账号、设置和后台管理；
 - 页面与静态资源；
 - 图片上传请求；
-- 通过 v4.6.4 版本锁定 initializer，让 `CMX_SITE_SEARCH_OWNER_USERNAME` 明确指定的本地 Owner 在原生 `/api/v2/search` 中对动态正文与媒体 alt 使用 PostgreSQL `ILIKE` 子串搜索；其他账号保持上游搜索行为；
+- 搜索框保留 Mastodon 原生界面：Mastodon 4.6 经 Axios/XHR 请求 `/api/v2/search`，Nginx 精确代理到同源 `/files/search?format=mastodon`。当前网页 token 首次经该共享搜索层分页读取可见 home REST 动态到既有 SQLite，后续以独立水位的 `min_id` 读取新增动态；SQLite LIKE 优先，结果不足时在同一 cache 做 RapidFuzz 中文 typo 与 pypinyin 全拼/首字母检索正文、媒体 alt 与已持久化 OCR/vision 文字，并返回原生的四个结果数组；
 - 根据启动时读取的 `WEB_DOMAIN` 生成 URL、CSP、WebAuthn origin 和网页元数据。
 
 域名切换后必须 recreate。
@@ -133,13 +133,13 @@ CMX 是未来的移动网页体验层，不是新的数据后端。
 - 不硬编码 `WEB_DOMAIN`；
 - 不注册长期绑定某门牌的 OAuth application。
 
-已实现的网页增量不是独立前端：Nginx 只注入一个同源脚本，它被动观察 Mastodon 原生语音/图片发布。图片链为：
+已实现的网页增量不是独立前端：Nginx 注入同源脚本，分别提供语音/图片与本地搜索能力。图片链为：
 
 ```text
 POST /api/v2/media 成功 → Blob 写入当前浏览器 IndexedDB outbox
 POST /api/v1/statuses 成功 → 后台 POST /files/recognize
 本机 RapidOCR → 可选 Gemini 校正/画面理解 → PUT /api/v1/statuses/<id> 写回媒体 alt
-Owner 原生搜索 → PostgreSQL 正文 + media description ILIKE
+网页搜索 → 当前页 token 首次 REST 全量刷新、后续 `min_id` 增量刷新 → SQLite 正文、媒体 alt、OCR/vision 子串检索
 ```
 
 发布不等识图；失败保留 outbox 后续重试。页 bearer 只在当次同源请求中临时使用，不入 SQLite。识别结果按图片 SHA-256 共享缓存；Gemini 尝试按 UTC 日计数，超限仅降级本机 OCR。原生 App 不加载该脚本。

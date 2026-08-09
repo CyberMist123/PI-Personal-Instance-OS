@@ -12,6 +12,8 @@ license = { text = "MIT" }
 dependencies = [
   "mcp>=1,<2",
   "httpx>=0.27,<1",
+  "rapidfuzz>=3,<4",
+  "pypinyin>=0.55,<1",
 ]
 
 [project.scripts]
@@ -26,6 +28,7 @@ cmx-worker = "cmx_mcp.workers:main"
 workers = [
   "faster-whisper>=1.1",
   "opencc-python-reimplemented>=0.1.7",
+  "websockets>=14,<16",
 ]
 vision = [
   "rapidocr>=3.9",

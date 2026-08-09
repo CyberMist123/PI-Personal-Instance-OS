@@ -7,7 +7,7 @@ import pytest
 
 from cmx_mcp.compact import compact_v2_status
 from cmx_mcp.mastodon_client import MastodonApiError, MastodonClient
-from cmx_mcp.server import build_server
+from cmx_mcp.server import build_server, refresh_search_cache
 from cmx_mcp.scope import READ_SCOPE, SOCIAL_SCOPE, require_request_scope
 from cmx_mcp.server import _remote_post
 from cmx_mcp.server import _remote_interact
@@ -84,10 +84,15 @@ def test_remote_search_revalidates_candidates_and_removes_forbidden_cache():
     runtime = _runtime()
     class DB:
         def __init__(self): self.removed = []
-        def search_statuses(self, bot_id, query, limit): return [{"id": "gone"}, {"id": "forbidden"}, {"id": "ok"}]
+        def get_browse_watermark(self, *_args, **_kwargs): return None
+        def set_browse_watermark(self, *_args, **_kwargs): pass
+        def search_statuses(self, bot_id, query, limit, *, self_author_id=None): return [{"id": "gone"}, {"id": "forbidden"}, {"id": "ok"}]
         def invalidate_status(self, bot_id, status_id): self.removed.append((bot_id, status_id))
         def cache_statuses(self, bot_id, statuses): pass
     class Client:
+        def verify_credentials(self): return {"id": "self"}
+        def home_timeline(self, **kwargs): return SimpleNamespace(items=[], next_cursor=None)
+        def account_statuses(self, *args, **kwargs): return SimpleNamespace(items=[], next_cursor=None)
         def get_status(self, status_id):
             if status_id == "gone": raise MastodonApiError("Mastodon API GET /api/v1/statuses/gone returned 404 Not Found")
             if status_id == "forbidden": raise MastodonApiError("Mastodon API GET /api/v1/statuses/forbidden returned 403 Forbidden", status_code=403)
@@ -110,15 +115,97 @@ def test_remote_search_revalidates_candidates_and_removes_forbidden_cache():
 def test_remote_search_propagates_non_visibility_errors(error):
     runtime = _runtime()
     class DB:
-        def search_statuses(self, bot_id, query, limit): return [{"id": "candidate"}]
+        def get_browse_watermark(self, *_args, **_kwargs): return None
+        def set_browse_watermark(self, *_args, **_kwargs): pass
+        def search_statuses(self, bot_id, query, limit, *, self_author_id=None): return [{"id": "candidate"}]
+        def cache_statuses(self, *args): pass
         def invalidate_status(self, *args): raise AssertionError("non-visibility error was cleared")
     class Client:
+        def verify_credentials(self): return {"id": "self"}
+        def home_timeline(self, **kwargs): return SimpleNamespace(items=[], next_cursor=None)
+        def account_statuses(self, *args, **kwargs): return SimpleNamespace(items=[], next_cursor=None)
         def get_status(self, status_id): raise error
     runtime.db, runtime.client = DB(), Client()
     server = build_server(runtime, remote_profile="reader", remote_capabilities=runtime.bot)
     with pytest.raises(MastodonApiError) as caught:
         server._tool_manager.get_tool("cmx_search").fn("query", 1, _ScopeContext())
     assert caught.value is error
+
+
+def test_remote_search_refreshes_paginated_timeline_and_own_direct_diary(tmp_path):
+    runtime = _runtime()
+    runtime.db = Database(tmp_path / "search.sqlite3")
+    runtime.db.initialize()
+    timeline = [
+        {"id": "new", "created_at": "2026-08-02T00:00:00Z", "content": "<p>无关</p>", "visibility": "private", "account": {"id": "other", "acct": "other"}},
+        {"id": "wanted", "created_at": "2026-08-01T00:00:00Z", "content": "<p>今天修自行车后买饮料</p>", "visibility": "private", "account": {"id": "other", "acct": "other"}},
+    ]
+    diary = {"id": "diary", "created_at": "2026-08-03T00:00:00Z", "content": "<p>只给自己看的语音转写：明早买咖啡</p>", "visibility": "direct", "account": {"id": "self", "acct": "gpt"}}
+
+    class Client:
+        def __init__(self): self.home_calls = []; self.mine_calls = []
+        def verify_credentials(self): return {"id": "self", "acct": "gpt"}
+        def home_timeline(self, *, limit, max_id=None, min_id=None):
+            self.home_calls.append((limit, max_id, min_id))
+            if min_id is not None:
+                return SimpleNamespace(items=[], next_cursor=None)
+            return SimpleNamespace(items=[timeline[0]] if max_id is None else [timeline[1]], next_cursor="older" if max_id is None else None)
+        def account_statuses(self, account_id, *, limit, max_id=None):
+            self.mine_calls.append((account_id, limit, max_id))
+            return SimpleNamespace(items=[diary] if max_id is None else [], next_cursor=None)
+        def get_status(self, status_id): return {item["id"]: item for item in [*timeline, diary]}[status_id]
+
+    runtime.client = Client()
+    tool = build_server(runtime, remote_profile="reader", remote_capabilities=runtime.bot)._tool_manager.get_tool("cmx_search")
+    assert [item["id"] for item in tool.fn("修自形", 5, _ScopeContext())["items"]] == ["wanted"]
+    assert [item["id"] for item in tool.fn("买咖啡", 5, _ScopeContext())["items"]] == ["diary"]
+    assert runtime.client.home_calls[:2] == [(30, None, None), (30, "older", None)]
+    assert runtime.client.home_calls[2] == (30, None, "new")
+    assert runtime.client.mine_calls[0] == ("self", 30, None)
+
+
+def test_search_refresh_without_watermark_pages_home_and_records_latest_id(tmp_path):
+    db = Database(tmp_path / "search.sqlite3"); db.initialize()
+    first = {"id": "20", "created_at": "2026-08-02T00:00:00Z", "content": "<p>first page</p>", "visibility": "private", "account": {"id": "other", "acct": "other"}}
+    older = {"id": "10", "created_at": "2026-08-01T00:00:00Z", "content": "<p>older page</p>", "visibility": "private", "account": {"id": "other", "acct": "other"}}
+
+    class Client:
+        def __init__(self): self.home_calls = []
+        def verify_credentials(self): return {"id": "self"}
+        def home_timeline(self, *, limit, max_id=None, min_id=None):
+            self.home_calls.append((limit, max_id, min_id))
+            return SimpleNamespace(
+                items=[first] if max_id is None else [older],
+                next_cursor="older" if max_id is None else None,
+            )
+        def account_statuses(self, *_args, **_kwargs): return SimpleNamespace(items=[], next_cursor=None)
+
+    client = Client()
+    assert refresh_search_cache(db, "gpt", client) == "self"
+    assert client.home_calls == [(30, None, None), (30, "older", None)]
+    assert db.get_browse_watermark("gpt", feed="search_home") == "20"
+    assert [item["id"] for item in db.search_statuses("gpt", "older page", 5)] == ["10"]
+
+
+def test_search_refresh_uses_watermark_min_id_and_advances_without_old_pages(tmp_path):
+    db = Database(tmp_path / "search.sqlite3"); db.initialize()
+    db.set_browse_watermark("gpt", "20", feed="search_home")
+    newest = {"id": "30", "created_at": "2026-08-03T00:00:00Z", "content": "<p>newly visible</p>", "visibility": "private", "account": {"id": "other", "acct": "other"}}
+
+    class Client:
+        def __init__(self): self.home_calls = []
+        def verify_credentials(self): return {"id": "self"}
+        def home_timeline(self, *, limit, max_id=None, min_id=None):
+            self.home_calls.append((limit, max_id, min_id))
+            assert max_id is None and min_id == "20"
+            return SimpleNamespace(items=[newest], next_cursor="must-not-follow")
+        def account_statuses(self, *_args, **_kwargs): return SimpleNamespace(items=[], next_cursor=None)
+
+    client = Client()
+    refresh_search_cache(db, "gpt", client)
+    assert client.home_calls == [(30, None, "20")]
+    assert db.get_browse_watermark("gpt", feed="search_home") == "30"
+    assert [item["id"] for item in db.search_statuses("gpt", "newly", 5)] == ["30"]
 
 
 def test_remote_post_does_not_reject_or_truncate_long_url_text():

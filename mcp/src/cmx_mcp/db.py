@@ -1,17 +1,74 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
+from functools import lru_cache
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from pypinyin import Style, lazy_pinyin
+from rapidfuzz import fuzz
+
+
+FUZZY_CHINESE_RATIO_THRESHOLD = 66
+FUZZY_PINYIN_RATIO_THRESHOLD = 85
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_PINYIN_RE = re.compile(r"[^a-z0-9]")
+
 
 def _escape_like(value: str) -> str:
     """Neutralise LIKE wildcards so a query of `50%` looks for those three characters."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@lru_cache(maxsize=2048)
+def _pinyin_forms(value: str) -> tuple[str, str]:
+    parts = lazy_pinyin(value, style=Style.NORMAL, errors="default")
+    full = _PINYIN_RE.sub("", "".join(parts).lower())
+    if not _CJK_RE.search(value):
+        return full, full
+    initials = _PINYIN_RE.sub("", "".join(part[:1] for part in parts).lower())
+    return full, initials
+
+
+def _pinyin_full(value: str) -> str:
+    return _pinyin_forms(value)[0]
+
+
+def _pinyin_initials(value: str) -> str:
+    return _pinyin_forms(value)[1]
+
+
+def _media_text(payload: dict[str, Any]) -> str:
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"description", "alt"} and isinstance(child, str):
+                    values.append(child)
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(payload.get("media") or payload.get("media_attachments") or [])
+    return "\n".join(values)
+
+
+def _chinese_fuzzy_ratio(query: str, values: Iterable[str]) -> float:
+    width = len(query)
+    if width < 2:
+        return 0.0
+    best = 0.0
+    for value in values:
+        for index in range(max(0, len(value) - width + 1)):
+            best = max(best, fuzz.ratio(query, value[index:index + width]))
+    return best
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +265,15 @@ class Database:
         with self.connect() as db:
             row = db.execute("SELECT timeline_watermark FROM browse_state WHERE bot_id=? AND feed=?", (bot_id, feed)).fetchone()
         return str(row[0]) if row and row[0] is not None else None
+
+    def set_browse_watermark(self, bot_id: str, watermark: str, feed: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO browse_state(bot_id,feed,timeline_watermark,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(bot_id,feed) DO UPDATE SET "
+                "timeline_watermark=excluded.timeline_watermark,updated_at=excluded.updated_at",
+                (bot_id, feed, watermark, int(time.time())),
+            )
 
     def commit_browse(self, *, bot_id: str, feed: str, expected_watermark: str | None,
                       watermark: str | None, seen_ids: list[str], visit_id: str,
@@ -528,8 +594,15 @@ class Database:
                         (bot_id, status_id, str(account.get("acct") or ""), text, spoiler),
                     )
 
-    def search_statuses(self, bot_id: str, query: str, limit: int) -> list[dict[str, Any]]:
-        """Substring-match this bot's non-direct cache, newest first.
+    def search_statuses(
+        self,
+        bot_id: str,
+        query: str,
+        limit: int,
+        *,
+        self_author_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search this bot's visible cache, keeping literal substring hits first.
 
         Deliberately a scan rather than `status_fts MATCH`. FTS5's unicode61
         tokenizer does not segment CJK, so a run of Chinese becomes a single
@@ -544,35 +617,100 @@ class Database:
         stays on the outer table, so a direct status is excluded no matter what
         its attachments contain.
 
-        `visibility IS NOT 'direct'` mirrors what cache_statuses indexes, and is
-        null-safe: statuses cached without a visibility count as non-direct.
-        `self` diaries ride on Mastodon's direct visibility, so they stay out too.
+        Media alt text is retained in compact status payloads.  Searching that
+        JSON is deliberately narrow in purpose: it adds the already-persisted
+        media descriptions without another content store or schema change.
+
+        Direct statuses stay excluded by default.  A direct status authored by
+        `self_author_id` is the caller's own self-diary, obtained through that
+        same resident token and stored under that resident's cache key, so it is
+        safe to include without exposing another participant's direct message.
         """
         pattern = f"%{_escape_like(query)}%"
         with self.connect() as db:
             rows = db.execute(
                 """
                 SELECT payload_json FROM status_cache c
-                WHERE c.bot_id=? AND c.visibility IS NOT 'direct' AND (
-                    c.text LIKE ?2 ESCAPE '\\'
-                    OR c.spoiler_text LIKE ?2 ESCAPE '\\'
-                    OR c.author_acct LIKE ?2 ESCAPE '\\'
+                WHERE c.bot_id=?1
+                  AND (c.visibility IS NOT 'direct' OR (?2 != '' AND c.author_id=?2))
+                  AND (
+                    c.text LIKE ?3 ESCAPE '\\'
+                    OR c.spoiler_text LIKE ?3 ESCAPE '\\'
+                    OR c.author_acct LIKE ?3 ESCAPE '\\'
+                    OR c.payload_json LIKE ?3 ESCAPE '\\'
                     OR EXISTS (
                         SELECT 1 FROM status_media m
                         JOIN image_recognition r ON r.image_sha256 = m.image_sha256
                         WHERE m.status_id = c.status_id AND (
-                            r.local_ocr_text LIKE ?2 ESCAPE '\\'
-                            OR r.cloud_corrected_text LIKE ?2 ESCAPE '\\'
-                            OR r.cloud_description LIKE ?2 ESCAPE '\\'
-                            OR r.search_keywords LIKE ?2 ESCAPE '\\'
+                            r.local_ocr_text LIKE ?3 ESCAPE '\\'
+                            OR r.cloud_corrected_text LIKE ?3 ESCAPE '\\'
+                            OR r.cloud_description LIKE ?3 ESCAPE '\\'
+                            OR r.search_keywords LIKE ?3 ESCAPE '\\'
                         )
                     )
                 )
-                ORDER BY c.created_at DESC LIMIT ?3
+                ORDER BY c.created_at DESC LIMIT ?4
                 """,
-                (bot_id, pattern, limit),
+                (bot_id, self_author_id or "", pattern, limit),
             ).fetchall()
-        return [json.loads(row["payload_json"]) for row in rows]
+            if len(rows) >= limit:
+                return [json.loads(row["payload_json"]) for row in rows]
+            candidates = db.execute(
+                """
+                SELECT c.status_id, c.author_acct, c.text, c.spoiler_text,
+                       c.created_at, c.payload_json,
+                       GROUP_CONCAT(
+                           COALESCE(r.local_ocr_text, '') || '\n' ||
+                           COALESCE(r.cloud_corrected_text, '') || '\n' ||
+                           COALESCE(r.cloud_description, '') || '\n' ||
+                           COALESCE(r.search_keywords, ''), '\n'
+                       ) AS recognition_text
+                FROM status_cache c
+                LEFT JOIN status_media m ON m.status_id = c.status_id
+                LEFT JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                WHERE c.bot_id=?1
+                  AND (c.visibility IS NOT 'direct' OR (?2 != '' AND c.author_id=?2))
+                GROUP BY c.bot_id, c.status_id
+                ORDER BY c.created_at DESC
+                """,
+                (bot_id, self_author_id or ""),
+            ).fetchall()
+
+        exact = [json.loads(row["payload_json"]) for row in rows]
+        exact_ids = {str(item.get("id") or "") for item in exact}
+        chinese_query = bool(_CJK_RE.search(query))
+        pinyin_query = "" if chinese_query else _pinyin_full(query)
+        initials_query = "" if chinese_query else _pinyin_initials(query)
+        fuzzy: list[tuple[int, float, str, dict[str, Any]]] = []
+        for row in candidates:
+            payload = json.loads(row["payload_json"])
+            status_id = str(payload.get("id") or "")
+            if not status_id or status_id in exact_ids:
+                continue
+            fields = [
+                str(row["author_acct"] or ""),
+                str(row["text"] or ""),
+                str(row["spoiler_text"] or ""),
+                _media_text(payload),
+                str(row["recognition_text"] or ""),
+            ]
+            if chinese_query:
+                chinese_score = _chinese_fuzzy_ratio(query, fields)
+                if chinese_score >= FUZZY_CHINESE_RATIO_THRESHOLD:
+                    fuzzy.append((2, chinese_score, str(row["created_at"] or ""), payload))
+                continue
+            if not pinyin_query:
+                continue
+            pinyin_text = _pinyin_full("\n".join(fields))
+            initials_text = _pinyin_initials("\n".join(fields))
+            if len(pinyin_query) >= 2 and pinyin_query in pinyin_text:
+                fuzzy.append((1, 100.0, str(row["created_at"] or ""), payload))
+            elif len(pinyin_query) >= 4 and fuzz.partial_ratio(pinyin_query, pinyin_text) >= FUZZY_PINYIN_RATIO_THRESHOLD:
+                fuzzy.append((0, fuzz.partial_ratio(pinyin_query, pinyin_text), str(row["created_at"] or ""), payload))
+            elif len(initials_query) >= 2 and initials_query in initials_text:
+                fuzzy.append((-1, 100.0, str(row["created_at"] or ""), payload))
+        fuzzy.sort(key=lambda match: (match[0], match[1], match[2]), reverse=True)
+        return [*exact, *(payload for _, _, _, payload in fuzzy[:max(0, limit - len(exact))])]
 
     def invalidate_status(self, bot_id: str, status_id: str) -> None:
         """Remove a status and its search row after current-token revalidation fails."""

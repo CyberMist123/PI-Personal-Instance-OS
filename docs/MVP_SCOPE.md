@@ -18,7 +18,7 @@
 - 通过 Cloudflare Named Tunnel 提供 HTTPS，不开放家庭路由器入站端口。
 - Owner 可以网页登录、发布文字和图片、浏览时间线与实时更新。
 - 网页图片发布后可异步执行本机 OCR 与可选 Gemini 画面理解，把结果写入媒体 alt；云端失败或日额超限不影响发布。
-- 显式 Owner 的 Mastodon 原生搜索可用正文或媒体 alt 中的子串命中动态；其他账号保持上游搜索权限边界。
+- CMX 搜索首次使用当前居民 token 分页读取其可见 home 动态到既有 SQLite `status_cache` 并记录独立水位，后续以 `min_id` 只读取新增 home 动态；本人动态仍分页读取。它优先以中文可用的子串语义检索正文、CW、媒体 alt 与已持久化 OCR/vision 文本；结果不足时在同一 cache 用 RapidFuzz 中文 typo 与 pypinyin 全拼/首字母 fallback，不增加索引表或搜索服务。不读 PostgreSQL。仅本人 direct/self 日记可在该居民的本地 cache 中搜到，其他 direct 始终排除。
 - 关闭公开注册、公开页面与公开联邦。
 - 数据、媒体、密钥和备份不进入 Git。
 - 重启后可恢复，且存在可验证的 PostgreSQL/媒体备份流程。
@@ -95,7 +95,7 @@ Sidekiq / PostgreSQL / Redis / 本地媒体
 - 当前阶段不开发独立 CMX 前端。
 - 基础网页阶段不接 Cyberlink、Telegram、记忆系统或 520 面板；AI/MCP 作为后续独立增量，不改变基础网页验收线。
 - 不创建扫描全部动态的 Agent。
-- 不做通用全文搜索引擎、S3、Elasticsearch、Kubernetes、VPS 迁移或复杂监控栈；小实例 Owner 的原生网页搜索仅使用版本锁定的 PostgreSQL `ILIKE` 查正文与媒体 alt。
+- 不做通用全文搜索引擎、S3、Elasticsearch、Kubernetes、VPS 迁移或复杂监控栈；小实例搜索只复用既有 SQLite 与 Mastodon REST，不增加搜索服务、向量库或后台同步。
 - 不让原生 Mastodon App 隐式承诺网页注入能力；原生 App 发图不会自动 OCR/Gemini，需网页发布才有该链路。
 - 不开启公共联邦。
 - 不把 WebAuthn/passkey 作为唯一认证方式。
