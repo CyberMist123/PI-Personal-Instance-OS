@@ -8,17 +8,16 @@ Phase 0、Phase A 与 Phase A+ 已随 #6/#8/#7 合并链于 2026-07-22 进入 `m
 >
 > 包版本：`mcp/pyproject.toml` = `0.3.0rc2`。最后更新：2026-08-10。
 
-### 代码落点（2026-08-10 核对）
+### 代码落点（2026-08-10 核对并收口）
 
-**`main` 之后的全部功能都在 `feat/cmx-files-ask`，一行都没合回 `main`。**
+**全部功能已合回 `main`，仓库只剩一条活线。**
 
-- `origin/main` 停在 2026-07-31 的 `#22`（Mastodon 4.6.4）；`feat/cmx-files-ask` 是 `origin/main` 的严格超集，领先 **145 个非合并提交**，`origin/main` 没有任何它缺的提交。
-- 该分支按时间含：Clip Brain 后端与前端、网页悬浮录音键 v17→v20 与语音条播放器、链接占位符、图片 OCR / Gemini 识图、本地统一搜索（含删除旧的 Owner 全站 PostgreSQL 搜索）、`/files/ask`、loopback 免 bearer、本地 fuzzy/pinyin 搜索、Qwen 转写保护。
-- 磁盘工作区当前就 checkout 在该分支且干净；**目标 Windows 上跑的即是它**，但见下条运行时落后。
+- 起点：`origin/main` 曾停在 2026-07-31 的 `#22`（Mastodon 4.6.4），而此后十天的全部功能积压在 `feat/cmx-files-ask` 上——145 个非合并提交、约 15.7k 行，且**目标 Windows 一直跑的就是该分支**，所以那段时间 `main` 不是可信回滚点。
+- 已于 2026-08-10 经 PR `#35` 合并（merge commit `32ea7c3`），磁盘工作区随即切回 `main`；切换前后 tree 哈希同为 `a6c8f4cb`，**磁盘上没有任何文件发生变化**，服务无需重启。
+- 这批合入的内容：Clip Brain 后端与前端、网页悬浮录音键 v17→v20 与语音条播放器、链接占位符、图片 OCR / Gemini 识图、本地统一搜索（含删除旧的 Owner 全站 PostgreSQL 搜索，收口 issue #31）、`/files/ask`、loopback 免 bearer、本地 fuzzy/pinyin 搜索、Qwen 转写保护。
+- 分支已全部清理，远端只剩 `main` 与 `release/v0.1.0-web-mvp`。归档快照（`archive/main-before-cmx-5000-20260719`、`archive/main-before-cmx-mcp-merge-20260722`）与 Clip Brain 回滚点 `security/mastodon-4.6.4` 经 Owner 明确指示一并删除。两个被取代分支的独有提交在删除前记录如下，短期内仍可按 SHA 找回：`a281ac1`（voice widget v4 CSP 修复，已被 v17→v20 覆盖）、`fc0cc26`（指向已不存在分支的 Clip Brain 交接文档）。
 - 运行时落后**已解决**：`cmx-mcp-http` 原进程启动于 2026-08-10 01:09:02，早于 `881528c`（fuzzy/pinyin，01:27）与 `0587b4d`（Qwen 保护，01:40），因此长期对外跑的是旧行为。2026-08-10 16:18:13 已重启，`/_cmx/mcp-health` 返回 `{"ok":true,"transport":"streamable-http","mode":"profiled","social_enabled":true}`，`mcp\status.ps1 -BotId gpt` 全项通过。重启**未**需要提权。
 - **`http-stop.ps1` 有一个会骗人的分支（2026-08-10 实际踩到，未修）**：它只认 `runtime\cmx-mcp-http.pid`。当该 PID 指向的进程**已经不存在**时，`Get-CimInstance` 返回空，脚本跳过所有判断，直接删掉 PID 文件并打印「CMX remote MCP stopped.」——**而真正在听 8766 的进程还活着**。本次 PID 文件记的是 7776（已死），真身是 37240。既有的 PID-复用加固只覆盖了「PID 被陌生进程占用」，没覆盖「PID 已死但服务仍在」。正确的停止方式是按 **8766 端口属主**回溯到 `cmx-mcp-http.exe` launcher 并杀其进程树（杀 launcher 会带走两个 python 子进程）。另注：PID 文件记的是 launcher PID，实际监听的是它的孙进程 python，两者永远不同号，排查时别对不上就以为出错。
-- 已并入 `main` 且分支可删：`feat/cmx-invite-onboarding`、`feat/cmx-self-diary-filebox`、`feat/cmx-worker-voice`、`fix/cmx-scopeless-grant`、`fix/cmx-sdk-compat-oauth-hardening`、`fix/http-stale-pidfile`、`security/mastodon-4.6.4`。
-- 已被 `feat/cmx-files-ask` 取代、内容陈旧可删：`origin/feat/cmx-voice-widget`（只剩一个 v4 CSP 提交，早被 v17→v20 覆盖）、`origin/demo/clip-brain-site-link`（只剩一个交接文档提交）、`origin/demo/clip-brain-v0`、`codex/cmx-mcp-onboarding`、`feat/cmx-browse-funnel`（远端已 gone）。
 
 ### 本机测试（2026-08-10）
 
@@ -391,8 +390,8 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 12. ~~STDIO MCP 进程堆积~~ — **不是问题，已排除**。本机的 5 个 `cmx-mcp --bot test` STDIO 进程，父进程逐一查证全部是**仍在运行的 `claude.exe`**（本机共 17 个 Claude Code 进程）。每个 Claude Code 会话按配置各起一个自己的 STDIO MCP 服务，属预期行为，不是未回收的孤儿进程。**不要因为「数量多」就去杀它们**，那会打断正在使用的会话。
 12.5. **修 `http-stop.ps1` 的假成功分支**（见「代码落点」）：PID 已死但服务仍在时，它会删掉 PID 文件并报告「已停止」，实际没停。正确做法是回落到按 8766 端口属主定位真身。这条会让任何「停→改→启」的运维流程静默失效，包括 `一键更新.bat`。
 13. **#25：本地 MCP 421 探测与备份版本标签**（小）。
-14. **#28：CapsWriter-Offline 中文转写参考**——Qwen3-ASR 已落地并跑在 6016，该 issue 的目标已达成，**建议直接关闭**。
-15. **分支清理**：见上文「代码落点」列出的两类可删分支。
+14. ~~#28：CapsWriter-Offline 中文转写参考~~ — **已关闭**（2026-08-10）。Qwen3-ASR 已落地并跑在 6016。
+15. ~~分支清理~~ — **已完成**（2026-08-10），远端只剩 `main` 与 `release/v0.1.0-web-mvp`。
 16. **#32 密码管理与网络防控**（大，未拆解）；**#2 后续功能更新**（长期收集箱）。
 
 ### 待外部条件
@@ -403,13 +402,10 @@ MCP 的 SQLite 搜索缓存可以重建，不是 Mastodon 恢复必要条件。`
 
 ## 11. 分支与版本纪律
 
-- `main`：唯一稳定开发与部署入口。**当前它并不是部署入口**——目标 Windows 跑的是 `feat/cmx-files-ask`，`main` 停在 2026-07-31。这是纪律破例，靠上文待办第 3 项收回；
-- `feat/cmx-files-ask`：当前唯一活跃分支，`main` 之后的全部功能都在它上面，磁盘工作区即 checkout 于此；
-- `release/v0.1.0-web-mvp`：基础网页 MVP 固定快照；
-- `archive/main-before-cmx-5000-20260719`：5000 字符改动前的完整 `main` 快照；
-- `archive/main-before-cmx-mcp-merge-20260722`：#6/#8/#7 合并链前的完整 `main` 快照；
-- `security/mastodon-4.6.4` @ `a871628`：Clip Brain 受控部署的回滚点，配合 `backups/phase-c-20260729/`，在 Clip Brain 收口前保留；
-- 功能分支验证后合并并删除；已并入 `main` 或已被 `feat/cmx-files-ask` 取代的分支清单见「代码落点」；
+- `main`：唯一稳定开发与部署入口，且**当前确实如此**——2026-08-10 起磁盘工作区与目标 Windows 运行的都是 `main`；
+- `release/v0.1.0-web-mvp`：基础网页 MVP 固定快照，远端仅存的另一条分支；
+- 归档快照与回滚点分支已按 Owner 指示全部删除，不再维护第二套历史入口。回滚依赖改为：Git 历史本身、`backups/` 下的数据备份，以及 `mastodon-overrides/v4.6.3/` 这类留在树内的版本目录；
+- 功能分支验证后合并并删除，不长期悬挂；
 - 设计过程稿不得长期作为第二套当前事实保留。
 
 ## 12. Agent 更新契约
