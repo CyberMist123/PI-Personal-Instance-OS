@@ -108,7 +108,7 @@ PostgreSQL 保存长期结构化事实：
 - 对 `/sw.js` 强制 `no-cache, no-store, must-revalidate`，并将注册 URL 绑定 Mastodon 版本键，避免门牌前的旧 Service Worker 继续引用已删除 chunk；
 - 保留公网 HTTPS、真实客户端 IP 和 WebSocket 头；
 - 本机调试入口限制在 `127.0.0.1:8080`；
-- 配置不写死公网域名，因此换门牌通常无需 reload。
+- 大部分配置不写死公网域名。**例外：`nginx/default.conf` 注入段的 `Content-Security-Policy` 头目前硬编码了真实公网域名 9 处**（issue #29）。它既是换门牌时必须同步改的地方，也是公开仓库里的隐私泄漏点；PROJECT.md 判断该头很可能可直接删除而非模板化。在删掉或模板化之前，不得声称「Nginx 配置不含公网域名」。
 
 ### `cloudflared`
 
