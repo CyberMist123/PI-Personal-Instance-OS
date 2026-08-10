@@ -1,0 +1,148 @@
+/* Top bar: the 临/★ plate, the single bulk entry, search, and the wordmark
+   pinned to the top right where Mastodon keeps its own. */
+
+.plate {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--pop);
+  background: var(--input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 19px;
+  font-weight: 900;
+  cursor: pointer;
+  user-select: none;
+}
+.plate:hover { background: var(--yellow); border-color: var(--yellow); color: var(--on-accent); }
+.plate[aria-pressed="true"] { background: var(--teal); border-color: var(--teal); color: var(--on-accent); }
+.plate[aria-pressed="true"]:hover { background: var(--wash-t); border-color: var(--teal); color: var(--text); }
+
+.bulk { position: relative; flex: none; }
+
+/* Resting state is outlined, expanded is solid yellow. Both themes therefore
+   show a real change; an earlier draft made dark mode yellow at rest, so
+   opening the menu changed nothing at all. */
+.count-chip {
+  display: flex;
+  align-items: center;
+  height: 42px;
+  padding: 0 17px;
+  border: 2px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--pop);
+  background: var(--input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 900;
+  cursor: pointer;
+  user-select: none;
+}
+.count-chip:hover,
+.count-chip[aria-expanded="true"] {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--on-accent);
+}
+
+.bulk-panel {
+  display: flex;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 7px);
+  z-index: 9;
+  padding: 7px;
+  gap: 3px;
+  flex-direction: column;
+  min-width: 178px;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--pop);
+}
+.bulk-panel[hidden] { display: none; }
+.bulk-panel button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  text-align: left;
+}
+.bulk-panel button svg { width: 17px; height: 17px; flex: none; color: var(--text-3); }
+.bulk-panel button:hover { background: var(--wash-y); }
+.bulk-panel button:hover svg { color: var(--accent-ink); }
+.bulk-panel button:disabled { opacity: .45; cursor: default; }
+.bulk-panel .sep { height: 1px; margin: 3px 6px; background: var(--line-soft); }
+.bulk-panel .danger { color: var(--coral); }
+.bulk-panel .danger svg { color: var(--coral); }
+.bulk-panel .danger:hover { background: var(--coral); color: #fff; }
+.bulk-panel .danger:hover svg { color: #fff; }
+
+.search {
+  flex: 1 1 240px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 42px;
+  padding: 0 17px;
+  border: 2px solid var(--line);
+  border-radius: 13px;
+  background: var(--input);
+}
+.search:focus-within { background: var(--surface); box-shadow: var(--soft); }
+.search svg { width: 16px; height: 16px; flex: none; color: var(--text-3); }
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.search input:focus { outline: none; }
+.kbd { flex: none; font-size: 11.5px; font-weight: 800; color: var(--text-4); letter-spacing: .4px; }
+
+.lockup {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-decoration: none;
+  color: var(--text);
+}
+.lockup-mark {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--yellow);
+  border-radius: 12px;
+  color: #262336;
+}
+.lockup:hover .lockup-mark { background: var(--yellow-2); }
+.lockup-mark svg { width: 24px; height: 24px; }
+.lockup-word { font-size: 22px; font-weight: 800; letter-spacing: -.5px; line-height: 1; }
+
+@media (max-width: 900px) {
+  .lockup { order: -1; margin-left: 0; width: 100%; }
+  .search { flex: 1 1 140px; }
+}

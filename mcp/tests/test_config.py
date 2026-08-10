@@ -20,7 +20,10 @@ def test_loads_web_domain_from_env_production_and_defaults_to_https(
 ) -> None:
     home = tmp_path / "mcp"
     home.mkdir()
-    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    (tmp_path / ".env.production").write_text(
+        "WEB_DOMAIN=pi.example.test\n",
+        encoding="utf-8",
+    )
     monkeypatch.delenv("CMX_MASTODON_HOST", raising=False)
     monkeypatch.delenv("WEB_DOMAIN", raising=False)
     monkeypatch.delenv("CMX_MASTODON_BASE_URL", raising=False)
@@ -32,6 +35,18 @@ def test_loads_web_domain_from_env_production_and_defaults_to_https(
     assert settings.public_base_url == "https://pi.example.test"
     assert settings.base_url == "https://pi.example.test"
     assert settings.max_status_chars == 5000
+    assert settings.gemini_daily_limit == 100
+
+
+def test_gemini_daily_limit_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "mcp"
+    home.mkdir()
+    (tmp_path / ".env.production").write_text("WEB_DOMAIN=pi.example.test\n", encoding="utf-8")
+    monkeypatch.setenv("CMX_GEMINI_DAILY_LIMIT", "101")
+    assert InstanceSettings.load(_paths(home)).gemini_daily_limit == 101
+    monkeypatch.setenv("CMX_GEMINI_DAILY_LIMIT", "10001")
+    with pytest.raises(RuntimeError, match="between 0 and 10000"):
+        InstanceSettings.load(_paths(home))
 
 
 def test_allows_explicit_loopback_http(tmp_path: Path, monkeypatch) -> None:

@@ -33,7 +33,7 @@ Token 是密钥：
 在 Tunnel 中添加当前网页门牌：
 
 ```text
-Hostname: pi.ler428.xyz
+Hostname: <WEB_DOMAIN>
 Service type: HTTP
 URL: nginx:80
 ```

@@ -10,8 +10,8 @@ PI OS 不是重新开发社交平台内核，而是把 Mastodon v4.6.4 当作稳
 
 ```env
 LOCAL_DOMAIN=pi.invalid
-WEB_DOMAIN=pi.ler428.xyz
-STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+WEB_DOMAIN=<WEB_DOMAIN>
+STREAMING_API_BASE_URL=wss://<WEB_DOMAIN>
 ALTERNATE_DOMAINS=
 ```
 
@@ -54,6 +54,7 @@ Mastodon Rails Web 服务：
 - 账号、设置和后台管理；
 - 页面与静态资源；
 - 图片上传请求；
+- 搜索框保留 Mastodon 原生界面：Mastodon 4.6 经 Axios/XHR 请求 `/api/v2/search`，Nginx 精确代理到同源 `/files/search?format=mastodon`。当前网页 token 首次经该共享搜索层分页读取可见 home REST 动态到既有 SQLite，后续以独立水位的 `min_id` 读取新增动态；SQLite LIKE 优先，结果不足时在同一 cache 做 RapidFuzz 中文 typo 与 pypinyin 全拼/首字母检索正文、媒体 alt 与已持久化 OCR/vision 文字，并返回原生的四个结果数组；
 - 根据启动时读取的 `WEB_DOMAIN` 生成 URL、CSP、WebAuthn origin 和网页元数据。
 
 域名切换后必须 recreate。
@@ -103,9 +104,11 @@ PostgreSQL 保存长期结构化事实：
 - 普通请求转给 `web:3000`；
 - streaming 路径转给 `streaming:4000`；
 - 明确的 MCP/OAuth 路径转给 Windows `host.docker.internal:8766`；
+- 向 Mastodon 网页注入带版本键的同源 `/files/voice.js`，同时承载语音与图片识别增量；
+- 对 `/sw.js` 强制 `no-cache, no-store, must-revalidate`，并将注册 URL 绑定 Mastodon 版本键，避免门牌前的旧 Service Worker 继续引用已删除 chunk；
 - 保留公网 HTTPS、真实客户端 IP 和 WebSocket 头；
 - 本机调试入口限制在 `127.0.0.1:8080`；
-- 配置不写死公网域名，因此换门牌通常无需 reload。
+- 大部分配置不写死公网域名。**例外：`nginx/default.conf` 注入段的 `Content-Security-Policy` 头目前硬编码了真实公网域名 9 处**（issue #29）。它既是换门牌时必须同步改的地方，也是公开仓库里的隐私泄漏点；PROJECT.md 判断该头很可能可直接删除而非模板化。在删掉或模板化之前，不得声称「Nginx 配置不含公网域名」。
 
 ### `cloudflared`
 
@@ -117,7 +120,7 @@ PostgreSQL 保存长期结构化事实：
 - Tunnel token 只在本机 `.env`；
 - dashboard-managed route 决定哪些公网域名进入同一 `nginx:80`。
 
-### CMX（计划中，未实现）
+### 独立 CMX（计划中，未实现）
 
 CMX 是未来的移动网页体验层，不是新的数据后端。
 
@@ -129,6 +132,17 @@ CMX 是未来的移动网页体验层，不是新的数据后端。
 - streaming 与媒体从当前 origin/后端元数据获得；
 - 不硬编码 `WEB_DOMAIN`；
 - 不注册长期绑定某门牌的 OAuth application。
+
+已实现的网页增量不是独立前端：Nginx 注入同源脚本，分别提供语音/图片与本地搜索能力。图片链为：
+
+```text
+POST /api/v2/media 成功 → Blob 写入当前浏览器 IndexedDB outbox
+POST /api/v1/statuses 成功 → 后台 POST /files/recognize
+本机 RapidOCR → 可选 Gemini 校正/画面理解 → PUT /api/v1/statuses/<id> 写回媒体 alt
+网页搜索 → 当前页 token 首次 REST 全量刷新、后续 `min_id` 增量刷新 → SQLite 正文、媒体 alt、OCR/vision 子串检索
+```
+
+发布不等识图；失败保留 outbox 后续重试。页 bearer 只在当次同源请求中临时使用，不入 SQLite。识别结果按图片 SHA-256 共享缓存；Gemini 尝试按 UTC 日计数，超限仅降级本机 OCR。原生 App 不加载该脚本。
 
 ### AI / MCP（已实现读链路）
 
@@ -168,7 +182,7 @@ D:\AI\PI-Personal-Instance-OS
 ├─ data\media            上传图片和视频
 ├─ backups               数据库导出、媒体归档和密钥快照
 ├─ logs                   自动启动日志
-├─ mcp\runtime           Bot 配置、搜索缓存、OAuth hash 与 DPAPI Token 文件（不进 Git）
+├─ mcp\runtime           Bot 配置、搜索/图片识别缓存、Gemini 日额计数、OAuth hash 与 DPAPI Token 文件（不进 Git）
 ├─ mcp\spool             每居民允许上传的临时媒体目录（不进 Git）
 ├─ .env                   Docker / Tunnel 密钥
 └─ .env.production        身份、门牌和 Mastodon 加密密钥

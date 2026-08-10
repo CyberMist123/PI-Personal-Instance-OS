@@ -1,11 +1,74 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
+from functools import lru_cache
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+from pypinyin import Style, lazy_pinyin
+from rapidfuzz import fuzz
+
+
+FUZZY_CHINESE_RATIO_THRESHOLD = 66
+FUZZY_PINYIN_RATIO_THRESHOLD = 85
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_PINYIN_RE = re.compile(r"[^a-z0-9]")
+
+
+def _escape_like(value: str) -> str:
+    """Neutralise LIKE wildcards so a query of `50%` looks for those three characters."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@lru_cache(maxsize=2048)
+def _pinyin_forms(value: str) -> tuple[str, str]:
+    parts = lazy_pinyin(value, style=Style.NORMAL, errors="default")
+    full = _PINYIN_RE.sub("", "".join(parts).lower())
+    if not _CJK_RE.search(value):
+        return full, full
+    initials = _PINYIN_RE.sub("", "".join(part[:1] for part in parts).lower())
+    return full, initials
+
+
+def _pinyin_full(value: str) -> str:
+    return _pinyin_forms(value)[0]
+
+
+def _pinyin_initials(value: str) -> str:
+    return _pinyin_forms(value)[1]
+
+
+def _media_text(payload: dict[str, Any]) -> str:
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"description", "alt"} and isinstance(child, str):
+                    values.append(child)
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(payload.get("media") or payload.get("media_attachments") or [])
+    return "\n".join(values)
+
+
+def _chinese_fuzzy_ratio(query: str, values: Iterable[str]) -> float:
+    width = len(query)
+    if width < 2:
+        return 0.0
+    best = 0.0
+    for value in values:
+        for index in range(max(0, len(value) - width + 1)):
+            best = max(best, fuzz.ratio(query, value[index:index + width]))
+    return best
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +104,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 5:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 7:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -140,6 +203,50 @@ class Database:
                     done_at INTEGER NOT NULL,
                     PRIMARY KEY (bot_id, status_id)
                 );
+
+                -- Keyed by image content, not bot_id: unlike every cache table above,
+                -- this one is deliberately shared across residents. Three bots looking
+                -- at the same photo must reuse one recognition result computed once,
+                -- rather than paying the local model (and any cloud pass) three times.
+                CREATE TABLE IF NOT EXISTS image_recognition (
+                    image_sha256 TEXT PRIMARY KEY,
+                    local_ocr_text TEXT NOT NULL DEFAULT '',
+                    local_line_count INTEGER NOT NULL DEFAULT 0,
+                    local_mean_confidence REAL,
+                    cloud_corrected_text TEXT,
+                    cloud_description TEXT,
+                    search_keywords TEXT,
+                    uncertain_text TEXT,
+                    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','done')),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_image_recognition_state
+                    ON image_recognition(state);
+
+                -- image_recognition is keyed by content and knows nothing about
+                -- Mastodon; this is the join that lets a search over recognised
+                -- text come back with statuses. Many attachments legitimately map
+                -- to one hash — the same photo posted twice is recognised once.
+                CREATE TABLE IF NOT EXISTS status_media (
+                    status_id TEXT NOT NULL,
+                    media_id TEXT NOT NULL,
+                    image_sha256 TEXT NOT NULL,
+                    linked_at INTEGER NOT NULL,
+                    PRIMARY KEY (status_id, media_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_status_media_sha
+                    ON status_media(image_sha256);
+
+                -- A local guardrail for the owner's metered Gemini free tier.
+                -- Count attempts, not successes, because rejected/invalid replies
+                -- still consumed an upstream request. UTC makes the rollover
+                -- deterministic across Windows timezone or daylight changes.
+                CREATE TABLE IF NOT EXISTS gemini_daily_usage (
+                    day_utc TEXT PRIMARY KEY,
+                    attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             for name, definition in (
@@ -152,12 +259,21 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(5)")
+            db.execute("INSERT INTO schema_version(version) VALUES(7)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
             row = db.execute("SELECT timeline_watermark FROM browse_state WHERE bot_id=? AND feed=?", (bot_id, feed)).fetchone()
         return str(row[0]) if row and row[0] is not None else None
+
+    def set_browse_watermark(self, bot_id: str, watermark: str, feed: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO browse_state(bot_id,feed,timeline_watermark,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(bot_id,feed) DO UPDATE SET "
+                "timeline_watermark=excluded.timeline_watermark,updated_at=excluded.updated_at",
+                (bot_id, feed, watermark, int(time.time())),
+            )
 
     def commit_browse(self, *, bot_id: str, feed: str, expected_watermark: str | None,
                       watermark: str | None, seen_ids: list[str], visit_id: str,
@@ -478,31 +594,123 @@ class Database:
                         (bot_id, status_id, str(account.get("acct") or ""), text, spoiler),
                     )
 
-    def search_statuses(self, bot_id: str, query: str, limit: int) -> list[dict[str, Any]]:
+    def search_statuses(
+        self,
+        bot_id: str,
+        query: str,
+        limit: int,
+        *,
+        self_author_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search this bot's visible cache, keeping literal substring hits first.
+
+        Deliberately a scan rather than `status_fts MATCH`. FTS5's unicode61
+        tokenizer does not segment CJK, so a run of Chinese becomes a single
+        token: indexing 「学习烧菜的第一天」 makes it reachable only by typing that
+        exact string back, and a query of 烧菜 matches nothing. MATCH returns zero
+        rows rather than raising, so this was silent. Substring matching is the
+        semantics this corpus needs, and the corpus is one small instance's cache.
+
+        Text recognised inside a status's images is searched too, so a photo of a
+        menu is findable by what it says. The image tables are global while this
+        query is not, hence the join through status_media; the visibility filter
+        stays on the outer table, so a direct status is excluded no matter what
+        its attachments contain.
+
+        Media alt text is retained in compact status payloads.  Searching that
+        JSON is deliberately narrow in purpose: it adds the already-persisted
+        media descriptions without another content store or schema change.
+
+        Direct statuses stay excluded by default.  A direct status authored by
+        `self_author_id` is the caller's own self-diary, obtained through that
+        same resident token and stored under that resident's cache key, so it is
+        safe to include without exposing another participant's direct message.
+        """
+        pattern = f"%{_escape_like(query)}%"
         with self.connect() as db:
-            try:
-                rows = db.execute(
-                    """
-                    SELECT c.payload_json
-                    FROM status_fts f
-                    JOIN status_cache c ON c.status_id=f.status_id AND c.bot_id=f.bot_id
-                    WHERE status_fts MATCH ? AND f.bot_id=? AND c.bot_id=?
-                    ORDER BY bm25(status_fts), c.created_at DESC
-                    LIMIT ?
-                    """,
-                    (query, bot_id, bot_id, limit),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                pattern = f"%{query}%"
-                rows = db.execute(
-                    """
-                    SELECT payload_json FROM status_cache
-                    WHERE bot_id=? AND (text LIKE ? OR spoiler_text LIKE ? OR author_acct LIKE ?)
-                    ORDER BY created_at DESC LIMIT ?
-                    """,
-                    (bot_id, pattern, pattern, pattern, limit),
-                ).fetchall()
-        return [json.loads(row["payload_json"]) for row in rows]
+            rows = db.execute(
+                """
+                SELECT payload_json FROM status_cache c
+                WHERE c.bot_id=?1
+                  AND (c.visibility IS NOT 'direct' OR (?2 != '' AND c.author_id=?2))
+                  AND (
+                    c.text LIKE ?3 ESCAPE '\\'
+                    OR c.spoiler_text LIKE ?3 ESCAPE '\\'
+                    OR c.author_acct LIKE ?3 ESCAPE '\\'
+                    OR c.payload_json LIKE ?3 ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM status_media m
+                        JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                        WHERE m.status_id = c.status_id AND (
+                            r.local_ocr_text LIKE ?3 ESCAPE '\\'
+                            OR r.cloud_corrected_text LIKE ?3 ESCAPE '\\'
+                            OR r.cloud_description LIKE ?3 ESCAPE '\\'
+                            OR r.search_keywords LIKE ?3 ESCAPE '\\'
+                        )
+                    )
+                )
+                ORDER BY c.created_at DESC LIMIT ?4
+                """,
+                (bot_id, self_author_id or "", pattern, limit),
+            ).fetchall()
+            if len(rows) >= limit:
+                return [json.loads(row["payload_json"]) for row in rows]
+            candidates = db.execute(
+                """
+                SELECT c.status_id, c.author_acct, c.text, c.spoiler_text,
+                       c.created_at, c.payload_json,
+                       GROUP_CONCAT(
+                           COALESCE(r.local_ocr_text, '') || '\n' ||
+                           COALESCE(r.cloud_corrected_text, '') || '\n' ||
+                           COALESCE(r.cloud_description, '') || '\n' ||
+                           COALESCE(r.search_keywords, ''), '\n'
+                       ) AS recognition_text
+                FROM status_cache c
+                LEFT JOIN status_media m ON m.status_id = c.status_id
+                LEFT JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                WHERE c.bot_id=?1
+                  AND (c.visibility IS NOT 'direct' OR (?2 != '' AND c.author_id=?2))
+                GROUP BY c.bot_id, c.status_id
+                ORDER BY c.created_at DESC
+                """,
+                (bot_id, self_author_id or ""),
+            ).fetchall()
+
+        exact = [json.loads(row["payload_json"]) for row in rows]
+        exact_ids = {str(item.get("id") or "") for item in exact}
+        chinese_query = bool(_CJK_RE.search(query))
+        pinyin_query = "" if chinese_query else _pinyin_full(query)
+        initials_query = "" if chinese_query else _pinyin_initials(query)
+        fuzzy: list[tuple[int, float, str, dict[str, Any]]] = []
+        for row in candidates:
+            payload = json.loads(row["payload_json"])
+            status_id = str(payload.get("id") or "")
+            if not status_id or status_id in exact_ids:
+                continue
+            fields = [
+                str(row["author_acct"] or ""),
+                str(row["text"] or ""),
+                str(row["spoiler_text"] or ""),
+                _media_text(payload),
+                str(row["recognition_text"] or ""),
+            ]
+            if chinese_query:
+                chinese_score = _chinese_fuzzy_ratio(query, fields)
+                if chinese_score >= FUZZY_CHINESE_RATIO_THRESHOLD:
+                    fuzzy.append((2, chinese_score, str(row["created_at"] or ""), payload))
+                continue
+            if not pinyin_query:
+                continue
+            pinyin_text = _pinyin_full("\n".join(fields))
+            initials_text = _pinyin_initials("\n".join(fields))
+            if len(pinyin_query) >= 2 and pinyin_query in pinyin_text:
+                fuzzy.append((1, 100.0, str(row["created_at"] or ""), payload))
+            elif len(pinyin_query) >= 4 and fuzz.partial_ratio(pinyin_query, pinyin_text) >= FUZZY_PINYIN_RATIO_THRESHOLD:
+                fuzzy.append((0, fuzz.partial_ratio(pinyin_query, pinyin_text), str(row["created_at"] or ""), payload))
+            elif len(initials_query) >= 2 and initials_query in initials_text:
+                fuzzy.append((-1, 100.0, str(row["created_at"] or ""), payload))
+        fuzzy.sort(key=lambda match: (match[0], match[1], match[2]), reverse=True)
+        return [*exact, *(payload for _, _, _, payload in fuzzy[:max(0, limit - len(exact))])]
 
     def invalidate_status(self, bot_id: str, status_id: str) -> None:
         """Remove a status and its search row after current-token revalidation fails."""
@@ -602,3 +810,145 @@ class Database:
         with self.connect() as db:
             cur = db.execute("DELETE FROM publish_dedup WHERE updated_at<?", (int(time.time()) - ttl_seconds,))
             return cur.rowcount
+
+    def record_local_ocr(
+        self,
+        image_sha256: str,
+        *,
+        text: str,
+        line_count: int,
+        mean_confidence: float | None,
+    ) -> None:
+        """Insert or refresh the local-model pass for one image's content hash.
+
+        Re-recording the same hash (e.g. re-OCRing after a model upgrade) refreshes
+        only the local columns; it never clears an existing cloud result or resets
+        state back to 'pending', and it never creates a second row for the hash.
+        """
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO image_recognition(
+                    image_sha256, local_ocr_text, local_line_count, local_mean_confidence,
+                    state, created_at, updated_at
+                ) VALUES(?,?,?,?,'pending',?,?)
+                ON CONFLICT(image_sha256) DO UPDATE SET
+                    local_ocr_text=excluded.local_ocr_text,
+                    local_line_count=excluded.local_line_count,
+                    local_mean_confidence=excluded.local_mean_confidence,
+                    updated_at=excluded.updated_at
+                """,
+                (image_sha256, text, int(line_count), mean_confidence, now, now),
+            )
+
+    def record_cloud_recognition(
+        self,
+        image_sha256: str,
+        *,
+        corrected_text: str | None = None,
+        description: str | None = None,
+        keywords: str | None = None,
+        uncertain_text: str | None = None,
+    ) -> None:
+        """Attach a cloud (Gemini) pass onto a row that local OCR already created.
+
+        Every argument is optional and an omitted one leaves the stored column
+        alone, so attaching a description later cannot silently blank a
+        correction written by an earlier call. Nothing needs to clear a column
+        back to NULL, so COALESCE is the whole story.
+        """
+        now = int(time.time())
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE image_recognition SET
+                    cloud_corrected_text=COALESCE(?, cloud_corrected_text),
+                    cloud_description=COALESCE(?, cloud_description),
+                    search_keywords=COALESCE(?, search_keywords),
+                    uncertain_text=COALESCE(?, uncertain_text),
+                    state='done', updated_at=?
+                WHERE image_sha256=?
+                """,
+                (corrected_text, description, keywords, uncertain_text, now, image_sha256),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"Unknown image_sha256: {image_sha256}")
+
+    def link_status_media(self, status_id: str, media_id: str, image_sha256: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO status_media(status_id, media_id, image_sha256, linked_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(status_id, media_id) DO UPDATE SET
+                    image_sha256=excluded.image_sha256, linked_at=excluded.linked_at
+                """,
+                (status_id, media_id, image_sha256, int(time.time())),
+            )
+
+    def recognitions_for_status(self, status_id: str) -> dict[str, dict[str, Any]]:
+        """Return each attachment's recognition row, keyed by Mastodon media id."""
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT m.media_id, r.* FROM status_media m
+                JOIN image_recognition r ON r.image_sha256 = m.image_sha256
+                WHERE m.status_id=?
+                """,
+                (status_id,),
+            ).fetchall()
+        return {row["media_id"]: dict(row) for row in rows}
+
+    def get_image_recognition(self, image_sha256: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM image_recognition WHERE image_sha256=?", (image_sha256,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_pending_image_recognition(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Rows still waiting on (or stuck without) a cloud pass. Posting never waits on these."""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM image_recognition WHERE state='pending' ORDER BY created_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_gemini_daily_attempt(self, limit: int, *, day_utc: str | None = None) -> bool:
+        """Atomically reserve one Gemini call under the UTC daily ceiling.
+
+        A zero limit explicitly disables cloud recognition. Old counters are
+        discarded after 35 days; they are operational telemetry, not content.
+        """
+        if limit <= 0:
+            return False
+        today = day_utc or datetime.now(timezone.utc).date().isoformat()
+        cutoff = (
+            datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=35)
+        ).isoformat()
+        now = int(time.time())
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM gemini_daily_usage WHERE day_utc < ?", (cutoff,))
+            cursor = db.execute(
+                """
+                INSERT INTO gemini_daily_usage(day_utc, attempts, updated_at)
+                VALUES(?, 1, ?)
+                ON CONFLICT(day_utc) DO UPDATE SET
+                    attempts=gemini_daily_usage.attempts + 1,
+                    updated_at=excluded.updated_at
+                WHERE gemini_daily_usage.attempts < ?
+                """,
+                (today, now, limit),
+            )
+            return cursor.rowcount == 1
+
+    def gemini_daily_attempts(self, *, day_utc: str | None = None) -> int:
+        today = day_utc or datetime.now(timezone.utc).date().isoformat()
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT attempts FROM gemini_daily_usage WHERE day_utc=?", (today,)
+            ).fetchone()
+        return int(row[0]) if row else 0

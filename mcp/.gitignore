@@ -8,3 +8,7 @@ spool/
 __pycache__/
 .pytest_cache/
 filebox/
+
+# The licensed system Kai is local-only: Founder, Zhongyi and DynaComware all
+# exclude webfont embedding from their grants, so it must never be pushed.
+assets/fonts/*-private.woff2

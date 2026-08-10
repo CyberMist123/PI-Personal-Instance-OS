@@ -14,7 +14,12 @@ from .compact import strip_html
 from .config import _bounded_int
 from .mastodon_client import MastodonApiError
 from .server import Runtime
-from .transcribe import transcribe_file
+from .transcribe import (
+    DEFAULT_HOTWORDS,
+    SIMPLIFIED_PROMPT,
+    model_dir_ready,
+    transcribe_file,
+)
 
 TRANSCRIPT_PREFIX = "🎙️ 语音转写：\n"
 BATCH_LIMIT = 30
@@ -26,18 +31,29 @@ class WorkerConfig:
     model_dir: str
     device: str = "cpu"
     compute_type: str = "int8"
-    language: str = ""
+    language: str = "zh"
+    initial_prompt: str = SIMPLIFIED_PROMPT
+    hotwords: str = DEFAULT_HOTWORDS
+    beam_size: int = 5
     poll_seconds: int = 120
     max_audio_seconds: int = 1800
     max_audio_bytes: int = 200 * 1024 * 1024
 
     @classmethod
     def load(cls) -> "WorkerConfig":
+        language = os.getenv("CMX_WHISPER_LANGUAGE", "zh").strip()
+        if language.lower() == "auto":
+            language = ""
         return cls(
             model_dir=os.getenv("CMX_WHISPER_MODEL_DIR", "").strip(),
             device=os.getenv("CMX_WHISPER_DEVICE", "cpu").strip() or "cpu",
             compute_type=os.getenv("CMX_WHISPER_COMPUTE", "int8").strip() or "int8",
-            language=os.getenv("CMX_WHISPER_LANGUAGE", "").strip(),
+            language=language,
+            initial_prompt=_bounded_text(
+                "CMX_WHISPER_INITIAL_PROMPT", SIMPLIFIED_PROMPT, max_chars=1000
+            ),
+            hotwords=_bounded_text("CMX_WHISPER_HOTWORDS", DEFAULT_HOTWORDS, max_chars=1000),
+            beam_size=_bounded_int("CMX_WHISPER_BEAM_SIZE", 5, 1, 10),
             poll_seconds=_bounded_int("CMX_WORKER_POLL_SECONDS", 120, 30, 3600),
             max_audio_seconds=_bounded_int("CMX_WHISPER_MAX_SECONDS", 1800, 30, 7200),
             max_audio_bytes=_bounded_int(
@@ -58,9 +74,12 @@ def main() -> None:
     args = parser.parse_args()
 
     config = WorkerConfig.load()
-    if not config.model_dir:
+    if not model_dir_ready(config.model_dir):
+        # Refuse at startup rather than per-item: a directory that exists but
+        # holds no model.bin used to start fine and then fail on every status.
         print(
-            "CMX_WHISPER_MODEL_DIR is required: set it to a local faster-whisper model directory",
+            "CMX_WHISPER_MODEL_DIR must point at a local faster-whisper model "
+            f"directory containing model.bin (got: {config.model_dir or '<unset>'})",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -178,8 +197,12 @@ def _process_status(
             device=config.device,
             compute_type=config.compute_type,
             language=config.language,
+            initial_prompt=config.initial_prompt,
+            hotwords=config.hotwords,
+            beam_size=config.beam_size,
             max_audio_seconds=float(config.max_audio_seconds),
         )
+        _log(f"status {source_id} ASR engine={result.get('engine', 'unknown')}")
         if result.get("error"):
             _log(f"status {source_id} transcription error: {result['error']} {result.get('detail', '')}".strip())
             runtime.db.worker_mark_done(bot_id, source_id)
@@ -265,6 +288,14 @@ def _audit(runtime: Any, source_id: str, *, ok: bool, detail: str) -> None:
 
 def _log(message: str) -> None:
     print(f"[cmx-worker] {message}", file=sys.stderr, flush=True)
+
+
+def _bounded_text(name: str, default: str, *, max_chars: int) -> str:
+    raw = os.getenv(name)
+    value = default if raw is None else raw.strip()
+    if len(value) > max_chars:
+        raise RuntimeError(f"{name} must be at most {max_chars} characters")
+    return value
 
 
 if __name__ == "__main__":

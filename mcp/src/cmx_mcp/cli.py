@@ -65,6 +65,7 @@ def main() -> None:
     invite_revoke.add_argument("--bot", required=True)
 
     sub.add_parser("filebox-pass")
+    sub.add_parser("gemini-key")
     filebox_list = sub.add_parser("filebox-list")
     filebox_list.add_argument("--bot", default=None)
     filebox_rm = sub.add_parser("filebox-rm")
@@ -157,6 +158,24 @@ def main() -> None:
             raise SystemExit("两次输入不一致")
         db.set_setting("filebox_pass", hash_passphrase(passphrase))
         print("Owner 上传口令已保存（仅存 PBKDF2 哈希）。上传页：https://<WEB_DOMAIN>/files/up")
+        return
+
+    if args.command == "gemini-key":
+        from .vision_cloud import GEMINI_KEY_FILENAME, gemini_key_path
+
+        # getpass, not an argument: a key passed on the command line lands in the
+        # shell history and in the process list. Unlike filebox-pass this cannot
+        # be hashed — the key has to be replayable — so it is DPAPI-sealed to the
+        # current Windows user exactly like a resident's Mastodon token.
+        key = getpass.getpass("粘贴 Gemini API key（输入时不回显）: ").strip()
+        if not key:
+            raise SystemExit("未输入内容，已取消")
+        if getpass.getpass("再粘一次确认: ").strip() != key:
+            raise SystemExit("两次输入不一致")
+        path = gemini_key_path(paths)
+        write_secret(path, key)
+        print(f"已用 DPAPI 加密保存到 {path}")
+        print(f"仅当前 Windows 用户可解密；该文件不进 Git（runtime/ 已忽略）。文件名：{GEMINI_KEY_FILENAME}")
         return
 
     if args.command == "filebox-list":

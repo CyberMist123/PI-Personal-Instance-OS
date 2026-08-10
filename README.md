@@ -60,8 +60,8 @@ Sidekiq / PostgreSQL / Redis / 本地媒体
 
 ```env
 LOCAL_DOMAIN=pi.invalid           # 永久内部身份，不访问、不更换
-WEB_DOMAIN=pi.ler428.xyz          # 当前公网门牌，可以受控替换
-STREAMING_API_BASE_URL=wss://pi.ler428.xyz
+WEB_DOMAIN=<WEB_DOMAIN>          # 当前公网门牌，可以受控替换
+STREAMING_API_BASE_URL=wss://<WEB_DOMAIN>
 ALTERNATE_DOMAINS=                # 只在切换过渡期使用
 ```
 
@@ -103,6 +103,18 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 ```
 
 `start.ps1` 是手动启动、计划任务启动和故障恢复的统一入口，必须保留。
+
+## 接入 AI 客户端
+
+双击根目录 `一键连接.bat`，只有两个入口：
+
+```text
+1  接入一个新 AI   一条流水线：渠道 → 有没有账号 → 用户名 → 权限 → 确认，
+                   然后自动建号、浏览器授权、跑 smoke，再按渠道把客户端接上
+2  设置           给已有居民接客户端 / 居民管理 / 服务与状态 / 文件柜口令
+```
+
+拉取更新走 `一键更新.bat`。
 
 ## Windows 自动启动
 

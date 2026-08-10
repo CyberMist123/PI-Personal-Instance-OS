@@ -7,10 +7,16 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from cmx_mcp import transcribe as transcribe_module
 from cmx_mcp import workers
 from cmx_mcp.db import Database
 from cmx_mcp.mastodon_client import MastodonApiError, MastodonClient
-from cmx_mcp.transcribe import transcribe_file
+from cmx_mcp.transcribe import (
+    DEFAULT_HOTWORDS,
+    SIMPLIFIED_PROMPT,
+    model_dir_ready,
+    transcribe_file,
+)
 from cmx_mcp.workers import WorkerConfig, run_once
 
 AUDIO_URL = "https://mastodon.example/media/voice.ogg"
@@ -69,6 +75,7 @@ def _runtime(tmp_path: Path, client: FakeClient):
 def _config(tmp_path: Path) -> WorkerConfig:
     model_dir = tmp_path / "model"
     model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "model.bin").write_bytes(b"weights")
     return WorkerConfig(model_dir=str(model_dir))
 
 
@@ -297,6 +304,7 @@ def _install_fake_whisper(segments, *, recorder: dict | None = None):
     class WhisperModel:
         def __init__(self, model_path, **kwargs):
             if recorder is not None:
+                recorder["init_count"] = recorder.get("init_count", 0) + 1
                 recorder.update({"model_path": model_path, **kwargs})
 
         def transcribe(self, path, **kwargs):
@@ -323,10 +331,15 @@ def test_transcribe_returns_model_missing_when_directory_is_absent(tmp_path):
     result = transcribe_file(tmp_path / "a.ogg", model_dir=tmp_path / "no-such-model")
     assert result == {"error": "model_missing", "detail": str(tmp_path / "no-such-model")}
     assert transcribe_file(tmp_path / "a.ogg", model_dir="")["error"] == "model_missing"
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    assert model_dir_ready(incomplete) is False
+    assert transcribe_file(tmp_path / "a.ogg", model_dir=incomplete)["error"] == "model_missing"
 
 
 def test_transcribe_reports_missing_provider_dependency(tmp_path):
     (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "model.bin").write_bytes(b"weights")
     had = "faster_whisper" in sys.modules
     previous = sys.modules.get("faster_whisper", None)
     sys.modules["faster_whisper"] = None
@@ -339,26 +352,107 @@ def test_transcribe_reports_missing_provider_dependency(tmp_path):
 
 def test_transcribe_success_joins_segments_and_never_downloads_models(tmp_path):
     (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "model.bin").write_bytes(b"weights")
     recorder: dict = {}
     had, previous = _install_fake_whisper(
-        [_FakeSegment(" 你好", 2.0), _FakeSegment("世界 ", 4.0)], recorder=recorder
+        [_FakeSegment(" 你 好", 2.0), _FakeSegment("世 界 ", 4.0)], recorder=recorder
     )
     try:
         result = transcribe_file(
             tmp_path / "a.ogg", model_dir=tmp_path / "model", language="zh", compute_type="int8"
         )
+        second = transcribe_file(
+            tmp_path / "b.ogg", model_dir=tmp_path / "model", language="zh", compute_type="int8"
+        )
     finally:
         _restore_whisper(had, previous)
     assert result["text"] == "你好世界"
+    assert second["text"] == "你好世界"
     assert isinstance(result["elapsed_ms"], int)
+    assert recorder["init_count"] == 1
     assert recorder["model_path"] == str(tmp_path / "model")
     assert recorder["local_files_only"] is True
     assert recorder["compute_type"] == "int8"
     assert recorder["transcribe_kwargs"]["language"] == "zh"
+    assert recorder["transcribe_kwargs"]["task"] == "transcribe"
+    assert recorder["transcribe_kwargs"]["initial_prompt"] == SIMPLIFIED_PROMPT
+    assert recorder["transcribe_kwargs"]["hotwords"] == DEFAULT_HOTWORDS
+    assert recorder["transcribe_kwargs"]["beam_size"] == 5
+    assert recorder["transcribe_kwargs"]["vad_filter"] is True
+
+
+def test_transcribe_prefers_local_qwen_and_normalizes_result(tmp_path, monkeypatch):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.bin").write_bytes(b"weights")
+    calls = {}
+
+    def fake_qwen(path, **kwargs):
+        calls["path"] = path
+        calls.update(kwargs)
+        return {"text": "繁體中文"}
+
+    monkeypatch.setattr(transcribe_module, "_transcribe_with_qwen", fake_qwen)
+    result = transcribe_file(tmp_path / "a.ogg", model_dir=model)
+
+    assert result["text"] == "繁体中文"
+    assert result["engine"] == "qwen3-asr"
+    assert calls["language"] == "zh"
+    assert calls["initial_prompt"] == SIMPLIFIED_PROMPT
+    assert calls["hotwords"] == DEFAULT_HOTWORDS
+
+
+def test_transcribe_falls_back_to_whisper_when_qwen_is_unavailable(tmp_path, monkeypatch):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.bin").write_bytes(b"weights")
+    monkeypatch.setattr(transcribe_module, "_transcribe_with_qwen", lambda *args, **kwargs: None)
+    recorder: dict = {}
+    had, previous = _install_fake_whisper([_FakeSegment("中文", 1.0)], recorder=recorder)
+    try:
+        result = transcribe_file(tmp_path / "a.ogg", model_dir=model)
+    finally:
+        _restore_whisper(had, previous)
+
+    assert result["text"] == "中文"
+    assert result["engine"] == "faster-whisper"
+    assert recorder["init_count"] == 1
+
+
+def test_qwen_audio_activity_rejects_silence_and_short_audio():
+    import numpy as np
+
+    assert transcribe_module._qwen_audio_activity_error(
+        np.zeros(32000, dtype=np.float32), np
+    ) == "audio_silent"
+    assert transcribe_module._qwen_audio_activity_error(
+        np.ones(1600, dtype=np.float32), np
+    ) == "audio_too_short"
+
+
+def test_qwen_audio_activity_accepts_voice_like_activity():
+    import numpy as np
+
+    audio = np.zeros(32000, dtype=np.float32)
+    audio[4000:12000] = 0.08
+    assert transcribe_module._qwen_audio_activity_error(audio, np) is None
+
+
+def test_qwen_context_echo_is_no_speech():
+    assert transcribe_module._qwen_result_is_context_echo(
+        SIMPLIFIED_PROMPT, SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
+    assert transcribe_module._qwen_result_is_context_echo(
+        "常用专有名词：CMX, PI OS。", SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
+    assert not transcribe_module._qwen_result_is_context_echo(
+        "今天下午我要去悉尼大学上课。", SIMPLIFIED_PROMPT, DEFAULT_HOTWORDS
+    )
 
 
 def test_transcribe_enforces_duration_and_output_limits(tmp_path):
     (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "model.bin").write_bytes(b"weights")
     had, previous = _install_fake_whisper([_FakeSegment("a", 10.0), _FakeSegment("b", 99.0)])
     try:
         long_audio = transcribe_file(
@@ -380,6 +474,7 @@ def test_transcribe_enforces_duration_and_output_limits(tmp_path):
 
 def test_transcribe_wraps_provider_failures(tmp_path):
     (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "model.bin").write_bytes(b"weights")
     module = type(sys)("faster_whisper")
 
     class Broken:
@@ -397,17 +492,58 @@ def test_transcribe_wraps_provider_failures(tmp_path):
     assert result["error"] == "transcription_failed"
 
 
+def test_chinese_output_is_simplified_and_internal_spaces_are_removed(monkeypatch):
+    class FakeOpenCC:
+        def convert(self, text):
+            return text.replace("繁 體", "繁 体")
+
+    monkeypatch.setattr(transcribe_module, "_OPENCC", FakeOpenCC())
+    monkeypatch.setattr(transcribe_module, "_OPENCC_CHECKED", True)
+
+    assert transcribe_module._normalize_chinese(" 繁 體 中 文 ") == "繁体中文"
+
+
 def test_worker_config_reads_bounded_environment(monkeypatch):
     monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", "C:\\models\\small")
     monkeypatch.setenv("CMX_WORKER_POLL_SECONDS", "300")
     monkeypatch.setenv("CMX_WHISPER_MAX_SECONDS", "600")
     monkeypatch.setenv("CMX_WORKER_MAX_AUDIO_BYTES", str(5 * 1024 * 1024))
+    monkeypatch.setenv("CMX_WHISPER_HOTWORDS", "CMX, PI OS, 小派")
+    monkeypatch.setenv("CMX_WHISPER_BEAM_SIZE", "7")
     config = WorkerConfig.load()
     assert config.model_dir == "C:\\models\\small"
     assert (config.poll_seconds, config.max_audio_seconds) == (300, 600)
     assert config.max_audio_bytes == 5 * 1024 * 1024
-    assert (config.device, config.compute_type, config.language) == ("cpu", "int8", "")
+    assert (config.device, config.compute_type, config.language) == ("cpu", "int8", "zh")
+    assert config.initial_prompt == SIMPLIFIED_PROMPT
+    assert config.hotwords == "CMX, PI OS, 小派"
+    assert config.beam_size == 7
+
+    monkeypatch.setenv("CMX_WHISPER_LANGUAGE", "auto")
+    assert WorkerConfig.load().language == ""
 
     monkeypatch.setenv("CMX_WORKER_POLL_SECONDS", "5")
     with pytest.raises(RuntimeError, match="between 30 and 3600"):
         WorkerConfig.load()
+
+
+def test_a_directory_without_weights_is_not_a_model_dir(tmp_path):
+    """Regression: CMX_WHISPER_MODEL_DIR once pointed at an unrelated Node
+    project. It existed, so the is_dir() guard passed and the failure surfaced
+    as a 502 at transcription time instead of a plain "not configured"."""
+    from cmx_mcp.transcribe import model_dir_ready, transcribe_file
+
+    assert model_dir_ready(None) is False
+    assert model_dir_ready("") is False
+
+    looks_plausible = tmp_path / "voice-kit"
+    (looks_plausible / "providers").mkdir(parents=True)
+    (looks_plausible / "index.js").write_text("// not a model", encoding="utf-8")
+    assert looks_plausible.is_dir()
+    assert model_dir_ready(looks_plausible) is False
+    assert transcribe_file(tmp_path / "a.wav", model_dir=looks_plausible)["error"] == "model_missing"
+
+    real = tmp_path / "faster-whisper-small"
+    real.mkdir()
+    (real / "model.bin").write_bytes(b"weights")
+    assert model_dir_ready(real) is True

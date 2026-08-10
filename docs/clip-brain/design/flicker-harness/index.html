@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>voice player flicker harness</title>
+<style>
+  body { font: 14px system-ui; background: #191b22; color: #e9edf2; margin: 0; padding: 16px; }
+  #metrics { position: fixed; top: 0; right: 0; background: #000; padding: 12px 16px;
+             font: 12px/1.7 monospace; white-space: pre; z-index: 99; border-left: 2px solid #333; }
+  .status { border-bottom: 1px solid #2a2e39; padding: 12px 16px; max-width: 560px; }
+  .status__content { font-size: 15px; margin: 8px 0; }
+  .audio-wrapper { background: #000; height: 90px; display: grid; place-items: center; color: #666; }
+  a { color: #8c8dff; }
+</style>
+</head>
+<body>
+
+<script id="initial-state" type="application/json">
+{"meta":{"me":"1","access_token":"harness"},"accounts":{"1":{"acct":"owner","id":"1"}}}
+</script>
+
+<div id="metrics">measuring…</div>
+<div id="timeline"></div>
+
+<script>
+/* ------------------------------------------------------------------
+   Stand-in for Mastodon: same class names, same shape, and — crucially —
+   the same habit of throwing subtrees away and rebuilding them, which is
+   what a virtualised React timeline does while you scroll.
+   ------------------------------------------------------------------ */
+var timeline = document.getElementById("timeline");
+var metrics = document.getElementById("metrics");
+var stats = { decorates: 0, hostsInserted: 0, rebuilds: 0, listeners: 0 };
+
+/* Count how many times the player actually builds a UI. */
+var realCreate = document.createElement.bind(document);
+document.createElement = function (tag) {
+  var node = realCreate(tag);
+  if (tag === "button") { stats.decorates += 0; }
+  return node;
+};
+/* Count resize listeners: one per decorate that is never removed is a leak. */
+var realAdd = window.addEventListener.bind(window);
+window.addEventListener = function (type, fn, opts) {
+  if (type === "resize") { stats.listeners += 1; }
+  return realAdd(type, fn, opts);
+};
+
+/* A real, decodable clip, built here rather than committed: the waveform bug
+   was invisible against a 404 because failed sampling and never-attempted
+   sampling look identical — flat bars either way. Three bursts with gaps, so
+   correct sampling cannot come out uniform. Blob URL, not a data URI: the
+   markup is rebuilt every 250ms and a 30 KB src would be rewritten with it. */
+function makeClip() {
+  var rate = 8000;
+  var count = Math.floor(rate * 1.6);
+  var buffer = new ArrayBuffer(44 + count * 2);
+  var view = new DataView(buffer);
+  function ascii(offset, text) {
+    for (var i = 0; i < text.length; i += 1) { view.setUint8(offset + i, text.charCodeAt(i)); }
+  }
+  ascii(0, "RIFF"); view.setUint32(4, 36 + count * 2, true); ascii(8, "WAVE");
+  ascii(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ascii(36, "data"); view.setUint32(40, count * 2, true);
+  for (var i = 0; i < count; i += 1) {
+    var t = i / rate;
+    var envelope = (t % 0.5) < 0.32 ? 1 : 0.06;
+    var sample = Math.sin(2 * Math.PI * 220 * t) * envelope * 0.85;
+    view.setInt16(44 + i * 2, Math.round(sample * 32767), true);
+  }
+  return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+}
+var CLIP = makeClip();
+
+function statusMarkup(i, withAudio) {
+  var body = '<div class="status" data-i="' + i + '">'
+    + '<a href="/@owner">owner</a> <span>@owner</span>'
+    + '<div class="status__content"><p>第 ' + i + ' 条动态，这里是正文。</p></div>';
+  if (withAudio) {
+    body += '<div class="audio-wrapper">MASTODON NATIVE PLAYER'
+      + '<audio src="' + CLIP + '" preload="none"></audio></div>';
+  }
+  return body + '</div>';
+}
+
+function build(count) {
+  var html = "";
+  for (var i = 0; i < count; i += 1) {
+    html += statusMarkup(i, i % 2 === 0);   // alternate audio / text, as reported
+  }
+  timeline.innerHTML = html;
+}
+
+build(12);
+
+/* React churn: rebuild a slice of the list on a timer, exactly the way a
+   virtualised list remounts rows as they cross the viewport edge. */
+var tick = 0;
+var rebuildTimer = window.setInterval(function () {
+  tick += 1;
+  stats.rebuilds += 1;
+  var nodes = timeline.querySelectorAll(".status");
+  for (var i = 0; i < nodes.length; i += 1) {
+    if ((i + tick) % 3 === 0) {
+      var idx = Number(nodes[i].dataset.i);
+      var replacement = realCreate("div");
+      replacement.innerHTML = statusMarkup(idx, idx % 2 === 0);
+      nodes[i].replaceWith(replacement.firstChild);
+    }
+  }
+}, 250);
+
+/* New status arriving at the top, the other reported trigger. */
+var next = 1000;
+var arrivalTimer = window.setInterval(function () {
+  var node = realCreate("div");
+  node.innerHTML = statusMarkup(next, next % 2 === 0);
+  timeline.prepend(node.firstChild);
+  next += 1;
+  while (timeline.children.length > 14) { timeline.lastElementChild.remove(); }
+}, 700);
+
+/* Report: hosts present vs audio elements present. Any drift, or a host count
+   that keeps climbing, is the thrash we are hunting. */
+var worstGap = 0;
+var bestNonFlat = 0;
+/* Stop the churn and let it settle. "Does it recover?" is a different question
+   from "is it correct mid-storm", and only the quiet answer says whether a
+   deficit is a lag or a leak. */
+window.__harnessFreeze = function () {
+  window.clearInterval(rebuildTimer);
+  window.clearInterval(arrivalTimer);
+  return "frozen";
+};
+window.setInterval(function () {
+  var audios = document.querySelectorAll("audio").length;
+  var hosts = document.querySelectorAll('[data-pi-host="1"]').length;
+  var marked = document.querySelectorAll('audio[data-pi-voice-player="1"]').length;
+  /* Hidden means clipped now, not display:none — a media element that is not
+     rendered will not play on iOS, so the wrapper stays in the render tree and
+     carries a mark instead. */
+  var hidden = document.querySelectorAll('.audio-wrapper[data-pi-voice-hidden="1"]').length;
+  var natives = document.querySelectorAll(".audio-wrapper").length - hidden;
+  /* Hiding is synchronous, building is one frame later: this is the size of
+     that window, and it should collapse back to 0 immediately. */
+  var gap = hidden - hosts;
+  if (gap > worstGap) { worstGap = gap; }
+
+  /* Appearance, not just structure. Every fault this harness missed lived
+     here: bars that were never drawn, a wave with no width, and heights that
+     were all identical because the real amplitudes never arrived. */
+  /* Measured across every host, not just the first one. A single sample is
+     meaningless here: rows are rebuilt constantly, so whichever host happens to
+     be first is often one that was created milliseconds ago and has not
+     finished sampling — which reads as "the waveform is broken" when it is
+     simply young. */
+  var allHosts = document.querySelectorAll('[data-pi-host="1"]');
+  var barsFirst = 0;
+  var waveWidth = 0;
+  var nonFlat = 0;
+  for (var h = 0; h < allHosts.length; h += 1) {
+    var spans = allHosts[h].querySelectorAll("span");
+    var bars = [];
+    for (var i = 0; i < spans.length; i += 1) {
+      if (spans[i].style.width === "3px") { bars.push(spans[i]); }
+    }
+    if (!bars.length) { continue; }
+    if (!barsFirst) {
+      barsFirst = bars.length;
+      waveWidth = bars[0].parentElement.clientWidth;
+    }
+    var heights = {};
+    for (var b = 0; b < bars.length; b += 1) { heights[bars[b].style.height] = 1; }
+    if (Object.keys(heights).length > 1) { nonFlat += 1; }
+  }
+  if (nonFlat > bestNonFlat) { bestNonFlat = nonFlat; }
+
+  metrics.textContent =
+      "build      " + (window.__piVoicePlayer || "not loaded") + "\n"
+    + "rebuilds   " + stats.rebuilds + "\n"
+    + "audio      " + audios + "\n"
+    + "marked     " + marked + "\n"
+    + "our hosts  " + hosts + "\n"
+    + "native shown " + natives + "   <- should be 0\n"
+    + "hide gap   " + gap + " (worst " + worstGap + ")   <- 0 once settled\n"
+    + "bars       " + barsFirst + "   <- should be > 20\n"
+    + "wave width " + waveWidth + "   <- should be > 0\n"
+    + "real waveform " + nonFlat + "/" + hosts + " (best " + bestNonFlat + ")"
+    + "   <- 0 means the amplitudes never arrived\n"
+    + "resize lsn " + stats.listeners + "   <- should track audio, not climb";
+  window.__harness = { audios: audios, hosts: hosts, marked: marked,
+                       natives: natives, hidden: hidden, gap: gap, worstGap: worstGap,
+                       bars: barsFirst, waveWidth: waveWidth,
+                       nonFlat: nonFlat, bestNonFlat: bestNonFlat,
+                       listeners: stats.listeners, rebuilds: stats.rebuilds };
+}, 300);
+</script>
+<script>
+/* Cache-busted on purpose. voice.js is regenerated between runs and the
+   browser will happily keep serving the previous build, which reads as "the
+   fix did nothing" — the exact mistake this harness exists to prevent. */
+var loader = document.createElement("script");
+loader.src = "./voice.js?t=" + Date.now();
+document.body.appendChild(loader);
+</script>
+</body>
+</html>

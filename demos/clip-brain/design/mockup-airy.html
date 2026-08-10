@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Brain · 视觉方案 v2 清透</title>
+<style>
+/* ============================================================
+   Clip Brain 视觉方案 v2「清透」
+   与 v1 的差别：去掉几乎全部描边与硬阴影，改用留白 + 发丝线 +
+   半透明层次。黄色只做点缀（下划线、选中底色、唯一主按钮）。
+   斯普拉遁 DNA 保留在：墨黄本身、一枚极淡的墨迹水印、重体斜体字标。
+   硬约束不变：无 transition、无 animation，hover 瞬时切换。
+   全部为原创 CSS + 内联 SVG，无外部字体/图片/网络请求。
+   ============================================================ */
+
+:root{
+  --ink:       #1A1822;
+  --ink-2:     #514C60;
+  --ink-3:     #8F8A9C;
+  --ink-4:     #BAB5C4;
+
+  --paper:     #FCFBF8;
+  --surface:   rgba(255,255,255,.72);
+  --solid:     #FFFFFF;
+
+  --yellow:    #FFD829;   /* 主强调，长毛象紫的补色位 */
+  --yellow-mid:#FFE98A;
+  --wash:      #FFF8DA;   /* 交互浅底 */
+  --teal:      #4FBFB0;
+  --teal-wash: #E6F5F2;
+  --coral:     #F2604A;   /* 仅危险 */
+  --blurple:   #6364FF;   /* 仅「回长毛象」 */
+
+  --hair:      rgba(26,24,34,.07);
+  --hair-2:    rgba(26,24,34,.13);
+
+  --lift:      0 1px 2px rgba(26,24,34,.035), 0 10px 30px rgba(26,24,34,.055);
+  --lift-sm:   0 1px 2px rgba(26,24,34,.035), 0 3px 10px rgba(26,24,34,.045);
+
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SF Mono", "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+  --r: 16px;
+}
+
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; }
+
+body{
+  font-family:var(--sans);
+  color:var(--ink);
+  /* 两团极淡的光晕代替原来的实心墨迹块：有色彩，无边界 */
+  background:
+    radial-gradient(760px 520px at 6% -8%, rgba(255,216,41,.30), transparent 62%),
+    radial-gradient(700px 560px at 102% 106%, rgba(79,191,176,.15), transparent 60%),
+    var(--paper);
+  background-attachment:fixed;
+  -webkit-font-smoothing:antialiased;
+  font-size:14px;
+  line-height:1.6;
+}
+
+/* 半调网点降到几乎看不见，只提供一点纸质感 */
+body::before{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background-image:radial-gradient(circle, rgba(26,24,34,.05) .9px, transparent 1px);
+  background-size:11px 11px;
+}
+
+/* 唯一一枚墨迹：极淡水印，藏在左上，不构成边界 */
+.watermark{
+  position:fixed; top:-140px; left:-160px; width:620px; height:620px;
+  z-index:0; pointer-events:none; color:var(--yellow); opacity:.34;
+}
+.watermark svg{ width:100%; height:100%; display:block; }
+
+/* ---------- 顶栏：无边框，只有一条发丝线 ---------- */
+.topbar{
+  position:relative; z-index:2;
+  display:flex; align-items:center; gap:22px; flex-wrap:wrap;
+  padding:20px 34px;
+  border-bottom:1px solid var(--hair);
+}
+
+.brand{ display:flex; align-items:center; gap:13px; }
+.brand-mark{
+  width:44px; height:44px; flex:none; display:grid; place-items:center;
+  background:var(--yellow); border-radius:13px; box-shadow:var(--lift-sm);
+}
+.brand-mark svg{ width:24px; height:24px; }
+.brand-name{
+  margin:0; font-size:22px; font-weight:800; font-style:italic;
+  letter-spacing:-.4px; line-height:1.1;
+}
+.brand-sub{
+  margin:2px 0 0; font-size:10px; font-weight:700;
+  letter-spacing:2.6px; color:var(--ink-4);
+}
+
+.switch{ display:flex; align-items:center; gap:4px; margin-left:auto; padding:4px; border-radius:999px; background:rgba(26,24,34,.045); }
+.pill{
+  display:flex; align-items:center; gap:7px;
+  padding:8px 16px; border-radius:999px; text-decoration:none;
+  font-size:13px; font-weight:700; color:var(--ink-2);
+}
+.pill svg{ width:16px; height:16px; }
+.pill:hover{ color:var(--ink); background:rgba(255,255,255,.7); }
+.pill-mastodon:hover{ color:var(--blurple); }
+.pill[aria-current]{ background:var(--solid); color:var(--ink); box-shadow:var(--lift-sm); }
+
+.quota{ display:flex; align-items:center; gap:10px; font-size:12px; color:var(--ink-3); }
+.quota-bar{ width:118px; height:6px; border-radius:999px; background:rgba(26,24,34,.08); overflow:hidden; }
+.quota-fill{ height:100%; width:84%; border-radius:999px; background:linear-gradient(90deg, var(--yellow-mid), var(--yellow)); }
+.quota-num{ font-weight:700; color:var(--ink-2); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.quota-warn{ color:var(--coral); font-weight:700; }
+
+/* ---------- 三栏 ---------- */
+.shell{
+  position:relative; z-index:1;
+  display:grid; grid-template-columns:328px minmax(0,1fr) 216px;
+  gap:30px; max-width:1420px; margin:0 auto; padding:30px 34px 70px;
+  align-items:start;
+}
+
+/* 面板：半透明玻璃，无边框，只有柔和投影 */
+.panel{
+  background:var(--surface);
+  -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
+  border-radius:var(--r);
+  box-shadow:var(--lift);
+}
+.panel-plain{ background:none; box-shadow:none; -webkit-backdrop-filter:none; backdrop-filter:none; }
+
+/* 栏标题：一行小字 + 一小段黄下划线，取代整条黄色标题栏 */
+.head{ padding:20px 22px 0; }
+.head h2{ margin:0; font-size:15px; font-weight:800; letter-spacing:-.1px; }
+.head .rule{ display:block; width:26px; height:3px; border-radius:999px; background:var(--yellow); margin-top:7px; }
+.head .sub{ margin:9px 0 0; font-size:12px; color:var(--ink-3); }
+
+/* ---------- 左栏 ---------- */
+.dropzone{
+  margin:18px 22px 0; padding:26px 16px; text-align:center; cursor:pointer;
+  border:1.5px dashed var(--ink-4); border-radius:14px;
+  background:rgba(255,255,255,.5);
+}
+.dropzone:hover{ background:var(--wash); border-color:var(--yellow); }
+.dropzone-icon{ font-size:22px; line-height:1; color:var(--ink-3); }
+.dropzone-title{ margin:8px 0 3px; font-size:14.5px; font-weight:700; }
+.dropzone-help{ margin:0; font-size:11.5px; color:var(--ink-3); }
+
+.compose{ padding:14px 22px 22px; }
+textarea.compose-text{
+  width:100%; min-height:96px; resize:vertical; padding:12px 13px;
+  font:inherit; font-size:13.5px; line-height:1.65; color:var(--ink);
+  background:rgba(255,255,255,.6);
+  border:1px solid var(--hair-2); border-radius:12px;
+}
+textarea.compose-text:focus{ outline:none; border-color:var(--yellow); background:var(--solid); }
+textarea.compose-text::placeholder{ color:var(--ink-4); }
+
+.meta-row{ display:flex; justify-content:space-between; margin-top:8px; font-size:11.5px; color:var(--ink-3); }
+
+.chips{ display:grid; gap:5px; margin-top:13px; }
+.chip{
+  display:flex; align-items:center; gap:9px; padding:7px 4px;
+  font-size:12.5px; border-bottom:1px solid var(--hair);
+}
+.chip:hover{ background:var(--wash); }
+.chip-kind{
+  flex:none; min-width:34px; text-align:center; padding:2px 6px; border-radius:5px;
+  background:rgba(26,24,34,.06); color:var(--ink-2);
+  font-size:9.5px; font-weight:800; letter-spacing:.4px;
+}
+.chip .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chip .size{ color:var(--ink-4); font-size:11px; font-variant-numeric:tabular-nums; }
+.chip-x{ border:0; background:none; padding:0 2px; font-size:15px; line-height:1; color:var(--ink-4); cursor:pointer; }
+.chip-x:hover{ color:var(--coral); }
+
+/* 全站唯一的实心主按钮 */
+.btn-primary{
+  width:100%; margin-top:16px; padding:13px;
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  border:0; border-radius:12px; background:var(--yellow); color:var(--ink);
+  font-family:inherit; font-size:15px; font-weight:800; cursor:pointer;
+  box-shadow:var(--lift-sm);
+}
+.btn-primary:hover{ background:#FFCE00; }
+
+/* ---------- 中栏 ---------- */
+.toolbar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:18px 22px; }
+
+.segment{ display:flex; gap:2px; padding:3px; border-radius:999px; background:rgba(26,24,34,.05); flex:none; }
+.segment button{
+  border:0; background:none; color:var(--ink-3);
+  font-family:inherit; font-size:12.5px; font-weight:700; cursor:pointer;
+  padding:7px 17px; border-radius:999px;
+}
+.segment button:hover{ color:var(--ink); }
+.segment button[aria-pressed="true"]{ background:var(--solid); color:var(--ink); box-shadow:var(--lift-sm); }
+
+.search{
+  flex:1 1 190px; display:flex; align-items:center; gap:9px; min-width:0;
+  padding:9px 14px; border-radius:999px;
+  background:rgba(255,255,255,.62); border:1px solid var(--hair-2);
+}
+.search:focus-within{ border-color:var(--yellow); background:var(--solid); }
+.search svg{ width:15px; height:15px; flex:none; color:var(--ink-4); }
+.search input{ flex:1; min-width:0; border:0; background:none; font:inherit; font-size:13px; color:var(--ink); }
+.search input:focus{ outline:none; }
+.search input::placeholder{ color:var(--ink-4); }
+.kbd{ flex:none; font-size:10.5px; font-weight:700; color:var(--ink-4); letter-spacing:.3px; }
+
+/* 唯一批量入口 */
+.count-chip{
+  flex:none; padding:8px 15px; border:0; border-radius:999px;
+  background:rgba(26,24,34,.05); color:var(--ink-2);
+  font-family:inherit; font-size:12.5px; font-weight:700; cursor:pointer;
+}
+.count-chip:hover{ background:var(--wash); color:var(--ink); }
+
+.feed{ max-height:min(70vh,740px); overflow-y:auto; padding:0 22px 22px; display:grid; gap:12px; }
+
+/* 卡片：白底，无边框，仅极柔投影 */
+.card{ background:var(--solid); border-radius:14px; box-shadow:var(--lift-sm); }
+.card:hover{ box-shadow:var(--lift); }
+
+.card-head{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:13px 16px 0; }
+.tick{
+  width:17px; height:17px; flex:none; border:1.5px solid var(--ink-4); border-radius:50%;
+  background:none; cursor:pointer; display:grid; place-items:center;
+  font-size:10px; font-weight:900; line-height:1; color:transparent; padding:0;
+}
+.tick:hover{ border-color:var(--ink-2); }
+.tick[aria-checked="true"]{ background:var(--yellow); border-color:var(--yellow); color:var(--ink); }
+
+.badge{ font-size:11px; font-weight:700; color:var(--ink-3); }
+.badge-perm{ color:var(--teal); }
+.stamp{ font-size:11.5px; color:var(--ink-4); }
+.countdown{
+  margin-left:auto; font-family:var(--mono); font-size:11.5px;
+  color:var(--ink-3); font-variant-numeric:tabular-nums;
+}
+
+/* 代码块改浅色：原来的纯黑大块是最重的一处 */
+.code{
+  margin:12px 16px 0; padding:13px 15px; max-height:224px; overflow:auto;
+  background:#FAF8F3; border-radius:11px;
+  font-family:var(--mono); font-size:12.2px; line-height:1.75; color:var(--ink-2);
+}
+.code .ln{ display:inline-block; width:2.2em; color:var(--ink-4); user-select:none; }
+.code .hl{ color:var(--ink); font-weight:700; box-shadow:inset 0 -.45em 0 var(--yellow-mid); }
+
+.card-text{ padding:12px 16px 0; font-size:13.5px; line-height:1.7; color:var(--ink-2); }
+
+.filelist{ list-style:none; margin:10px 16px 0; padding:0; max-height:150px; overflow-y:auto; }
+.filerow{
+  display:flex; align-items:center; gap:10px; padding:8px 6px;
+  font-size:12.5px; cursor:pointer; border-bottom:1px solid var(--hair);
+}
+.filerow:hover{ background:var(--wash); }
+.filerow .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.filerow .size{ color:var(--ink-4); font-size:11px; font-variant-numeric:tabular-nums; }
+.more{
+  border:0; background:none; color:var(--ink-3); padding:9px 6px;
+  font-family:inherit; font-size:12px; font-weight:700; cursor:pointer;
+}
+.more:hover{ color:var(--ink); }
+
+.card-foot{ display:flex; align-items:center; gap:3px; flex-wrap:wrap; padding:8px 12px 10px; }
+.mini{
+  border:0; background:none; color:var(--ink-3); border-radius:8px;
+  font-family:inherit; font-size:12px; font-weight:700; cursor:pointer; padding:7px 10px;
+}
+.mini:hover{ background:rgba(26,24,34,.05); color:var(--ink); }
+.mini-star:hover{ background:var(--teal-wash); color:var(--teal); }
+.mini-star[aria-pressed="true"]{ color:var(--teal); }
+.mini-danger{ margin-left:auto; color:var(--ink-4); }
+.mini-danger:hover{ background:rgba(242,96,74,.1); color:var(--coral); }
+
+/* ---------- 右栏：纯文本导航，零边框 ---------- */
+.nav{ list-style:none; margin:0; padding:16px 12px 6px; display:grid; gap:1px; }
+.nav a{
+  display:flex; align-items:center; gap:10px; padding:8px 11px; border-radius:9px;
+  text-decoration:none; color:var(--ink-2); font-size:13px; font-weight:600;
+}
+.nav a:hover{ background:rgba(26,24,34,.045); color:var(--ink); }
+.nav a[aria-current]{ background:var(--wash); color:var(--ink); font-weight:700; }
+.nav .dot{ width:7px; height:7px; flex:none; border-radius:50%; }
+.nav .n{ margin-left:auto; font-size:11px; color:var(--ink-4); font-variant-numeric:tabular-nums; }
+
+.divide{ height:1px; margin:10px 22px; background:var(--hair); }
+
+.seg-types{ display:flex; gap:2px; margin:0 12px 16px; padding:3px; border-radius:10px; background:rgba(26,24,34,.045); }
+.seg-types button{
+  flex:1; border:0; background:none; color:var(--ink-3); border-radius:8px;
+  font-family:inherit; font-size:12px; font-weight:700; cursor:pointer; padding:7px 4px;
+}
+.seg-types button:hover{ color:var(--ink); }
+.seg-types button[aria-pressed="true"]{ background:var(--solid); color:var(--ink); box-shadow:var(--lift-sm); }
+
+/* ---------- 说明 ---------- */
+.note{
+  max-width:1420px; margin:0 auto; padding:16px 20px;
+  border-radius:13px; font-size:12px; line-height:1.75; color:var(--ink-2);
+  background:rgba(255,255,255,.62); box-shadow:var(--lift-sm);
+}
+.note + .note{ margin-top:12px; }
+.note-warn{ background:rgba(242,96,74,.07); color:var(--ink-2); box-shadow:none; }
+.note-wrap{ max-width:1420px; margin:0 auto; padding:0 34px 60px; }
+.note b{ font-weight:800; color:var(--ink); }
+.note code{ font-family:var(--mono); font-size:11.5px; background:rgba(26,24,34,.05); padding:1px 5px; border-radius:4px; }
+
+@media (max-width:1180px){
+  .shell{ grid-template-columns:296px minmax(0,1fr); }
+  .col-nav{ grid-column:1 / -1; }
+  .nav{ grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+}
+@media (max-width:820px){
+  .shell{ grid-template-columns:minmax(0,1fr); padding:20px 16px 50px; gap:20px; }
+  .topbar{ padding:16px; gap:14px; }
+  .switch{ margin-left:0; }
+  .note-wrap{ padding:0 16px 40px; }
+}
+</style>
+</head>
+<body>
+
+<div class="watermark" aria-hidden="true">
+  <svg viewBox="0 0 200 200">
+    <path d="M104 8c22-6 39 12 44 32 4 17 22 18 34 30 14 14 12 38-4 49-13 9-14 26-24 38-13 16-39 18-53 4-11-11-27-6-42-11C42 145 30 128 33 110c2-14-9-25-8-41C26 50 44 36 62 33c17-3 24-19 42-25z" fill="currentColor"/>
+    <circle cx="181" cy="41" r="8" fill="currentColor"/>
+    <circle cx="166" cy="17" r="4" fill="currentColor"/>
+  </svg>
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="14" y="15" width="36" height="40" rx="9" fill="none" stroke="#1A1822" stroke-width="4.5"/>
+        <path d="M26 9h12a5 5 0 0 1 5 5v6H21v-6a5 5 0 0 1 5-5z" fill="#1A1822"/>
+        <path d="M24 33h16M24 43h10" stroke="#1A1822" stroke-width="4.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div>
+      <p class="brand-name">CLIP BRAIN</p>
+      <p class="brand-sub">TEMPORARY DROP ZONE</p>
+    </div>
+  </div>
+
+  <div class="quota">
+    <span class="quota-num">1.68 GB / 2 GB</span>
+    <div class="quota-bar"><div class="quota-fill"></div></div>
+    <span class="quota-warn">接近上限</span>
+  </div>
+
+  <nav class="switch" aria-label="网站入口">
+    <a class="pill pill-mastodon" href="/">
+      <svg viewBox="0 0 56 56" aria-hidden="true">
+        <path d="M10 17c1-8 8-12 18-12s17 4 18 12v20c-1 9-9 13-18 13-8 0-14-2-17-6l1-8c4 4 9 6 15 6 7 0 10-3 10-7v-2c-3 2-6 3-10 3-10 0-17-4-17-13z" fill="currentColor"/>
+      </svg>
+      <span>长毛象</span>
+    </a>
+    <a class="pill" href="/clipboard/" aria-current="page">
+      <svg viewBox="0 0 56 56" aria-hidden="true">
+        <rect x="13" y="11" width="30" height="36" rx="9" fill="none" stroke="currentColor" stroke-width="4"/>
+        <path d="M21 21h14M21 29h14M21 37h9" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+      </svg>
+      <span>剪贴板</span>
+    </a>
+  </nav>
+</header>
+
+<div class="shell">
+
+  <!-- ============ 左栏 ============ -->
+  <section class="panel col-compose">
+    <div class="head">
+      <h2>丢进来</h2>
+      <span class="rule"></span>
+      <p class="sub">24 小时后自动焚毁</p>
+    </div>
+
+    <div class="dropzone">
+      <div class="dropzone-icon" aria-hidden="true">↑</div>
+      <p class="dropzone-title">拖进来，或点击选择</p>
+      <p class="dropzone-help">最多 20 个文件 · 单条合计 &lt; 1 GB</p>
+    </div>
+
+    <div class="compose">
+      <textarea class="compose-text" placeholder="也可以只丢一段文字、代码、日志……"></textarea>
+      <div class="meta-row">
+        <span>0 / 10000</span>
+        <span>保存后点正文即可复制</span>
+      </div>
+
+      <div class="chips">
+        <span class="chip"><span class="chip-kind">PNG</span><span class="name">截图-01.png</span><span class="size">2.1 MB</span><button class="chip-x" aria-label="移除">×</button></span>
+        <span class="chip"><span class="chip-kind">PDF</span><span class="name">合同终稿.pdf</span><span class="size">840 KB</span><button class="chip-x" aria-label="移除">×</button></span>
+        <span class="chip"><span class="chip-kind">ZIP</span><span class="name">素材包.zip</span><span class="size">96 MB</span><button class="chip-x" aria-label="移除">×</button></span>
+      </div>
+
+      <button class="btn-primary">上传 <span aria-hidden="true">↗</span></button>
+    </div>
+  </section>
+
+  <!-- ============ 中栏 ============ -->
+  <section class="panel col-feed">
+    <div class="toolbar">
+      <div class="segment" role="group" aria-label="分类">
+        <button aria-pressed="true">临时</button>
+        <button aria-pressed="false">永久</button>
+      </div>
+
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2.4"/>
+          <path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+        </svg>
+        <input placeholder="搜索或输入网址">
+        <span class="kbd">Alt Space</span>
+      </label>
+
+      <button class="count-chip">4 条</button>
+    </div>
+
+    <div class="feed">
+
+      <article class="card">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="false" tabindex="0">✓</span>
+          <span class="badge">临时</span>
+          <span class="stamp">07-29 14:02</span>
+          <span class="countdown">21:47:11</span>
+        </div>
+        <pre class="code"><span class="ln">1</span><span class="hl">溏心蛋 SOP</span>
+<span class="ln">2</span>1. 大锅装水，开中大火煮沸。
+<span class="ln">3</span>2. 水滚的同时，从冰箱取出冷藏的鸡蛋十颗。
+<span class="ln">4</span>3. 水沸腾后，放入鸡蛋并开始计时 6 分钟。
+<span class="ln">5</span>   ※ 放入鸡蛋后水温会降低，保持火力继续煮。
+<span class="ln">6</span>4. 先备好降温用的冷开水，另取一锅装冷开水。
+<span class="ln">7</span>5. 6 分钟到时关火，盖上锅盖，用余温焖熟。
+<span class="ln">8</span>6. 8 分钟到时捞起鸡蛋，放入步骤 4 的冰开水冷却。
+<span class="ln">9</span>
+<span class="ln">10</span><span class="hl">保存期限</span>
+<span class="ln">11</span>每次从冰箱取出后只取要吃的分量，可保存十天。</pre>
+        <div class="card-foot">
+          <button class="mini">复制</button>
+          <button class="mini">下载 .txt</button>
+          <button class="mini mini-star" aria-pressed="false">★ 转永久</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="true" tabindex="0">✓</span>
+          <span class="badge">临时</span>
+          <span class="stamp">07-29 11:36</span>
+          <span class="countdown">19:21:04</span>
+        </div>
+        <div class="card-text">周五发布用的全部素材，Mac 上传、PC 取。</div>
+        <ul class="filelist">
+          <li class="filerow"><span class="chip-kind">PNG</span><span class="name">主视觉-横版-4k.png</span><span class="size">7.2 MB</span></li>
+          <li class="filerow"><span class="chip-kind">MP4</span><span class="name">片头-30s-h264.mp4</span><span class="size">148 MB</span></li>
+          <li class="filerow"><span class="chip-kind">AI</span><span class="name">logo-源文件.ai</span><span class="size">23 MB</span></li>
+          <li class="filerow"><span class="chip-kind">TTF</span><span class="name">标题字重-900.ttf</span><span class="size">4.8 MB</span></li>
+          <li><button class="more">还有 16 个文件 ↓</button></li>
+        </ul>
+        <div class="card-foot">
+          <button class="mini">下载本条 ZIP</button>
+          <button class="mini mini-star" aria-pressed="false">★ 转永久</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="tick" role="checkbox" aria-checked="false" tabindex="0">✓</span>
+          <span class="badge badge-perm">★ 永久</span>
+          <span class="stamp">07-21 09:10</span>
+          <span class="countdown">不焚毁</span>
+        </div>
+        <div class="card-text">常用命令：重启 cmx-mcp-http、看 nginx 日志、跑 smoke。收藏后不进 24 小时队列。</div>
+        <ul class="filelist">
+          <li class="filerow"><span class="chip-kind">SH</span><span class="name">常用命令.sh</span><span class="size">1.4 KB</span></li>
+        </ul>
+        <div class="card-foot">
+          <button class="mini">复制</button>
+          <button class="mini">下载</button>
+          <button class="mini mini-star" aria-pressed="true">★ 已永久</button>
+          <button class="mini mini-danger">焚毁</button>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ 右栏 ============ -->
+  <aside class="panel panel-plain col-nav">
+    <ul class="nav">
+      <li><a href="#" aria-current="page"><span class="dot" style="background:var(--yellow)"></span>全部<span class="n">128</span></a></li>
+      <li><a href="#"><span class="dot" style="background:var(--teal)"></span>学习<span class="n">31</span></a></li>
+      <li><a href="#"><span class="dot" style="background:var(--coral)"></span>烧菜<span class="n">12</span></a></li>
+      <li><a href="#"><span class="dot" style="background:var(--blurple)"></span>网址<span class="n">44</span></a></li>
+      <li><a href="#"><span class="dot" style="background:var(--ink-2)"></span>AI 编程<span class="n">27</span></a></li>
+      <li><a href="#"><span class="dot" style="background:var(--ink-4)"></span>灵感<span class="n">14</span></a></li>
+    </ul>
+
+    <div class="divide"></div>
+
+    <div class="seg-types" role="group" aria-label="类型">
+      <button aria-pressed="true">全部</button>
+      <button aria-pressed="false">文本</button>
+      <button aria-pressed="false">图片</button>
+    </div>
+  </aside>
+
+</div>
+
+<div class="note-wrap">
+  <p class="note note-warn">
+    <b>⚠ 本稿包含 v2 形态，不是阶段 A 的交付范围。</b>
+    Owner 已裁定：阶段 A 严格按 <code>CODEX_BACKEND_HANDOFF.md</code> 施工，下列三处属 v2，本轮不实现、不渲染——
+    ①「临时 | 永久」分段器与 ★ 转永久（§0 禁止永久保存，§1 固定 24h 焚毁）；
+    ② 搜索框与 Alt+Space（§0 禁止搜索）；
+    ③ 右栏主题 tag 列表（§0 禁止分类）。
+    另：v1 每条上限是 <b>30</b> 个文件（非稿中的 20），无 2 GB 总配额概念，且去掉右栏后 <b>v1 是两栏布局</b>。
+  </p>
+
+  <p class="note">
+    <b>清透版做了什么。</b>
+    去掉全部 3px 黑描边与硬阴影，改用<b>留白 + 1px 发丝线 + 半透明玻璃层</b>划分区域；
+    黄色从「填满整条标题栏」降为<b>三处点缀</b>：栏标题下的短横、选中项的浅黄底、以及全站唯一的实心主按钮「上传」；
+    纯黑代码块改浅底，重点行用黄色下划线高亮；圆角统一为 14–16px，取消不规则四角与旋转贴纸；
+    页面底色改为两团极淡光晕（左上墨黄、右下青绿），半调网点降到 5% 几乎不可见。
+    斯普拉遁的味道保留在墨黄本身、左上那枚淡墨迹水印、以及重体斜体字标。
+    <b>依旧无 transition、无 animation</b>，hover 为瞬时切换。
+  </p>
+</div>
+
+</body>
+</html>

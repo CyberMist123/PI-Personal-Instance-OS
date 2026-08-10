@@ -3,27 +3,104 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlsplit
+
+
+# Hosts worth naming in the placeholder. Anything absent stays a bare 【url】 —
+# the point is to spend a handful of characters, not to smuggle the address back
+# in as a domain. Adding an entry is one line.
+LINK_ALIASES = {
+    "xhslink.cn": "xhs",
+    "xhslink.com": "xhs",
+    "xiaohongshu.com": "xhs",
+}
+
+# Platforms whose share format is "title, link, then instructions to open the
+# app". For those, everything after the link on that same line is boilerplate:
+# matching the blurbs by template failed on real posts, because the variants are
+# open-ended ("先复制再打开…", "来【小红书】发现…") and a pattern loose enough to
+# catch them all also ate the writer's own sentence when it had no full stop.
+# Cutting at the link is bounded by construction — it can only ever remove what
+# the platform appended, and only on the line the link is on.
+TRAILING_BLURB_ALIASES = frozenset({"xhs"})
+
+
+def _cut_trailing_blurb(line: str) -> str:
+    """Drop whatever a share platform appended after its own link on this line.
+
+    Safe because the owner writes their own remarks on a separate line: anything
+    sharing a line with, and following, a share link came from the platform.
+    """
+    cut = -1
+    for alias in TRAILING_BLURB_ALIASES:
+        marker = f"【url-{alias}】"
+        found = line.rfind(marker)
+        if found >= 0:
+            cut = max(cut, found + len(marker))
+    return line[:cut].rstrip() if cut >= 0 else line
+
+
+def link_placeholder(url: str) -> str:
+    """Return the token that stands in for `url` in resident-facing text."""
+    host = urlsplit(url).hostname or ""
+    host = host[4:] if host.startswith("www.") else host
+    for domain, alias in LINK_ALIASES.items():
+        if host == domain or host.endswith("." + domain):
+            return f"【url-{alias}】"
+    return "【url】"
 
 
 class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.links: list[str] = []
+        self._anchor_href: str | None = None
+        self._anchor_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
         if tag in {"p", "br", "li", "blockquote"}:
             self.parts.append("\n")
+        elif tag == "a":
+            self._anchor_href = dict(attrs).get("href") or None
+            self._anchor_parts = []
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"p", "li", "blockquote"}:
             self.parts.append("\n")
+        elif tag == "a":
+            shown = "".join(self._anchor_parts)
+            href = self._anchor_href
+            compact = "".join(shown.split())
+            # Mastodon autolinks a bare URL by slicing it across visible and
+            # `invisible` spans, so the rendered text is a substring of the href.
+            # Mentions and hashtags must be excluded by their leading sigil, not
+            # by that substring test: `@alice` does occur inside the mention's own
+            # href (https://host/@alice) and would otherwise be rewritten to it.
+            if href and compact and not compact.startswith(("@", "#")) and compact in href:
+                self.links.append(href)
+                self.parts.append(link_placeholder(href))
+            else:
+                self.parts.append(shown)
+            self._anchor_href = None
+            self._anchor_parts = []
 
     def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+        if self._anchor_href is not None:
+            self._anchor_parts.append(data)
+        else:
+            self.parts.append(data)
 
     def text(self) -> str:
-        lines = [" ".join(line.split()) for line in "".join(self.parts).splitlines()]
+        lines = [_cut_trailing_blurb(" ".join(line.split())) for line in "".join(self.parts).splitlines()]
         return "\n".join(line for line in lines if line).strip()
+
+
+def extract_links(value: str | None) -> list[str]:
+    """Return the full hrefs the placeholders stand for, in the order they appear."""
+    parser = _TextExtractor()
+    parser.feed(value or "")
+    return parser.links
 
 
 def strip_html(value: str | None) -> str:
@@ -63,13 +140,36 @@ def compact_account(account: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_media(media: dict[str, Any]) -> dict[str, Any]:
-    return {
+def compact_media(media: dict[str, Any], recognition: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = {
         "id": str(media.get("id") or ""),
         "type": media.get("type"),
         "description": media.get("description"),
         "url": media.get("url"),
     }
+    result.update(media_recognition_fields(recognition))
+    return result
+
+
+def media_recognition_fields(recognition: dict[str, Any] | None) -> dict[str, Any]:
+    """Split what a machine read out of an image from what a model guessed about it.
+
+    `ocr` is what the model on this desk read; `description` is what a remote
+    model said the picture shows. Merging them would leave a resident unable to
+    tell a transcription from a guess, which matters most exactly where it is
+    least visible — a wrong digit in a receipt reads the same as a right one.
+    The cloud correction supersedes the local reading when one exists, because
+    it saw the same pixels with more capacity.
+    """
+    if not recognition:
+        return {}
+    text = recognition.get("cloud_corrected_text") or recognition.get("local_ocr_text") or ""
+    fields = {
+        "ocr": text.strip(),
+        "description": (recognition.get("cloud_description") or "").strip(),
+        "uncertain": (recognition.get("uncertain_text") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
 
 
 def compact_status(raw: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +201,17 @@ def compact_status(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_v2_status(raw: dict[str, Any]) -> dict[str, Any]:
+def _recognised_chars(recognitions: dict[str, Any] | None, attachment: dict[str, Any]) -> int:
+    row = (recognitions or {}).get(str(attachment.get("id") or ""))
+    if not row:
+        return 0
+    text = row.get("cloud_corrected_text") or row.get("local_ocr_text") or ""
+    return len(text.strip())
+
+
+def compact_v2_status(
+    raw: dict[str, Any], recognitions: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Return the sparse Phase A representation; omit absent/empty fields."""
     wrapper = raw
     source = raw.get("reblog") or raw
@@ -128,11 +238,16 @@ def compact_v2_status(raw: dict[str, Any]) -> dict[str, Any]:
             result[key] = value
     attachments = source.get("media_attachments") or []
     if attachments:
+        # Recognised text is advertised by its size, not included. A screenshot
+        # can carry hundreds of characters; spending them on every timeline row
+        # would undo the browse funnel that exists to keep this view cheap. The
+        # count is enough for a resident to decide whether to open the status.
         result["media"] = [
             {key: value for key, value in {
                 "type": item.get("type"),
                 "alt": item.get("description"),
-            }.items() if value not in (None, "")}
+                "ocr_chars": _recognised_chars(recognitions, item),
+            }.items() if value not in (None, "", 0)}
             for item in attachments
         ]
     poll = source.get("poll")

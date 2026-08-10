@@ -141,7 +141,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 居民资源 URL：
 
 ```text
-https://pi.ler428.xyz/mcp/gpt
+https://<WEB_DOMAIN>/mcp/gpt
 ```
 
 远程服务只监听 `127.0.0.1:8766`，由现有 Nginx 和 Cloudflare Tunnel 转发。它支持 OAuth 2.1 动态注册、PKCE、一次性 code、access/refresh token、刷新轮换和撤销；刷新轮换带重用检测，已轮换的旧 refresh token 再次出示会撤销整个 token family。OAuth issuer 统一为公网 origin 加尾斜杠；所有居民 Protected Resource Metadata 的 `authorization_servers[0]` 与 Authorization Server Metadata 的 `issuer` 逐字符一致，而居民 `resource` 仍为不带尾斜杠的 `/mcp/<bot_id>`。两个 discovery 文档均返回 `Cache-Control: no-store`；SDK 原始 `max-age=3600` 已覆盖，因此修复后立即复测无需等待一小时。批准页只在本机 `http://127.0.0.1:8766/oauth/approve` 打开；外部客户端不能远程批准自己。所有远程凭据只以 SHA-256 hash 保存在 `runtime/cmx.sqlite3`。
@@ -175,10 +175,10 @@ Owner 在 Windows 上铸一张一次性邀请码（二选一）：
 之后在任何电脑上接入。Claude Code：
 
 ```bash
-claude mcp add --transport http cmx-gpt https://pi.ler428.xyz/mcp/gpt
+claude mcp add --transport http cmx-gpt https://<WEB_DOMAIN>/mcp/gpt
 ```
 
-首次调用时浏览器会打开 `https://pi.ler428.xyz/oauth/invite` 兑换页，粘贴邀请码点「兑换并授权」即完成，全程不需要碰服务器。ChatGPT 自定义 Connector 指向同一资源 URL，流程相同。同一次授权请求邀请码错 5 次即作废，需要客户端重新发起连接。Owner 本人仍可在服务器本机打开 loopback 批准页直接批准，不需要邀请码。
+首次调用时浏览器会打开 `https://<WEB_DOMAIN>/oauth/invite` 兑换页，粘贴邀请码点「兑换并授权」即完成，全程不需要碰服务器。ChatGPT 自定义 Connector 指向同一资源 URL，流程相同。同一次授权请求邀请码错 5 次即作废，需要客户端重新发起连接。Owner 本人仍可在服务器本机打开 loopback 批准页直接批准，不需要邀请码。
 
 账号创建永远只发生在 Owner 本机；公网只兑换授权，不能开户。
 
@@ -233,19 +233,20 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 
 ## 帮工与语音转写
 
-帮工（worker）是与 MCP 分开的常驻小进程，用某个居民的 DPAPI Token 在 Windows 本机运行。它盯着这个居民的主页时间线，看到带**音频附件且正文为空**的动态就下载音频、用**本机** faster-whisper 模型转写，再以**与原帖完全相同的可见性**回复一条 `🎙️ 语音转写：` + 正文。
+帮工（worker）是与 MCP 分开的常驻小进程，用某个居民的 DPAPI Token 在 Windows 本机运行。它盯着这个居民的主页时间线，看到带**音频附件且正文为空**的动态就下载音频、优先交给本机 CapsWriter-Offline 的 Qwen3-ASR-GGUF 常驻服务转写，再以**与原帖完全相同的可见性**回复一条 `🎙️ 语音转写：` + 正文；Qwen 服务不可用时回退到本机 faster-whisper。
 
-它现在只是**兜底**：网页悬浮录音键（见下一节）秒发语音后会在后台转写、并自动编辑那条动态把文字补进正文，所以正常情况下用不到这条回帖。只有**页面在补文字前被关掉**、转写服务不可用（`cmx-mcp-http` 未配模型目录、超时）或语音来自别的客户端时，动态才会一直是空正文，帮工才补上一条回复——效果仍是飞书那样的「语音气泡 + 文字」，只是署名是帮工而不是你。**源动态正文只要有文字（HTML 去标签后非空），帮工就直接记账跳过**，绝不重复贴一遍转写。
+它现在只是**兜底**：网页悬浮录音键（见下一节）秒发语音后会在后台转写、并自动编辑那条动态把文字补进正文；v17 即使页面关闭，也会在当前设备的浏览器 outbox 中保留录音，重新打开 CMX 后继续补写。只有本机 outbox 被清除、持续不可用，或语音来自别的客户端时，帮工才补上一条回复——效果仍是飞书那样的「语音气泡 + 文字」，只是署名是帮工而不是你。**源动态正文只要有文字（HTML 去标签后非空），帮工就直接记账跳过**，绝不重复贴一遍转写。
 
 **已知竞态**：帮工默认每 120 秒轮询一次（`CMX_WORKER_POLL_SECONDS`）。如果它恰好在网页「发出语音」和「补上文字」之间那几秒轮到该帖，就会看到空正文并回一条转写，之后网页仍会把正文补上——结果是同一段话出现两次（一次在正文、一次在回帖）。无害、不影响可见性，想彻底避免就把轮询间隔调大，或让页面停留到「文字已补上 ✓」再离开。
 
 音频与转写内容只在本机处理，**不经过任何云端模型**；模型也**永不自动下载**。
 
-- 装可选依赖：在 `mcp\` 下执行 `.venv\Scripts\pip install -e .[workers]`（只多装 faster-whisper 一个包）；
-- 备模型：自行准备一个 CTranslate2 格式的 faster-whisper 模型目录（例如 `small` / `medium` 的转换版），放在本机任意位置；
-- 配环境变量：`CMX_WHISPER_MODEL_DIR` 指向该目录（必填；缺失时帮工在进入轮询前就打印一行原因并以退出码 2 结束），可选 `CMX_WHISPER_DEVICE`（默认 `cpu`）、`CMX_WHISPER_COMPUTE`（默认 `int8`）、`CMX_WHISPER_LANGUAGE`（默认留空即自动识别）、`CMX_WORKER_POLL_SECONDS`（默认 120，范围 30–3600）、`CMX_WHISPER_MAX_SECONDS`（默认 1800）、`CMX_WORKER_MAX_AUDIO_BYTES`（默认 200MB）；
+- 装可选依赖：在 `mcp\` 下执行 `.venv\Scripts\pip install -e .[workers]`，安装 faster-whisper >=1.1、OpenCC 与 WebSocket 客户端；主安装仍不携带转写依赖；
+- 备模型：自行准备一个 CTranslate2 格式的 faster-whisper 模型目录（中文准确率优先可选择比 `small` 更强的本地模型），目录必须含非空 `model.bin`；程序永不按模型名联网下载；
+- 中文默认：`CMX_WHISPER_LANGUAGE=zh`（默认值）、简体中文初始提示、热词 `CMX, PI OS`、beam 5、VAD，输出再经 OpenCC 转简体并清理汉字间空格；同一进程复用已加载模型，第二条开始不再重复冷启动；
+- 配环境变量：`CMX_QWEN_ASR_URL` 可指向本机 CapsWriter WebSocket（例如 `ws://127.0.0.1:6016`），`CMX_QWEN_ASR_TIMEOUT` 默认 30 秒；Qwen 请求固定识别语言为 Chinese，输出经 OpenCC 转简体。`CMX_WHISPER_MODEL_DIR` 供 worker 启动检查及 faster-whisper 兜底使用；其余可选项为 `CMX_WHISPER_DEVICE`（默认 `cpu`）、`CMX_WHISPER_COMPUTE`（默认 `int8`）、`CMX_WHISPER_LANGUAGE`（设 `auto` 或空值可恢复自动识别）、`CMX_WHISPER_INITIAL_PROMPT`、`CMX_WHISPER_HOTWORDS`、`CMX_WHISPER_BEAM_SIZE`（1–10）、`CMX_WORKER_POLL_SECONDS`（默认 120，范围 30–3600）、`CMX_WHISPER_MAX_SECONDS`（默认 1800）、`CMX_WORKER_MAX_AUDIO_BYTES`（默认 200MB）；
 - 启停：`worker-start.ps1 -BotId gpt` 启动，`worker-stop.ps1 -BotId gpt` 停止，`worker-status.ps1 -BotId gpt` 看状态；日志按天写入 `runtime\logs\worker-<bot>-<日期>.log`；PID 文件为 `runtime\cmx-worker-<bot>.pid`，重启后 PID 复用会被识别为过期记录，绝不误杀陌生进程；
-- 只跑一轮（冒烟）：`.venv\Scripts\cmx-worker.exe --bot gpt --once`。
+- 只跑一轮（冒烟）：`.venv\Scripts\cmx-worker.exe --bot gpt --once`。日志会标明 `ASR engine=qwen3-asr` 或 `ASR engine=faster-whisper`；Qwen 服务本身由 CapsWriter-Offline 独立启动和常驻，CMX 不负责复制、下载或管理模型。
 
 边界：
 
@@ -256,25 +257,26 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 
 ## 网页悬浮录音键
 
-在**浏览器**里打开自己的 CMX 网页（`https://<WEB_DOMAIN>`）并登录后，右下角会出现一个「隐约可见」的麦克风圆钮 🎙️（平时半透明，碰一下才亮）。点一下开始录音，钮变红并轻微脉动，上方出现 ✓ / ✕ 和 mm:ss 计时：
+在**浏览器**里打开自己的 CMX 网页（`https://<WEB_DOMAIN>`）并登录后，右下角会出现一个 64px 半透明麦克风圆钮 🎙️。点一下开始录音，钮变红并轻微脉动，上方出现 ✓ / ✕ 和 mm:ss 计时：
 
-- ✓ 发布：**秒发语音**——音频一上传完就立刻发出动态（**空正文 + 语音附件**，**可见性跟随你账号的默认可见性**，署名是**你自己**），马上闪一下「已发布 🎙️」，你不用等转写；
+- 再点一次大麦克风或点 ✓：立即结束并开始上传；音频一上传完就发出动态（**空正文 + 语音附件**，可见性跟随账号默认值，署名是**你自己**），你不用等转写；
 - ✕ 丢弃：立刻停止录音、关闭麦克风，什么也不发；
-- 失败（没麦克风权限、上传或发布出错）时闪一下「发布失败」，录音直接丢弃、**不重试**，细节写进浏览器控制台（前缀 `[pi-voice]`）。
+- 每次结束录音后，脚本在发起网络请求前把 Blob 和稳定 `Idempotency-Key` 写入当前浏览器 IndexedDB `cmx-voice-outbox`；上传、发布、转写或编辑失败时保留，网络恢复或重新打开 CMX 后自动续传，成功补文字后删除；
+- IndexedDB 不保存网页登录 token，也不跨设备同步：手机上的失败录音由这台手机续传，Windows 上的由这台 Windows 续传；清除站点数据会删除尚未完成的录音。若浏览器禁用或拒绝 IndexedDB，仍会尝试即时发布，但无法保证失败恢复。
 
 **文字是后台补上的**：动态发出后，脚本在后台把录音送到同源的 `POST /files/transcribe`（本机转写，90 秒超时），转写回来就**自动编辑刚发的那条动态**（`PUT /api/v1/statuses/<id>`，带 `media_attributes`），一次补上**正文 = 转写文字**和**语音附件的替代文本 = 同一段文字**（无障碍朗读 + MCP 侧紧凑 alt），补好后闪一下「文字已补上 ✓」。正文最长 4900 字符、alt 最长 1500 字符，超出按 `…` 截断。**AI 经 MCP 只消费正文文字**，不会去听音频。
 
-**补不上就退回兜底**：转写不可用（`/files/transcribe` 返回 503/502 或超时，例如 `cmx-mcp-http` 所在机器没配模型目录），或者**你在文字补上之前就关了页面/切走**，那条动态就停在纯语音状态——脚本只 `console.warn` 一行、**不重试**——之后由帮工回帖兜底（见上一节）。想稳妥拿到正文，录完后让页面多停几秒。
+**补不上会续传**：转写不可用（`/files/transcribe` 返回 503/502 或超时）或页面在文字补上前关闭时，已发布状态和录音仍留在 outbox；当前浏览器下次打开 CMX 或收到 `online` 事件后重新转写并编辑原帖。发布使用同一幂等键，网络响应丢失后也不会因为续传重复发帖。只有 outbox 被清除或长期不可用时才退回帮工回帖兜底（见上一节）。
 
 （转写还在跑的时候可以接着录下一条：每条动态的编辑只认它自己发布那一刻的 id 与录音，不会串台。）
 
-它是怎么做到的：Nginx 用 `sub_filter` 在 Mastodon 网页的 `</body>` 前注入**唯一一个同源脚本** `/files/voice.js`（由 `cmx-mcp-http` 静态提供），**没有 fork Mastodon，也没有改它的源码**。脚本鉴权用的是**当前网页自己的登录态 token**（Mastodon 本来就把它写在 DOM 的 `#initial-state` 里），所有请求都是**相对路径的同源 API**（`/api/v2/media`、`/api/v1/statuses`、`PUT /api/v1/statuses/<id>`、`/files/transcribe`），**不存储也不外传任何凭据**。未登录的页面拿不到 token，浏览器不支持 `getUserMedia` / `MediaRecorder` 时也一样：脚本静默退出，页面上什么都不会出现。
+它是怎么做到的：Nginx 用 `sub_filter` 在 Mastodon 网页的 `</body>` 前注入**唯一一个同源脚本** `/files/voice.js`（由 `cmx-mcp-http` 静态提供），**没有 fork Mastodon，也没有改它的源码**。脚本鉴权用的是**当前网页自己的登录态 token**（Mastodon 本来就把它写在 DOM 的 `#initial-state` 里），所有请求都是**相对路径的同源 API**（`/api/v2/media`、`/api/v1/statuses`、`PUT /api/v1/statuses/<id>`、`/files/transcribe`）；outbox 只持久化录音和发布进度，**不存储也不外传凭据**。未登录的页面拿不到 token，浏览器不支持 `getUserMedia` / `MediaRecorder` 时也一样：脚本静默退出，页面上什么都不会出现。
 
 `POST /files/transcribe`（走既有 `/files/` 路由，**不需要改 Nginx**）：
 
 - 鉴权：读 `Authorization: Bearer <token>`，这是**调用者自己的网页登录态 token**，服务端拿它去本实例 `GET /api/v1/accounts/verify_credentials` 临时校验，非 200 即 401；**这个 token 不入库、不写日志、不落盘**，用完即弃；
-- 转写：仍是**本机** faster-whisper，复用帮工那套环境变量（`CMX_WHISPER_MODEL_DIR` / `CMX_WHISPER_DEVICE` / `CMX_WHISPER_COMPUTE` / `CMX_WHISPER_LANGUAGE` / `CMX_WHISPER_MAX_SECONDS`），大小上限复用 `CMX_WORKER_MAX_AUDIO_BYTES`（默认 200MB，超限 413）；音频写到 `runtime\voice-tmp\`，**用完即删**；
-- 模型目录未配置或不存在 → 503 `transcriber_unavailable`（脚本据此放弃补文字，动态停在纯语音）；转写器报错 → 502 带错误码；
+- 转写：优先调用 `CMX_QWEN_ASR_URL` 指向的本机 Qwen3-ASR 服务，失败时回退**本机** faster-whisper；发送给 Qwen 前做最小 16 kHz 音频活动检查，并拒绝 Qwen 原样回显 context 的结果；音频写到 `runtime\voice-tmp\`，用完即删，Qwen 模型由 CapsWriter 服务常驻，Whisper 模型在 CMX 进程内复用；
+- 静音、录音过短、无有效活动或 Qwen 返回空/纯 context 时返回 `no_speech` 与空 `text`，HTTP 状态保持 200，网页不会编辑出脑补文字；Qwen 服务不可用时会明确记录并回退 Whisper；两者都不可用才返回 503 `transcriber_unavailable` 或 502 转写错误（录音留在浏览器 outbox）；
 - **注意**：`CMX_WHISPER_MODEL_DIR` 是给 `cmx-mcp-http` 服务进程读的——**新设或改了这个变量必须重启 `cmx-mcp-http`（`http-stop.ps1` + `http-start.ps1`）**，否则它看不到该变量，网页录音键发出的语音永远补不上文字（只能靠帮工兜底）。
 
 手机怎么用：
@@ -283,7 +285,19 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 - iOS 用 Safari（录音格式走 `audio/mp4`）；Android Chrome 走 `audio/webm`；
 - 必须是 HTTPS 页面浏览器才允许用麦克风，第一次点会弹权限询问。
 
-**限制**：原生 App（Ice Cubes、Tusky、Mona 等）用自己的界面，Nginx 注入的脚本进不去，**原生 App 里看不到这个录音键**——要录语音就用浏览器或主屏幕图标打开网页。改动脚本后需要 `nginx -s reload`，并强刷网页（脚本缓存 5 分钟）。
+**限制**：原生 App（Ice Cubes、Tusky、Mona 等）不加载 Nginx 注入脚本，因此没有网页录音键，也不会自动触发识图。改动脚本后需 `nginx -s reload`，并同步递增 `VOICE_WIDGET_VERSION` 与 Nginx 注入 URL 的 `cmx-v=<版本>`。
+
+## 网页图片 OCR 与 Gemini 识图
+
+v20 同源脚本除语音外，还被动观察 Mastodon 原生图片上传和发布；不替换 XHR、不改请求/响应，也不让发布等待识别。图片 Blob 与 media id 先写入当前浏览器 IndexedDB `cmx-image-recognition-outbox`；状态发布成功后才异步调用同源 `POST /files/recognize`。识别成功时，服务端使用调用者自己的页 bearer 读取原始正文并编辑该状态，把 `AI识图：…` 写入媒体 alt，保留正文、CW、媒体列表、语言、敏感标志和用户原有 alt。
+
+- 本机 RapidOCR 是主路，权重不联网下载；
+- Gemini 是可选增强，key 经 `cmx-admin gemini-key` 写入 DPAPI 文件，不进 Git/环境变量/shell 历史；
+- `CMX_GEMINI_DAILY_LIMIT=100` 按 UTC 日计尝试次数；值为 `0` 可禁用云端，超限、未配 key 或 Gemini 失败时仅降级为本机 OCR，不影响发布；
+- SQLite schema v7 的 `image_recognition` 按图片 SHA-256 共享缓存，`status_media` 映射 Mastodon 附件，`gemini_daily_usage` 只存 UTC 日计数；
+- 网页与 MCP 搜索都用当前居民 token 刷新既有 SQLite `status_cache`：首次分页读取 home 并记录独立水位，后续以 `min_id` 只读取新 home 动态；本人动态仍分页读取。SQLite LIKE 优先，结果不足时用 RapidFuzz 中文 typo 与 pypinyin 小写无声调全拼/首字母 fallback；拼音派生值只保留在进程内有界缓存。可按正文、媒体 alt、OCR、画面描述或关键词找回动态；不直连 PostgreSQL。
+
+原生 Mastodon App 不加载 Nginx 注入脚本，因此不会自动触发识图。修改该脚本时必须同步递增 `VOICE_WIDGET_VERSION` 与 Nginx 的 `cmx-v=<版本>`，避免 Cloudflare 边缘缓存继续发送旧脚本。
 
 ## 媒体
 

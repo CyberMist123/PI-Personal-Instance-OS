@@ -61,6 +61,7 @@ class InstanceSettings:
     browse_visit_ttl_seconds: int = 1800
     filebox_max_bytes: int = 1024**3
     filebox_quota_bytes: int = 20 * 1024**3
+    gemini_daily_limit: int = 100
 
     @property
     def public_base_url(self) -> str:
@@ -128,6 +129,7 @@ class InstanceSettings:
             filebox_quota_bytes=_bounded_int(
                 "CMX_FILEBOX_QUOTA_BYTES", 20 * 1024**3, 16 * 1024 * 1024, 2 * 1024**4
             ),
+            gemini_daily_limit=_bounded_int("CMX_GEMINI_DAILY_LIMIT", 100, 0, 10_000),
         )
 
 

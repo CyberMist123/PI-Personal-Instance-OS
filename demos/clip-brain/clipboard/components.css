@@ -1,0 +1,232 @@
+/* Cards are the one place that carries a full outline. Nothing inside a card
+   is boxed again: structure comes from spacing, hairlines and the left bar. */
+
+.card {
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-left: 6px solid var(--yellow);
+  border-radius: 16px;
+  box-shadow: var(--soft);
+}
+.card.is-favorite { background: var(--wash-t); border-left-color: var(--teal); }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-wrap: wrap;
+  padding: 12px 15px 0;
+}
+
+.tick {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  background: var(--input);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  color: transparent;
+}
+.tick:hover { background: var(--wash-y); }
+.tick[aria-checked="true"] {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--on-accent);
+}
+
+.badge { font-size: 12px; font-weight: 900; color: var(--text-3); }
+.card.is-favorite .badge { color: var(--teal); }
+
+.countdown {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 15.5px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+.card.is-favorite .countdown { font-size: 12px; color: var(--teal); letter-spacing: .6px; }
+
+.ttl {
+  height: 3px;
+  margin: 9px 15px 0;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.ttl > span { display: block; height: 100%; border-radius: 999px; background: var(--yellow); }
+.ttl.is-low > span { background: var(--coral); }
+.card.is-favorite .ttl { display: none; }
+
+/* Double-click copies; there is no copy button. */
+.clip-text {
+  margin: 11px 15px 0;
+  padding: 9px 11px;
+  border-radius: 11px;
+  cursor: copy;
+  font-size: 13.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+.clip-text:hover { background: var(--wash-y); }
+.clip-text:empty { display: none; }
+
+.clip-files {
+  list-style: none;
+  margin: 9px 15px 0;
+  padding: 0;
+  max-height: 168px;
+  overflow-y: auto;
+}
+.clip-files:empty { display: none; }
+
+.filerow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 7px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line-soft);
+}
+.filerow:hover { background: var(--wash-y); border-radius: 9px; }
+.filerow .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+}
+.filerow .size {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.filerow .file-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.file-delete {
+  border: 0;
+  background: none;
+  padding: 2px 6px;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--text-4);
+  cursor: pointer;
+}
+.file-delete:hover { color: var(--coral); }
+
+.more {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  padding: 9px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.more:hover { color: var(--text); }
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  padding: 9px 11px 11px;
+}
+.mini {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  border-radius: 9px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 7px 11px;
+}
+.mini:hover { background: var(--wash-y); color: var(--text); }
+.mini-star:hover { background: var(--teal); color: var(--on-accent); }
+.mini-star[aria-pressed="true"] { color: var(--teal); }
+.mini-danger { margin-left: auto; color: var(--text-3); }
+.mini-danger:hover { background: var(--coral); color: #fff; }
+.is-armed { color: var(--coral); font-weight: 900; }
+
+/* Pending-upload stickers: type badge first, filename without its extension. */
+.chips { display: grid; gap: 9px; margin-top: 14px; }
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--soft);
+}
+.chip:hover { background: var(--wash-y); }
+.chip .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 800;
+}
+.chip .size {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.chip-x {
+  border: 0;
+  background: none;
+  padding: 0 1px;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.chip-x:hover { color: var(--coral); }
+
+.kind {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  padding: 3px 9px;
+  border-radius: 8px;
+  background: var(--kind-bg);
+  color: var(--kind-fg);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .6px;
+}

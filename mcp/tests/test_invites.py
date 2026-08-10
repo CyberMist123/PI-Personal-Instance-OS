@@ -34,7 +34,7 @@ def _client() -> OAuthClientInformationFull:
     )
 
 
-def _provider(tmp_path):
+def _provider(tmp_path, remote_profile: str = "social_plus"):
     store = OAuthStore(tmp_path / "oauth.sqlite3")
     store.initialize()
     provider = CmxOAuthProvider(
@@ -44,6 +44,7 @@ def _provider(tmp_path):
             "gpt" if resource.rstrip("/") == "https://pi.example/mcp/gpt" else None
         ),
         bot_is_enabled=lambda bot_id: bot_id == "gpt",
+        bot_remote_profile=lambda _bot_id: remote_profile,
         redeem_origin="https://pi.example",
     )
     return store, provider
@@ -92,21 +93,50 @@ def test_invite_redeem_approves_pending_and_is_single_use(tmp_path):
     asyncio.run(scenario())
 
 
-def test_invite_scope_ceiling_is_enforced(tmp_path):
+def test_the_invite_defines_the_grant_not_the_request(tmp_path):
+    """Owner-minted invite wins over whatever scope the client asked for."""
+
     async def scenario():
         store, provider = _provider(tmp_path)
         client = _client()
         await provider.register_client(client)
 
+        # Asking for more than the invite covers still lands on the invite.
         request_id = await _pending_request(provider, client, scopes=[READ_SCOPE, SOCIAL_SCOPE])
         read_only = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
-        with pytest.raises(ValueError, match="权限"):
-            provider.redeem(request_id, read_only)
-        assert provider.pending(request_id) is not None
+        target = provider.redeem(request_id, read_only)
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert list(auth_code.scopes) == [READ_SCOPE]
 
+        # And asking for less does too: this is the ChatGPT case. It sends
+        # scope=cmx:read whatever we advertise, so honouring the request would
+        # make a social connector impossible to create.
+        request_id = await _pending_request(provider, client, scopes=[READ_SCOPE])
         social = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE, SOCIAL_SCOPE])
         target = provider.redeem(request_id, social)
-        assert "code=" in target
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert sorted(auth_code.scopes) == [READ_SCOPE, SOCIAL_SCOPE]
+
+    asyncio.run(scenario())
+
+
+def test_reader_resident_narrows_an_explicit_social_request(tmp_path):
+    """Clients replay our registration default, so cmx:social must not 400."""
+
+    async def scenario():
+        store, provider = _provider(tmp_path, remote_profile="reader")
+        client = _client()
+        await provider.register_client(client)
+
+        request_id = await _pending_request(provider, client, scopes=[READ_SCOPE, SOCIAL_SCOPE])
+        assert list(provider.pending(request_id).scopes) == [READ_SCOPE]
+        invite = store.create_invite(bot_id="gpt", scopes=[READ_SCOPE])
+        target = provider.redeem(request_id, invite)
+        raw_code = target.split("code=", 1)[1].split("&", 1)[0]
+        auth_code = await provider.load_authorization_code(client, raw_code)
+        assert list(auth_code.scopes) == [READ_SCOPE]
 
     asyncio.run(scenario())
 
@@ -267,6 +297,10 @@ def test_confidential_client_full_flow_like_chatgpt(tmp_path, monkeypatch):
         assert payload.get("client_secret")
         # A zero/instant expiry here is exactly the bug that broke ChatGPT.
         assert not payload.get("client_secret_expires_at")
+        # ChatGPT registers without asking for a scope and then replays this
+        # value on every /authorize. Handing back read-only pinned its
+        # connector to a read-only token no invite could widen.
+        assert sorted(payload["scope"].split()) == [READ_SCOPE, SOCIAL_SCOPE]
 
         authorize = client.get(
             "/authorize",
@@ -277,7 +311,11 @@ def test_confidential_client_full_flow_like_chatgpt(tmp_path, monkeypatch):
                 "state": "gpt-state",
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
-                "scope": f"{READ_SCOPE} {SOCIAL_SCOPE}",
+                # Verbatim from the nginx log of a real connector setup on
+                # 2026-07-31: ChatGPT asks for cmx:read alone even though it
+                # just registered with cmx:read cmx:social and both discovery
+                # documents list the social scope.
+                "scope": READ_SCOPE,
                 "resource": "https://pi.example/mcp/gpt",
             },
             follow_redirects=False,
@@ -310,6 +348,9 @@ def test_confidential_client_full_flow_like_chatgpt(tmp_path, monkeypatch):
         assert tokens.status_code == 200, tokens.text
         body = tokens.json()
         assert body.get("access_token") and body.get("refresh_token")
+        # The social invite must actually reach the token: this is the whole
+        # reason the ChatGPT connector could only read.
+        assert sorted(body["scope"].split()) == [READ_SCOPE, SOCIAL_SCOPE]
 
 
 def test_public_invite_page_end_to_end(tmp_path, monkeypatch):
