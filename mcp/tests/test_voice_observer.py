@@ -257,7 +257,9 @@ def _app(tmp_path, monkeypatch):
     monkeypatch.setattr("cmx_mcp.remote.Runtime", FakeRuntime)
     monkeypatch.setattr(remote_module, "_verify_mastodon_bearer", lambda base, token: True)
     monkeypatch.setattr(
-        remote_module, "transcribe_file", lambda path, **kwargs: {"text": "没事", "elapsed_ms": 5}
+        remote_module,
+        "transcribe_file",
+        lambda path, **kwargs: {"text": "没事", "engine": "local", "elapsed_ms": 5},
     )
     return create_remote_app(paths), paths, database
 
@@ -283,7 +285,7 @@ def test_without_a_gemini_key_the_response_is_exactly_the_old_one(tmp_path, monk
     with TestClient(app, base_url="https://pi.example") as client:
         response = _post_audio(client)
     assert response.status_code == 200
-    assert response.json() == {"text": "没事"}
+    assert response.json() == {"text": "没事", "engine": "local"}
 
 
 def test_a_successful_observation_rides_the_response_and_lands_in_the_baseline(
@@ -309,6 +311,7 @@ def test_a_successful_observation_rides_the_response_and_lands_in_the_baseline(
     assert response.status_code == 200
     assert response.json() == {
         "text": "没事",
+        "engine": "local",
         "voice_note": "[声音: 语速偏慢 · 停顿多 · 音量轻 · 气声 · 背景安静]",
     }
     # The observer heard the remuxed clip, not the raw WebM Gemini cannot read.
@@ -342,7 +345,11 @@ def test_the_same_clip_reuses_the_stored_observation(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_module, "observe_voice", exploding_observe)
     with TestClient(app, base_url="https://pi.example") as client:
         response = _post_audio(client)
-    assert response.json() == {"text": "没事", "voice_note": "[声音: 语速中等 · 背景安静]"}
+    assert response.json() == {
+        "text": "没事",
+        "engine": "local",
+        "voice_note": "[声音: 语速中等 · 背景安静]",
+    }
 
 
 def test_observer_failure_never_touches_the_transcript(tmp_path, monkeypatch):
@@ -355,7 +362,7 @@ def test_observer_failure_never_touches_the_transcript(tmp_path, monkeypatch):
     with TestClient(app, base_url="https://pi.example") as client:
         response = _post_audio(client)
     assert response.status_code == 200
-    assert response.json() == {"text": "没事"}
+    assert response.json() == {"text": "没事", "engine": "local"}
 
 
 def test_the_daily_limit_gates_the_observer_too(tmp_path, monkeypatch):
@@ -371,7 +378,7 @@ def test_the_daily_limit_gates_the_observer_too(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="https://pi.example") as client:
         response = _post_audio(client)
-    assert response.json() == {"text": "没事"}
+    assert response.json() == {"text": "没事", "engine": "local"}
 
 
 def test_the_kill_switch_disables_the_observer_alone(tmp_path, monkeypatch):
@@ -385,7 +392,7 @@ def test_the_kill_switch_disables_the_observer_alone(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="https://pi.example") as client:
         response = _post_audio(client)
-    assert response.json() == {"text": "没事"}
+    assert response.json() == {"text": "没事", "engine": "local"}
 
 
 def test_the_widget_puts_the_note_in_the_alt_never_the_body():

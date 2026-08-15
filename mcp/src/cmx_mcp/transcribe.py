@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import re
 import asyncio
 import base64
@@ -8,11 +10,20 @@ import logging
 import os
 import threading
 import time
+import wave
 from pathlib import Path
 from typing import Any
 
-# Every transcript is produced by a local CTranslate2 model directory. The
-# worker never downloads a model and never sends audio to a cloud provider.
+# The default path is local-only: a resident Qwen3-ASR service, falling back to
+# a local CTranslate2 model directory. The worker never downloads a model, and
+# on that path no audio leaves this machine.
+#
+# There is exactly one exception, and it only fires when a caller asks for it by
+# name: engine="cloud" sends the audio to Alibaba's qwen3-asr-flash. It exists
+# because the 1.7B local model garbles clause endings often enough that the
+# owner wants a deliberate second opinion available -- see `transcribe_cloud`.
+# Nothing routes there automatically, and a machine with no cloud credentials
+# configured simply reports cloud_not_configured and keeps working locally.
 
 # A CTranslate2 model directory is identified by its weights, not by existing.
 # Checking only is_dir() lets a plausible-but-wrong folder through and turns a
@@ -35,6 +46,23 @@ _OPENCC_CHECKED = False
 _LOGGER = logging.getLogger(__name__)
 QWEN_ASR_URL_ENV = "CMX_QWEN_ASR_URL"
 QWEN_ASR_TIMEOUT_ENV = "CMX_QWEN_ASR_TIMEOUT"
+
+# --- Cloud second opinion (opt-in per call) ---------------------------------
+#
+# The credential is read from a CSV file path, not from an environment
+# variable holding the key itself: the same discipline vision_cloud.py applies
+# with DPAPI. The file is the one the owner already keeps for the Qwen vision
+# calls, so enabling this adds no second copy of the secret.
+CLOUD_KEY_FILE_ENV = "CMX_CLOUD_ASR_KEY_FILE"
+CLOUD_HOST_ENV = "CMX_CLOUD_ASR_HOST"
+CLOUD_MODEL_ENV = "CMX_CLOUD_ASR_MODEL"
+CLOUD_TIMEOUT_ENV = "CMX_CLOUD_ASR_TIMEOUT"
+DEFAULT_CLOUD_MODEL = "qwen3-asr-flash"
+# Both limits are the provider's, and both are checked against the transcoded
+# 16 kHz mono WAV rather than the source file: a 200 KB Opus note expands to
+# several MB of PCM, so the source size says nothing useful about either.
+CLOUD_MAX_AUDIO_SECONDS = 300.0
+CLOUD_MAX_WAV_BYTES = 10 * 1024 * 1024
 QWEN_MIN_AUDIO_SECONDS = 0.35
 QWEN_ACTIVITY_FRAME_SAMPLES = 1600
 QWEN_ACTIVITY_HOP_SAMPLES = 800
@@ -67,13 +95,47 @@ def transcribe_file(
     beam_size: int = 5,
     max_audio_seconds: float = 1800.0,
     max_output_chars: int = 8000,
+    engine: str = "local",
 ) -> dict[str, Any]:
     """Transcribe locally with the resident Qwen service, then Whisper as fallback.
 
     Qwen is an optional local CapsWriter WebSocket service. The existing
     faster-whisper model remains the fallback and is cached for this process.
+
+    ``engine="cloud"`` asks for the paid second opinion instead. A cloud failure
+    is not fatal: it degrades to the local chain and reports what went wrong in
+    ``cloud_error``, because a caller that asked for a better transcript is
+    better served by a worse one than by nothing.
     """
     started = time.monotonic()
+    if str(engine or "").strip().lower() == "cloud":
+        cloud_result = transcribe_cloud(path, language=language)
+        if not cloud_result.get("error"):
+            cloud_result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+            _LOGGER.info(
+                "ASR engine=%s elapsed_ms=%s path=%s",
+                cloud_result.get("engine"),
+                cloud_result["elapsed_ms"],
+                path,
+            )
+            return cloud_result
+        cloud_error = str(cloud_result["error"])
+        _LOGGER.warning("ASR engine=cloud failed (%s); falling back to local", cloud_error)
+        local_result = transcribe_file(
+            path,
+            model_dir=model_dir,
+            device=device,
+            compute_type=compute_type,
+            language=language,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
+            beam_size=beam_size,
+            max_audio_seconds=max_audio_seconds,
+            max_output_chars=max_output_chars,
+        )
+        local_result["cloud_error"] = cloud_error
+        return local_result
+
     qwen_result = _transcribe_with_qwen(
         path,
         language=language,
@@ -142,6 +204,159 @@ def transcribe_file(
     }
     _LOGGER.info("ASR engine=faster-whisper elapsed_ms=%s path=%s", result["elapsed_ms"], path)
     return result
+
+
+def cloud_asr_configured() -> bool:
+    """Whether a cloud second opinion could run on this machine."""
+    key, host = _load_cloud_credentials()
+    return bool(key and host)
+
+
+def _load_cloud_credentials() -> tuple[str, str]:
+    """Read (api_key, api_host) out of the owner's Qwen credential CSV.
+
+    The file is two-column ``name,value`` rows and is written by Alibaba's
+    console in the local ANSI codepage, not UTF-8, so it is decoded as GBK --
+    reading it as UTF-8 raises on the Chinese filename's sibling rows. A
+    missing or unreadable file is "not configured", never an exception: the
+    local path must keep working on a machine that never opted in.
+    """
+    path = os.getenv(CLOUD_KEY_FILE_ENV, "").strip()
+    if not path:
+        return "", ""
+    key = ""
+    host = os.getenv(CLOUD_HOST_ENV, "").strip()
+    try:
+        with open(path, newline="", encoding="gbk", errors="replace") as handle:
+            for row in csv.reader(handle):
+                if len(row) < 2:
+                    continue
+                name = row[0].strip()
+                if name == "apiKey" and not key:
+                    key = row[1].strip()
+                elif name == "apiHost" and not host:
+                    host = row[1].strip()
+    except OSError:
+        return "", ""
+    return key, host
+
+
+def _cloud_timeout_seconds() -> float:
+    raw = os.getenv(CLOUD_TIMEOUT_ENV, "90").strip()
+    try:
+        return max(5.0, min(float(raw), 600.0))
+    except ValueError:
+        return 90.0
+
+
+def transcribe_cloud(path: str | Path, *, language: str = "zh") -> dict[str, Any]:
+    """One qwen3-asr-flash call for *path*, or a dict with an ``error`` key.
+
+    qwen3-asr-flash accepts WAV/MP3 only, and a Telegram voice note is
+    Ogg/Opus, so the audio is decoded and re-encoded here rather than uploaded
+    as-is. That reuses the PyAV decode the local Qwen path already depends on;
+    no new dependency and no ffmpeg subprocess.
+
+    Like every other failure in this module, provider trouble comes back as a
+    returned dict, never a raised exception -- the caller degrades to local.
+    """
+    key, host = _load_cloud_credentials()
+    if not key or not host:
+        return {"error": "cloud_not_configured"}
+
+    try:
+        import av
+        import httpx
+        import numpy as np
+    except Exception as exc:
+        return {"error": "cloud_dependency_missing", "detail": _short(exc)}
+
+    started = time.monotonic()
+    try:
+        audio = _decode_audio_16k(path, av, np)
+    except Exception as exc:
+        return {"error": "cloud_decode_failed", "detail": _short(exc)}
+    seconds = audio.size / 16000.0
+    if seconds > CLOUD_MAX_AUDIO_SECONDS:
+        return {"error": "cloud_audio_too_long", "detail": f"{seconds:.0f}s"}
+    wav_bytes = _wav_bytes_16k(audio, np)
+    if len(wav_bytes) > CLOUD_MAX_WAV_BYTES:
+        return {"error": "cloud_audio_too_large", "detail": str(len(wav_bytes))}
+
+    model = os.getenv(CLOUD_MODEL_ENV, "").strip() or DEFAULT_CLOUD_MODEL
+    data_url = "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii")
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "input_audio", "input_audio": {"data": data_url}}],
+            }
+        ],
+    }
+    if language:
+        payload["asr_options"] = {"language": language}
+    try:
+        response = httpx.post(
+            f"https://{host}/compatible-mode/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=_cloud_timeout_seconds(),
+        )
+    except Exception as exc:
+        return {"error": "cloud_request_failed", "detail": _short(exc)}
+    if response.status_code != 200:
+        # The body can carry the key back in an echoed request on some error
+        # shapes, so only the status and the provider's short code travel on.
+        return {"error": f"cloud_http_{response.status_code}", "detail": _cloud_error_code(response)}
+
+    try:
+        body = response.json()
+        message = body["choices"][0]["message"]
+    except Exception as exc:
+        return {"error": "cloud_invalid_response", "detail": _short(exc)}
+
+    text = _normalize_chinese(str(message.get("content") or ""))
+    if not text:
+        return {"error": "no_speech", "detail": "cloud_empty_result", "text": ""}
+    result: dict[str, Any] = {
+        "text": text,
+        "engine": model,
+        "duration": seconds,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
+    for annotation in message.get("annotations") or []:
+        if isinstance(annotation, dict) and annotation.get("type") == "audio_info":
+            # Detected language and speaker emotion are the two fields the local
+            # engines cannot produce at all; they are what makes a second
+            # opinion worth reading beyond the words themselves.
+            result["detected_language"] = str(annotation.get("language") or "")
+            result["emotion"] = str(annotation.get("emotion") or "")
+            break
+    return result
+
+
+def _cloud_error_code(response: Any) -> str:
+    try:
+        body = response.json()
+    except Exception:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("code") or error.get("type") or "")[:80]
+    return ""
+
+
+def _wav_bytes_16k(audio: Any, np: Any) -> bytes:
+    """Pack float32 mono samples into a 16 kHz PCM16 WAV container."""
+    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16000)
+        writer.writeframes(pcm16.tobytes())
+    return buffer.getvalue()
 
 
 def _qwen_timeout_seconds() -> float:

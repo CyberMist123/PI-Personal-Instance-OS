@@ -247,6 +247,87 @@ def test_transcribe_local_trusted_media_skips_the_bearer_on_loopback_host(tmp_pa
         assert seen == []
 
 
+def test_transcribe_reports_which_engine_served_the_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    app = _app(tmp_path, monkeypatch)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "model.bin").write_bytes(b"weights")
+    monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
+    seen: list[str] = []
+
+    def fake_transcribe(path, **kwargs):
+        seen.append(kwargs.get("engine", "<unset>"))
+        return {"text": "转写", "engine": "faster-whisper", "duration": 12.345}
+
+    monkeypatch.setattr(remote_module, "transcribe_file", fake_transcribe)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/transcribe", headers={"Host": "127.0.0.1:8766"}, files=_audio()
+        )
+    assert response.status_code == 200, response.text
+    # Without this the caller cannot tell a good local transcript from a silent
+    # degradation to the small Whisper fallback.
+    assert response.json() == {"text": "转写", "engine": "faster-whisper", "duration": 12.35}
+    assert seen == ["local"]
+
+
+def test_transcribe_passes_the_cloud_engine_through_and_surfaces_its_extras(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    app = _app(tmp_path, monkeypatch)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "model.bin").write_bytes(b"weights")
+    monkeypatch.setenv("CMX_WHISPER_MODEL_DIR", str(model_dir))
+    seen: list[str] = []
+
+    def fake_transcribe(path, **kwargs):
+        seen.append(kwargs.get("engine", "<unset>"))
+        return {
+            "text": "云端转写",
+            "engine": "qwen3-asr-flash",
+            "detected_language": "zh",
+            "emotion": "neutral",
+        }
+
+    monkeypatch.setattr(remote_module, "transcribe_file", fake_transcribe)
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/transcribe",
+            headers={"Host": "127.0.0.1:8766"},
+            files=_audio(),
+            data={"engine": "cloud"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "text": "云端转写",
+        "engine": "qwen3-asr-flash",
+        "detected_language": "zh",
+        "emotion": "neutral",
+    }
+    assert seen == ["cloud"]
+
+
+def test_transcribe_rejects_an_engine_it_does_not_know(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    app = _app(tmp_path, monkeypatch)
+    called: list[str] = []
+    monkeypatch.setattr(
+        remote_module, "transcribe_file", lambda path, **kwargs: called.append("ran") or {}
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/transcribe",
+            headers={"Host": "127.0.0.1:8766"},
+            files=_audio(),
+            data={"engine": "gpt-4o-transcribe"},
+        )
+    assert response.status_code == 400
+    assert response.json() == {"error": "unknown_engine", "supported": ["local", "cloud"]}
+    # An unrecognised engine must not quietly fall through to a local run.
+    assert called == []
+
+
 def test_transcribe_local_trusted_media_does_not_weaken_the_public_host(tmp_path, monkeypatch):
     monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
     app = _app(tmp_path, monkeypatch)
@@ -309,7 +390,7 @@ def test_transcribe_returns_the_transcript_off_the_event_loop(tmp_path, monkeypa
                 **kwargs,
             }
         )
-        return {"text": " 今天天气不错 ", "elapsed_ms": 7}
+        return {"text": " 今天天气不错 ", "elapsed_ms": 7, "engine": "qwen3-asr"}
 
     monkeypatch.setattr(remote_module, "transcribe_file", fake_transcribe_file)
     with TestClient(app, base_url="https://pi.example") as client:
@@ -320,7 +401,7 @@ def test_transcribe_returns_the_transcript_off_the_event_loop(tmp_path, monkeypa
         )
 
     assert ok.status_code == 200, ok.text
-    assert ok.json() == {"text": "今天天气不错"}
+    assert ok.json() == {"text": "今天天气不错", "engine": "qwen3-asr"}
     assert ok.headers["cache-control"] == "no-store"
     assert len(calls) == 1
     assert calls[0]["bytes"] == b"fake-audio"

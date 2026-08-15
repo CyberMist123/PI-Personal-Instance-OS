@@ -276,6 +276,8 @@ Mastodon/PostgreSQL 始终是账号、动态、关系、媒体和互动的唯一
 
 - 鉴权：读 `Authorization: Bearer <token>`，这是**调用者自己的网页登录态 token**，服务端拿它去本实例 `GET /api/v1/accounts/verify_credentials` 临时校验，非 200 即 401；**这个 token 不入库、不写日志、不落盘**，用完即弃；
 - 转写：优先调用 `CMX_QWEN_ASR_URL` 指向的本机 Qwen3-ASR 服务，失败时回退**本机** faster-whisper；发送给 Qwen 前做最小 16 kHz 音频活动检查，并拒绝 Qwen 原样回显 context 的结果；音频写到 `runtime\voice-tmp\`，用完即删，Qwen 模型由 CapsWriter 服务常驻，Whisper 模型在 CMX 进程内复用；
+- 响应带 `engine`＝**真正出结果的那个引擎**（`qwen3-asr` / `faster-whisper` / 云端模型名），另有 `duration`。没有它，调用方分不清"本机大模型转得好"和"悄悄降级到小 Whisper"，而后者正是"转写忽然变差"最常见的原因；
+- 云端复转（可选，默认关）：multipart 里带 `engine=cloud` 才会走 —— 音频转码成 16 kHz WAV 发给阿里云 `qwen3-asr-flash`，返回值额外带 `detected_language` 和 `emotion`。凭据只从 `CMX_CLOUD_ASR_KEY_FILE` 指向的 CSV 读（密钥本身不进环境变量），未配置就返回 `cloud_not_configured`；云端出任何问题都会降级回本机链，并在 `cloud_error` 里说明。限制来自服务商：≤5 分钟、转码后 ≤10 MB。**这是本项目唯一一条会把音频送出本机的路径，且必须由调用方按名点用**；
 - 静音、录音过短、无有效活动或 Qwen 返回空/纯 context 时返回 `no_speech` 与空 `text`，HTTP 状态保持 200，网页不会编辑出脑补文字；Qwen 服务不可用时会明确记录并回退 Whisper；两者都不可用才返回 503 `transcriber_unavailable` 或 502 转写错误（录音留在浏览器 outbox）；
 - **注意**：`CMX_WHISPER_MODEL_DIR` 是给 `cmx-mcp-http` 服务进程读的——**新设或改了这个变量必须重启 `cmx-mcp-http`（`http-stop.ps1` + `http-start.ps1`）**，否则它看不到该变量，网页录音键发出的语音永远补不上文字（只能靠帮工兜底）。
 

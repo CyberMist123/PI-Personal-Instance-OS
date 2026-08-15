@@ -288,4 +288,17 @@ Set-Location "D:\AI\PI-Personal-Instance-OS"
 .\mcp\http-disable.ps1
 ```
 
+### loopback 服务的独立开机自启
+
+`PI-OS-Autostart` 计划任务负责整套（Docker → 网页 → tunnel）。只需要本机 `127.0.0.1:8766`
+（语音转写 `/files/transcribe`、识图 `/files/recognize` 的本地调用方，如 cyberboss）时，
+用不着拉起 Docker，改由登录时的 HKCU Run 项直接起这一个进程：
+
+- 注册值：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `CmxMcpHttp`
+  → `wscript.exe "D:\AI\PI-Personal-Instance-OS\mcp\cmx-http-autostart.vbs"`；
+- `cmx-http-autostart.vbs` 隐藏调用 `mcp\http-start.ps1`，非管理员，不经计划任务；
+- `http-start.ps1` 幂等：服务已健康时直接 exit 0，所以与 `start.ps1` 同时存在不会冲突。
+
+删掉那个注册值即可停用（服务本身仍可手动 `http-start.ps1` 起）。
+
 独立 CMX 前端、内容权限中文语义和公开博客出口仍属于后续阶段。

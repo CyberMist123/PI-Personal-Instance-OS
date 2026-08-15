@@ -44,7 +44,7 @@ from .ocr import (
 )
 from .remote_auth import CmxOAuthProvider, OAuthStore, READ_SCOPE, SOCIAL_SCOPE
 from .server import Runtime, build_server, refresh_search_cache
-from .transcribe import model_dir_ready, transcribe_file
+from .transcribe import cloud_asr_configured, model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, ask_image, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_observer import observe_voice, observer_enabled, observer_model
@@ -589,6 +589,15 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
+        # Opt-in second opinion. Absent or "local" keeps the historical
+        # local-only behaviour, so every existing caller is unaffected.
+        engine = str(form.get("engine") or "local").strip().lower()
+        if engine not in {"local", "cloud"}:
+            return JSONResponse(
+                {"error": "unknown_engine", "supported": ["local", "cloud"]},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
         stream = upload.file
         stream.seek(0, 2)
         size = stream.tell()
@@ -611,7 +620,11 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 status_code=413,
                 headers={"Cache-Control": "no-store"},
             )
-        if not model_dir_ready(config.model_dir):
+        if not model_dir_ready(config.model_dir) and not (
+            engine == "cloud" and cloud_asr_configured()
+        ):
+            # A cloud request on a host with credentials does not need the local
+            # weights at all; only the local chain does.
             # No usable local model on this host: the widget degrades to a plain
             # voice status and the worker's reply stays as the fallback. This
             # checks for the weights, not just the folder — CMX_WHISPER_MODEL_DIR
@@ -642,12 +655,19 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 hotwords=config.hotwords,
                 beam_size=config.beam_size,
                 max_audio_seconds=float(config.max_audio_seconds),
+                engine=engine,
             )
-            _LOGGER.info("/files/transcribe ASR engine=%s", result.get("engine", "unknown"))
+            _LOGGER.info(
+                "/files/transcribe requested=%s served=%s",
+                engine,
+                result.get("engine", "unknown"),
+            )
             voice_note: str | None = None
             if not result.get("error"):
                 # While the temp file is still on disk: the observer reads the
                 # same clip the transcriber just did, and never re-persists it.
+                # Independent of the ASR engine above — local or cloud, the
+                # paralinguistic pass sees the same bytes either way.
                 voice_note = await _observe_voice_clip(temp_path)
         finally:
             try:
@@ -665,10 +685,26 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 status_code=502,
                 headers={"Cache-Control": "no-store"},
             )
-        body: dict[str, Any] = {"text": str(result.get("text") or "").strip()}
+        # `engine` is the engine that actually produced this text, not the one
+        # asked for. Without it a caller cannot tell a good local transcript
+        # from a silent degradation to the small Whisper fallback, which is the
+        # single most common cause of "the transcription got worse".
+        payload: dict[str, Any] = {
+            "text": str(result.get("text") or "").strip(),
+            "engine": str(result.get("engine") or "unknown"),
+        }
+        duration = result.get("duration")
+        if isinstance(duration, (int, float)) and duration > 0:
+            payload["duration"] = round(float(duration), 2)
+        for key in ("detected_language", "emotion", "cloud_error"):
+            value = str(result.get(key) or "")
+            if value:
+                payload[key] = value
+        # The observer's one-line note rides alongside the transcript; absent
+        # when the pass was disabled, unconfigured, or found nothing.
         if voice_note:
-            body["voice_note"] = voice_note
-        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+            payload["voice_note"] = voice_note
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     async def image_recognize(request: Request) -> Response:
         # Same rule as voice_transcribe: the caller's own Mastodon web session
