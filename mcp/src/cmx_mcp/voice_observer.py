@@ -54,12 +54,13 @@ from .vision_cloud import (
     load_gemini_key,
 )
 
-# Audio understanding needs the full Flash tier: the vision default
-# (flash-lite) is priced for OCR-shaped work, and what is asked here — hearing
-# a hesitation, a restart, wind behind a voice — is exactly what the lite tier
-# drops first. Like vision_cloud's model constant this is unconfirmed against a
-# live call; the owner's smoke test decides what it becomes.
-DEFAULT_VOICE_OBSERVER_MODEL = "gemini-3.6-flash"
+# The same model the vision pass uses. A live smoke test (2026-08-15, the
+# owner's first real voice clip) settled two guesses at once: the earlier
+# `gemini-3.6-flash` guess does not exist and returns HTTP 400, while
+# `gemini-3.1-flash-lite` handles audio + the enum responseSchema fine and
+# returns a clean closed-vocabulary form. Override with CMX_VOICE_OBSERVER_MODEL
+# if a stronger tier ever proves worth the cost on hard clips.
+DEFAULT_VOICE_OBSERVER_MODEL = "gemini-3.1-flash-lite"
 
 VOICE_OBSERVER_ENV = "CMX_VOICE_OBSERVER"
 VOICE_OBSERVER_MODEL_ENV = "CMX_VOICE_OBSERVER_MODEL"
