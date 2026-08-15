@@ -47,6 +47,7 @@ from .server import Runtime, build_server, refresh_search_cache
 from .transcribe import cloud_asr_configured, model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, ask_image, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
+from .voice_observer import observe_voice, observer_enabled, observer_model
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
 from .web_auth import verify_web_bearer, verify_web_identity
@@ -510,6 +511,54 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             },
         )
 
+    async def _observe_voice_clip(source_path: Path) -> str | None:
+        # The paralinguistic side-channel next to transcription. Every exit
+        # from here that is not a validated observation means simply "no
+        # voice_note this time" — observation never blocks, delays failure
+        # into, or changes the status of the transcript itself.
+        if not observer_enabled() or not gemini_key_configured(paths):
+            return None
+        try:
+            audio_bytes = source_path.read_bytes()
+        except OSError:
+            return None
+        # Keyed by the uploaded bytes, not the remuxed ones: the widget's
+        # outbox retries re-send the identical blob, and that retry must hit
+        # this cache instead of spending a second Gemini call.
+        sha256 = hashlib.sha256(audio_bytes).hexdigest()
+        cached = database.get_voice_observation(sha256)
+        if cached is not None:
+            return str(cached["voice_note"])
+        # Gemini's audio formats do not include WebM, and MediaRecorder emits
+        # WebM or MP4, so the clip takes the same ffmpeg remux the upload path
+        # uses. Remux precedes the daily-limit claim: a local conversion
+        # failure never consumed an upstream request, so it must not count.
+        mp3_path = source_path.with_suffix(".observer.mp3")
+        try:
+            await run_in_threadpool(to_mp3, source_path, mp3_path)
+            mp3_bytes = mp3_path.read_bytes()
+        except (VoiceMediaError, OSError) as exc:
+            _LOGGER.info("voice observer remux failed: %s", str(exc)[:120])
+            return None
+        finally:
+            try:
+                mp3_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not database.claim_gemini_daily_attempt(instance_settings.gemini_daily_limit):
+            return None
+        outcome = await run_in_threadpool(observe_voice, mp3_bytes, paths=paths)
+        if outcome.get("error"):
+            _LOGGER.info("voice observer skipped: %s", outcome["error"])
+            return None
+        database.record_voice_observation(
+            sha256,
+            observed=outcome["observed"],
+            voice_note=outcome["voice_note"],
+            model=observer_model(),
+        )
+        return str(outcome["voice_note"])
+
     async def voice_transcribe(request: Request) -> Response:
         # Called by the injected widget after it publishes the voice status. The
         # transcript is then edited into that same status. The
@@ -613,6 +662,13 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 engine,
                 result.get("engine", "unknown"),
             )
+            voice_note: str | None = None
+            if not result.get("error"):
+                # While the temp file is still on disk: the observer reads the
+                # same clip the transcriber just did, and never re-persists it.
+                # Independent of the ASR engine above — local or cloud, the
+                # paralinguistic pass sees the same bytes either way.
+                voice_note = await _observe_voice_clip(temp_path)
         finally:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -644,6 +700,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             value = str(result.get(key) or "")
             if value:
                 payload[key] = value
+        # The observer's one-line note rides alongside the transcript; absent
+        # when the pass was disabled, unconfigured, or found nothing.
+        if voice_note:
+            payload["voice_note"] = voice_note
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     async def image_recognize(request: Request) -> Response:

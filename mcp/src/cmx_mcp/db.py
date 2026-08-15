@@ -104,7 +104,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 7:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 8:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -247,6 +247,22 @@ class Database:
                     attempts INTEGER NOT NULL CHECK(attempts >= 0),
                     updated_at INTEGER NOT NULL
                 );
+
+                -- One row per voice clip, keyed by audio content like
+                -- image_recognition: a widget retry of the same recording must
+                -- reuse the observation, not spend a second Gemini call. The
+                -- enum form is kept verbatim (observed_json) because it is the
+                -- baseline a future deviation-only mode will be computed from;
+                -- voice_note is just its rendering at write time.
+                CREATE TABLE IF NOT EXISTS voice_observations (
+                    audio_sha256 TEXT PRIMARY KEY,
+                    observed_json TEXT NOT NULL,
+                    voice_note TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_observations_created
+                    ON voice_observations(created_at DESC);
                 """
             )
             for name, definition in (
@@ -259,7 +275,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(7)")
+            db.execute("INSERT INTO schema_version(version) VALUES(8)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -904,6 +920,35 @@ class Database:
         with self.connect() as db:
             row = db.execute(
                 "SELECT * FROM image_recognition WHERE image_sha256=?", (image_sha256,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def record_voice_observation(
+        self,
+        audio_sha256: str,
+        *,
+        observed: dict[str, Any],
+        voice_note: str,
+        model: str,
+    ) -> None:
+        """Store one clip's enum form and its rendered note, first write wins.
+
+        First-write-wins (INSERT OR IGNORE) rather than upsert: the same audio
+        re-observed later — a widget retry, a model swap — must not silently
+        rewrite a baseline row that earlier comparisons were made against.
+        """
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO voice_observations"
+                "(audio_sha256,observed_json,voice_note,model,created_at)"
+                " VALUES(?,?,?,?,?)",
+                (audio_sha256, json.dumps(observed, ensure_ascii=False), voice_note, model, int(time.time())),
+            )
+
+    def get_voice_observation(self, audio_sha256: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM voice_observations WHERE audio_sha256=?", (audio_sha256,)
             ).fetchone()
         return dict(row) if row else None
 

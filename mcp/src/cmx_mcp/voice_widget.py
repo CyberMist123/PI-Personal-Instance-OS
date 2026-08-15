@@ -51,9 +51,9 @@ from .voice_player import VOICE_PLAYER_JS
 from .voice_scan import VOICE_SCAN_JS
 from .voice_waveform import VOICE_WAVEFORM_JS
 
-VOICE_WIDGET_VERSION = "20"
+VOICE_WIDGET_VERSION = "21"
 
-VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image recognition. */
+VOICE_WIDGET_JS = """/* CMX voice widget v21 - the transcript's voice_note rides the audio alt. */
 (function () {
   "use strict";
 
@@ -635,12 +635,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image r
         })
         .then(function (payload) {
           var text = payload && typeof payload.text === "string" ? payload.text : "";
-          return text.trim();
+          var note = payload && typeof payload.voice_note === "string" ? payload.voice_note : "";
+          return { text: text.trim(), voiceNote: note.trim() };
         })
         .catch(function (error) {
           done();
           warn("transcription unavailable; the voice post stays text-less", error);
-          return "";
+          return { text: "", voiceNote: "" };
         });
     }
 
@@ -726,9 +727,15 @@ VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image r
       });
     }
 
-    function editWithTranscript(statusId, mediaId, text) {
+    function editWithTranscript(statusId, mediaId, text, voiceNote) {
       /* Mastodon's edit API takes media_attributes, so one PUT fills in both the
-         body and the audio alt text of the status that is already online. */
+         body and the audio alt text of the status that is already online.
+         The voice observation rides on the alt only, never in the body: the
+         post stays the owner's own words, while readers (and residents, whose
+         MCP timeline rows carry media alt) still see how it was said. */
+      var alt = voiceNote
+        ? clip(text, Math.max(0, ALT_MAX_CHARS - voiceNote.length - 1)) + "\\n" + voiceNote
+        : clip(text, ALT_MAX_CHARS);
       return fetch("/api/v1/statuses/" + encodeURIComponent(statusId), {
         method: "PUT",
         headers: {
@@ -738,7 +745,7 @@ VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image r
         body: JSON.stringify({
           status: clip(text, STATUS_MAX_CHARS),
           media_ids: [mediaId],
-          media_attributes: [{ id: mediaId, description: clip(text, ALT_MAX_CHARS) }]
+          media_attributes: [{ id: mediaId, description: alt }]
         })
       }).then(function (response) {
         if (!response.ok) {
@@ -766,11 +773,13 @@ VOICE_WIDGET_JS = """/* CMX voice widget v20 - voice outbox plus passive image r
         return Promise.resolve(false);
       }
       return transcribe(entry.blob, entry.filename)
-        .then(function (text) {
-          if (!text) {
+        .then(function (result) {
+          if (!result.text) {
             return false;
           }
-          return editWithTranscript(entry.statusId, entry.mediaId, text).then(function () {
+          return editWithTranscript(
+            entry.statusId, entry.mediaId, result.text, result.voiceNote
+          ).then(function () {
             return outboxDelete(entry.id).catch(function (error) {
               warn("transcript succeeded but the local outbox entry could not be removed", error);
             });
