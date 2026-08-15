@@ -33,6 +33,14 @@ workers = [
 vision = [
   "rapidocr>=3.9",
 ]
+# The light subset the test suite imports directly: numpy for the Qwen
+# audio-activity gate and opencc for the traditional->simplified pass. The
+# full `workers` extra pulls faster-whisper/ctranslate2, which the tests fake,
+# so CI installs only this to stay fast while still exercising both codepaths.
+test = [
+  "numpy>=1.26",
+  "opencc-python-reimplemented>=0.1.7",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
