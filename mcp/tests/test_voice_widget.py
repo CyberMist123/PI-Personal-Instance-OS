@@ -19,7 +19,7 @@ NGINX_CONF = REPOSITORY_ROOT / "nginx" / "default.conf"
 # now injects the Clip Brain site-switch script alongside the voice widget, and
 # pinning the whole line makes this test break every time a widget is added.
 SUB_FILTER_START = "sub_filter '</body>' "
-VOICE_SCRIPT_TAG = '<script src="/files/voice.js?cmx-v=20" defer></script>'
+VOICE_SCRIPT_TAG = '<script src="/files/voice.js?cmx-v=21" defer></script>'
 
 
 def _paths(tmp_path) -> Paths:
@@ -130,9 +130,9 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "visibility: entryVisibility || visibility" in VOICE_WIDGET_JS
     assert 'fetch("/api/v1/statuses/" + encodeURIComponent(statusId), {' in VOICE_WIDGET_JS
     assert 'method: "PUT"' in VOICE_WIDGET_JS
-    assert "media_attributes: [{ id: mediaId, description: clip(text, ALT_MAX_CHARS) }]" in (
-        VOICE_WIDGET_JS
-    )
+    # The alt carries the transcript plus the voice observation; the body stays
+    # the clipped transcript alone (see test_voice_observer for the split).
+    assert "media_attributes: [{ id: mediaId, description: alt }]" in VOICE_WIDGET_JS
     assert "status: clip(text, STATUS_MAX_CHARS)" in VOICE_WIDGET_JS
     # v6 persists the Blob and a stable idempotency key before the first upload,
     # then keeps that entry until its transcript edit succeeds.
@@ -161,7 +161,7 @@ def test_widget_source_stays_backtick_free_and_bails_out_without_a_token() -> No
     assert "function setStyle(element, styles)" in VOICE_WIDGET_JS
     assert "element.style[keys[i]] = styles[keys[i]]" in VOICE_WIDGET_JS
     assert "function startPulse()" in VOICE_WIDGET_JS and "window.setInterval" in VOICE_WIDGET_JS
-    assert VOICE_WIDGET_VERSION == "20" and "voice widget v20" in VOICE_WIDGET_JS
+    assert VOICE_WIDGET_VERSION == "21" and "voice widget v21" in VOICE_WIDGET_JS
     # v5: the mic is deliberately prominent on this private single-user instance.
     assert 'width: "64px"' in VOICE_WIDGET_JS and 'height: "64px"' in VOICE_WIDGET_JS
     assert 'var MIC_RESTING = "0.5";' in VOICE_WIDGET_JS
