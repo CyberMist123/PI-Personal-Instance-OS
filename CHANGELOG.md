@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/files/transcribe` 回传 `engine` 与 `duration`：`engine` 是**真正出结果的那个引擎**（`qwen3-asr` / `faster-whisper` / 云端模型名），不是调用方请求的那个。此前响应只有 `text`，调用方无从分辨"本机 Qwen 转得好"与"CapsWriter 挂了、悄悄降级到 small Whisper"，而后者正是"转写忽然变差"最常见的成因。既有调用方不受影响（多一个字段）。
+- 新增按名点用的云端复转 `engine=cloud`（Owner 于 2026-08-11 显式放宽"转写不出本机"边界）：音频经 PyAV 转码成 16 kHz 单声道 WAV 后发给阿里云 `qwen3-asr-flash`（OpenAI 兼容端点，multipart 里不带 `engine=cloud` 就永远不会走到），返回值额外带 `detected_language` 与 `emotion`。理由是本机 Qwen3-ASR-1.7B 句尾常糊——同一条 21 秒真实录音，本机给"不用规则简单明白"，云端给"不用规则写那么明白"。凭据只从 `CMX_CLOUD_ASR_KEY_FILE` 指向的 CSV 读（GBK 编码，密钥本身不进环境变量），未配置返回 `cloud_not_configured`；云端任何失败都降级回本机链并在 `cloud_error` 里说明原因；服务商限制 ≤5 分钟、转码后 ≤10 MB。未知 `engine` 值返回 400，不会静默按本机跑。目标 Windows 上已用真实录音验证本机、云端、非法 engine 三条路径；`mcp` 全量测试 297 passed。
+- `cmx-mcp-http` 可独立随登录自启：新增 `mcp\cmx-http-autostart.vbs` 与 HKCU Run 项 `CmxMcpHttp`，只拉起 `127.0.0.1:8766` 这一个进程，不碰 Docker/tunnel（整套仍由 `PI-OS-Autostart` 计划任务负责）。给的是只用本机 `/files/transcribe` 与 `/files/recognize` 的场景。已在目标 Windows 实测停机后由 VBS 拉起并通过健康检查。
+
 - 网页悬浮录音键升级到 v17：第一次点大麦克风开始录音，第二次点同一按钮或点 ✓ 即结束并上传；录音在首个网络请求前写入设备本地 IndexedDB `cmx-voice-outbox`，保存 Blob、发布阶段、media/status id 与稳定 `Idempotency-Key`，不保存 bearer。上传、发布、转写或编辑失败后，当前手机或 Windows 浏览器在页面重开/网络恢复时自动续传，正文与音频 alt 成功回填后删除；outbox 不跨设备同步，清除站点数据会清除未完成录音。相对同源 API、网页登录态临时鉴权、秒发语音和后台补文字边界不变。已部署到目标 Windows：目标环境定向测试 59 passed，本机与公网脚本均返回 HTTP 200 / ETag `"voice-17"`，HTTP MCP 与 `gpt` worker 正常；手机与 Windows 浏览器真实录音仍待验收。
 - 接入本机 Qwen3-ASR-1.7B：CMX 通过 `CMX_QWEN_ASR_URL` 调用 CapsWriter-Offline 的 Qwen3-ASR-GGUF 常驻 WebSocket，固定 Chinese 识别并经 OpenCC 转简体；服务不可用时回退现有 faster-whisper。官方 `Qwen3-ASR-1.7B-q5_k` 已在目标 Windows 下载校验，CapsWriter 使用 Vulkan/RTX 4050，ONNX Encoder 配置 DirectML。五段既有真人录音的独立对比、HTTP 转写与重启后转写已验证；网页流程已真实发布一次但该次未确认捕获到有效人声，worker 跨居民空正文闭环因现有 Token scope/时间线隔离仍待补验。
 - 修复 Qwen 静音脑补：CapsWriter 返回虽含 `duration`、`tokens`、`timestamps`，但没有可用 confidence/no-speech 字段，且静音/噪声会回显 context。CMX 增加最小音频活动检查和 context 回显保护；`/files/transcribe` 对静音、过短录音、环境噪声和空结果返回 HTTP 200 `{"error":"no_speech","text":""}`，不会把脑补文字写回动态。

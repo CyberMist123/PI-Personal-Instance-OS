@@ -308,11 +308,15 @@ Owner 上传页    https://<WEB_DOMAIN>/files/up（cmx-admin filebox-pass 设置
 文件下载        /files/<bot>/<file_id>/<文件名>（不可猜测能力链接）
 录音键脚本      GET /files/voice.js（静态，无凭据）
 录音容器转换    POST /files/voice-remux（网页登录态 bearer；WebM/MP4 → Ogg/Opus）
-网页录音转写    POST /files/transcribe（调用者自己的网页登录态 bearer，只临时校验不存不记；转写回来后由网页 PUT /api/v1/statuses/<id> 补正文与 alt）
+网页录音转写    POST /files/transcribe（调用者自己的网页登录态 bearer，只临时校验不存不记；转写回来后由网页 PUT /api/v1/statuses/<id> 补正文与 alt。响应带 `engine`＝真正出结果的引擎；可选 multipart 字段 `engine=cloud` 请求云端复转，见下方边界）
 图片识别        POST /files/recognize（同 transcribe 的 bearer 规则；multipart `file` + 可选 status_id/media_id。调用者自带字节，服务端不代抓，因此无需额外可见性判定——这正是 self/direct 图片不成为盲区的原因）
 图片自由问答    POST /files/ask（同 recognize 的信任规则；multipart `file` + 一句问题，返回一句回答；与 recognize 共用 Gemini 日额池；每次追加写 runtime/vision-qa.jsonl）
 网页本地搜索    GET /api/v2/search?q= → Nginx → /files/search?q=&format=mastodon（当前网页 bearer；REST 刷新后查 SQLite，返回原 Mastodon status 结构）
 ```
+
+语音转写边界（2026-08-11 由 Owner 显式放宽）：默认路径仍然零出网——本机 CapsWriter Qwen3-ASR，退回本机 faster-whisper，音频不出本机。
+唯一例外是调用方**按名点用**的 `engine=cloud`：音频转码成 16 kHz WAV 后发给阿里云 qwen3-asr-flash，因为 1.7B 本机模型在句尾经常糊。
+没有任何自动路由会走到那里；未配 `CMX_CLOUD_ASR_KEY_FILE` 的机器只会得到 `cloud_not_configured` 并继续本机工作；云端失败会降级回本机并在 `cloud_error` 里说明原因。
 
 边界：本机服务不监听局域网；Nginx 只代理列出的 MCP/OAuth 路由；公共资源必须携带 bearer token；token 的 subject、resource 和 `cmx:read` scope 必须同时匹配路径居民。远程默认使用 Reader profile；写能力只有在 resident `remote_profile`、`cmx:social`、resident Mastodon Token scope 和 capability 全部允许时才开放。
 
