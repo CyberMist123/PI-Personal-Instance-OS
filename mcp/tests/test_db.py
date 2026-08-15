@@ -290,7 +290,7 @@ def test_browse_schema_v3_and_bot_isolation(tmp_path: Path):
     assert db.seen_status_ids("b", ["source"]) == set()
     assert db.get_visit("a", "vb") is None
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 8
 
 
 def test_visit_rejects_repeat_and_budget_overrun(tmp_path: Path):
@@ -358,7 +358,7 @@ def test_real_v2_database_migrates_to_v3_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 8
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
@@ -372,12 +372,12 @@ def test_future_schema_version_fails_closed(tmp_path: Path):
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as raw:
         raw.execute("CREATE TABLE schema_version(version INTEGER NOT NULL)")
-        raw.execute("INSERT INTO schema_version VALUES(8)")
+        raw.execute("INSERT INTO schema_version VALUES(9)")
     import pytest
     with pytest.raises(RuntimeError, match="future database schema version"):
         Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 9
 
 
 def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
@@ -412,7 +412,7 @@ def test_real_v5_database_migrates_to_v6_without_data_loss(tmp_path: Path):
         """)
     Database(path).initialize()
     with sqlite3.connect(path) as raw:
-        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+        assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 8
         assert raw.execute("SELECT display_name FROM bots WHERE bot_id='gpt'").fetchone()[0] == "GPT"
         assert raw.execute("SELECT text FROM status_cache WHERE status_id='s1'").fetchone()[0] == "kept"
         assert raw.execute("SELECT response_json FROM publish_dedup WHERE request_id='r1'").fetchone()[0] == '{"id":"s1"}'
