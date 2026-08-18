@@ -36,8 +36,14 @@ class VoiceMediaError(RuntimeError):
     """Raised when the upload is not audio we can convert."""
 
 
-def to_mp3(source: str | Path, target: str | Path) -> dict[str, object]:
+def to_mp3(
+    source: str | Path, target: str | Path, *, max_seconds: float | None = None
+) -> dict[str, object]:
     """Rewrite `source` as mono MP3 at `target`.
+
+    ``max_seconds`` stops the rewrite after that much audio, leaving a shorter
+    clip; the default keeps the whole file. The voice observer uses it to cap
+    the clip it hands Gemini so a long note stays inside the request timeout.
 
     Returns what happened so the caller can log it without reopening the file.
     """
@@ -69,6 +75,10 @@ def to_mp3(source: str | Path, target: str | Path) -> dict[str, object]:
                     format=out_stream.format, layout=MP3_LAYOUT, rate=MP3_RATE
                 )
                 for frame in inp.decode(in_stream):
+                    if max_seconds is not None:
+                        frame_time = frame.time
+                        if frame_time is not None and frame_time > max_seconds:
+                            break
                     for resampled in resampler.resample(frame):
                         resampled.pts = None
                         for packet in out_stream.encode(resampled):

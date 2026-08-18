@@ -69,6 +69,17 @@ QWEN_ACTIVITY_HOP_SAMPLES = 800
 QWEN_ACTIVITY_RMS = 0.01
 QWEN_ACTIVITY_PEAK = 0.03
 
+# CapsWriter's Qwen endpoint returns an early is_final on long clips: a 190 s
+# note came back transcribed only through ~70 s, silently dropping two thirds of
+# the words. Sending the audio in bounded chunks keeps every request inside the
+# length the service transcribes in full. Each cut is snapped to the quietest
+# point near its boundary so a word is not split across two requests. The limit
+# is env-tunable without a code change; a clip within it is sent unchanged.
+QWEN_CHUNK_SAMPLE_RATE = 16000
+QWEN_CHUNK_SECONDS_ENV = "CMX_QWEN_ASR_CHUNK_SECONDS"
+QWEN_CHUNK_SNAP_SECONDS = 4.0
+QWEN_CHUNK_SNAP_FRAME_SAMPLES = 400  # 25 ms at 16 kHz
+
 
 def model_dir_ready(model_dir: str | Path | None) -> bool:
     """Return whether *model_dir* contains an actual local CTranslate2 model."""
@@ -398,23 +409,37 @@ def _transcribe_with_qwen(
         activity_error = _qwen_audio_activity_error(audio, np)
         if activity_error:
             return {"error": "no_speech", "detail": activity_error, "text": ""}
-        response = asyncio.run(
-            _qwen_request(
-                websockets,
-                url,
-                audio,
-                language=language,
-                initial_prompt=initial_prompt,
-                hotwords=hotwords,
-                timeout_seconds=timeout_seconds,
+        # One request for a short note; several for a long one. Each chunk is a
+        # view into the already-decoded samples, so splitting costs no re-decode.
+        spans = _qwen_chunk_spans(audio, np)
+        parts: list[str] = []
+        total_duration = 0.0
+        for start, end in spans:
+            response = asyncio.run(
+                _qwen_request(
+                    websockets,
+                    url,
+                    audio[start:end],
+                    language=language,
+                    initial_prompt=initial_prompt,
+                    hotwords=hotwords,
+                    timeout_seconds=timeout_seconds,
+                )
             )
-        )
-        text = _normalize_chinese(str(response.get("text") or ""))
+            piece = _normalize_chinese(str(response.get("text") or ""))
+            # A context echo or an empty reply is this chunk saying nothing (a
+            # pause between words can land a whole chunk in silence); it drops
+            # out without failing the note. Only an all-silent note is no_speech.
+            if piece and not _qwen_result_is_context_echo(piece, initial_prompt, hotwords):
+                parts.append(piece)
+            reported = response.get("duration")
+            total_duration += (
+                float(reported) if reported else (end - start) / QWEN_CHUNK_SAMPLE_RATE
+            )
+        text = "".join(parts).strip()
         if not text:
             return {"error": "no_speech", "detail": "qwen_empty_result", "text": ""}
-        if _qwen_result_is_context_echo(text, initial_prompt, hotwords):
-            return {"error": "no_speech", "detail": "qwen_context_echo", "text": ""}
-        return {"text": text, "duration": response.get("duration")}
+        return {"text": text, "duration": total_duration}
     except Exception as exc:
         _LOGGER.warning("ASR engine=qwen3-asr unavailable; fallback=faster-whisper: %s", _short(exc))
         return None
@@ -459,6 +484,62 @@ def _qwen_audio_activity_error(audio: Any, np: Any) -> str | None:
     if active_frames < required_frames:
         return "audio_no_voice_activity"
     return None
+
+
+def _qwen_chunk_seconds() -> float:
+    raw = os.getenv(QWEN_CHUNK_SECONDS_ENV, "50").strip()
+    try:
+        return max(15.0, min(float(raw), 120.0))
+    except ValueError:
+        return 50.0
+
+
+def _qwen_chunk_spans(audio: Any, np: Any) -> list[tuple[int, int]]:
+    """Split decoded 16 kHz mono *audio* into ``(start, end)`` sample spans.
+
+    A clip within the chunk limit yields a single span, so the common short
+    note is sent exactly as before. A longer note is cut into contiguous spans
+    that together cover the whole clip, each no longer than the limit, with the
+    boundary snapped to the quietest nearby point to keep words off the seams.
+    """
+    total = int(audio.size)
+    chunk = int(_qwen_chunk_seconds() * QWEN_CHUNK_SAMPLE_RATE)
+    if total <= chunk or chunk <= 0:
+        return [(0, total)]
+    snap = int(QWEN_CHUNK_SNAP_SECONDS * QWEN_CHUNK_SAMPLE_RATE)
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < total:
+        if total - start <= chunk:
+            spans.append((start, total))
+            break
+        target = start + chunk
+        cut = _snap_cut_to_quiet(audio, np, target=target, snap=snap, floor=start + chunk // 2)
+        spans.append((start, cut))
+        start = cut
+    return spans
+
+
+def _snap_cut_to_quiet(audio: Any, np: Any, *, target: int, snap: int, floor: int) -> int:
+    """Return a cut index at or before *target*, at the lowest-energy short frame
+    within the *snap* seconds leading up to it and never before *floor*. Searching
+    backward keeps the span it closes no longer than the chunk limit. Falls back
+    to *target* when the window is too small to analyse, so the caller always
+    makes forward progress.
+    """
+    total = int(audio.size)
+    frame = QWEN_CHUNK_SNAP_FRAME_SAMPLES
+    lo = max(int(floor), int(target) - snap)
+    hi = min(total, int(target))
+    if hi - lo < 2 * frame:
+        return min(int(target), total)
+    window = audio[lo:hi]
+    count = window.size // frame
+    frames = window[: count * frame].reshape(count, frame)
+    energy = np.mean(np.square(frames), axis=1)
+    quietest = int(np.argmin(energy))
+    cut = lo + quietest * frame + frame // 2
+    return min(max(cut, int(floor) + 1), total)
 
 
 def _audio_activity_frames(audio: Any, np: Any) -> Any:

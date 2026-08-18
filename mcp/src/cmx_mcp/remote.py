@@ -47,7 +47,12 @@ from .server import Runtime, build_server, refresh_search_cache
 from .transcribe import cloud_asr_configured, model_dir_ready, transcribe_file
 from .vision_cloud import MAX_IMAGE_BYTES, ask_image, gemini_key_configured, recognize_image
 from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
-from .voice_observer import observe_voice, observer_enabled, observer_model
+from .voice_observer import (
+    MAX_OBSERVER_AUDIO_SECONDS,
+    observe_voice,
+    observer_enabled,
+    observer_model,
+)
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
 from .web_auth import verify_web_bearer, verify_web_identity
@@ -535,7 +540,9 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # failure never consumed an upstream request, so it must not count.
         mp3_path = source_path.with_suffix(".observer.mp3")
         try:
-            await run_in_threadpool(to_mp3, source_path, mp3_path)
+            await run_in_threadpool(
+                to_mp3, source_path, mp3_path, max_seconds=MAX_OBSERVER_AUDIO_SECONDS
+            )
             mp3_bytes = mp3_path.read_bytes()
         except (VoiceMediaError, OSError) as exc:
             _LOGGER.info("voice observer remux failed: %s", str(exc)[:120])

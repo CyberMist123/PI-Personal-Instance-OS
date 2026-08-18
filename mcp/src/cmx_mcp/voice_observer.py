@@ -71,6 +71,13 @@ VOICE_OBSERVER_MODEL_ENV = "CMX_VOICE_OBSERVER_MODEL"
 # well under a single MiB.
 MAX_OBSERVER_AUDIO_BYTES = 8 * 1024 * 1024
 
+# The Gemini call has a fixed 30 s timeout, and processing time grows with clip
+# length: a ~36 s note returns in time, a ~64 s note does not, so a minutes-long
+# note always timed out and produced no voice_note at all. The observer reads
+# how the speaker sounds, which the opening captures well enough, so a long note
+# is remuxed down to this many seconds before the call rather than skipped.
+MAX_OBSERVER_AUDIO_SECONDS = 30.0
+
 # The closed vocabulary. Enum fields default to their first value, which is
 # also the "nothing notable" answer the prompt tells the model to prefer when
 # unsure — an uncertain observer must fall back to silence, not to a guess.

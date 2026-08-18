@@ -272,8 +272,10 @@ def _post_audio(client, payload: bytes = b"fake-audio"):
     )
 
 
-def _fake_remux(monkeypatch):
-    def fake_to_mp3(source, target):
+def _fake_remux(monkeypatch, captured=None):
+    def fake_to_mp3(source, target, *, max_seconds=None):
+        if captured is not None:
+            captured["max_seconds"] = max_seconds
         Path(target).write_bytes(b"mp3:" + Path(source).read_bytes())
         return {}
 
@@ -324,6 +326,30 @@ def test_a_successful_observation_rides_the_response_and_lands_in_the_baseline(
     assert json.loads(row["observed_json"])["pause"] == "many"
     # The temp files are gone either way.
     assert list((paths.runtime / "voice-tmp").glob("*")) == []
+
+
+def test_a_long_clip_is_remuxed_down_to_the_observer_ceiling(tmp_path, monkeypatch):
+    # A minutes-long note used to time out the Gemini call and yield no
+    # voice_note; the observer now caps the clip it hands the remux so the call
+    # stays inside its timeout.
+    from cmx_mcp.voice_observer import MAX_OBSERVER_AUDIO_SECONDS
+
+    app, _paths_, _db = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "gemini_key_configured", lambda p: True)
+    captured: dict = {}
+    _fake_remux(monkeypatch, captured)
+    monkeypatch.setattr(
+        remote_module,
+        "observe_voice",
+        lambda audio_bytes, *, paths, mime_type="audio/mp3": {
+            "observed": _observation(),
+            "voice_note": "[声音: 语速中等 · 背景安静]",
+        },
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = _post_audio(client)
+    assert response.status_code == 200
+    assert captured["max_seconds"] == MAX_OBSERVER_AUDIO_SECONDS
 
 
 def test_the_same_clip_reuses_the_stored_observation(tmp_path, monkeypatch):
