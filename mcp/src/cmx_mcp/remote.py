@@ -50,11 +50,14 @@ from .voice_media import MP3_MIME, MP3_SUFFIX, VoiceMediaError, to_mp3
 from .voice_observer import (
     MAX_OBSERVER_AUDIO_SECONDS,
     observe_voice,
+    observe_voice_qwen,
     observer_enabled,
     observer_model,
+    qwen_r18_configured,
     render_r18_note,
     tg_r18_enabled,
     tg_r18_model,
+    tg_r18_qwen_model,
 )
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
@@ -575,8 +578,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         transcript: str,
         segments: list[dict[str, Any]] | None,
     ) -> dict[str, Any] | None:
-        """TG-only R18 pass: Gemini structured observation, no local acoustics."""
-        if not tg_r18_enabled() or not observer_enabled() or not gemini_key_configured(paths):
+        """TG-only R18 pass: fast Qwen first, strict Gemini fallback."""
+        if not tg_r18_enabled() or not observer_enabled() or not (
+            qwen_r18_configured() or gemini_key_configured(paths)
+        ):
             return None
         try:
             audio_bytes = source_path.read_bytes()
@@ -610,17 +615,27 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 mp3_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        if not database.claim_gemini_daily_attempt(instance_settings.gemini_daily_limit):
-            return None
-        outcome = await run_in_threadpool(observe_voice, mp3_bytes, paths=paths, mode="tg_r18")
+        outcome: dict[str, Any] = {"error": "not_configured"}
+        if qwen_r18_configured():
+            outcome = await run_in_threadpool(observe_voice_qwen, mp3_bytes)
         nvv = outcome.get("nvv") if isinstance(outcome, dict) else None
+        model = str(outcome.get("model") or tg_r18_qwen_model()) if isinstance(outcome, dict) else tg_r18_qwen_model()
+        # An empty result on an active clip is also a Qwen failure mode: the
+        # noisy owner samples proved it can be valid JSON yet miss everything.
+        if not isinstance(nvv, dict) or not nvv.get("events"):
+            if gemini_key_configured(paths) and database.claim_gemini_daily_attempt(instance_settings.gemini_daily_limit):
+                fallback = await run_in_threadpool(observe_voice, mp3_bytes, paths=paths, mode="tg_r18")
+                fallback_nvv = fallback.get("nvv") if isinstance(fallback, dict) else None
+                if isinstance(fallback_nvv, dict):
+                    nvv = fallback_nvv
+                    model = tg_r18_model()
         if not isinstance(nvv, dict):
             _LOGGER.info("TG R18 observer skipped: %s", str(outcome.get("error") if isinstance(outcome, dict) else "invalid")[:120])
             return None
         note = render_r18_note(nvv, transcript=transcript, segments=segments)
         nvv["note"] = note
         database.record_voice_nvv_observation(
-            audio_sha256, nvv=nvv, nvv_note=note, model=tg_r18_model()
+            audio_sha256, nvv=nvv, nvv_note=note, model=model
         )
         return nvv
 

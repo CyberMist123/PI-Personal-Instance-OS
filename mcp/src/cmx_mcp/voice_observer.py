@@ -69,6 +69,9 @@ TG_R18_ENV = "CMX_VOICE_NVV"
 TG_R18_MODEL_ENV = "CMX_TG_R18_MODEL"
 DEFAULT_TG_R18_MODEL = "gemini-3.6-flash"
 TG_R18_TIMEOUT_SECONDS = 180.0
+TG_R18_QWEN_MODEL_ENV = "CMX_TG_R18_QWEN_MODEL"
+DEFAULT_TG_R18_QWEN_MODEL = "qwen3.5-omni-plus"
+TG_R18_QWEN_TIMEOUT_SECONDS = 60.0
 
 # Same ceiling and rationale as vision_cloud.MAX_IMAGE_BYTES: inline base64
 # must stay under Gemini's per-request limit with headroom. Voice clips are
@@ -211,6 +214,17 @@ def tg_r18_model() -> str:
     return os.getenv(TG_R18_MODEL_ENV, "").strip() or DEFAULT_TG_R18_MODEL
 
 
+def tg_r18_qwen_model() -> str:
+    return os.getenv(TG_R18_QWEN_MODEL_ENV, "").strip() or DEFAULT_TG_R18_QWEN_MODEL
+
+
+def qwen_r18_configured() -> bool:
+    from .transcribe import _load_cloud_credentials
+
+    key, host = _load_cloud_credentials()
+    return bool(key and host)
+
+
 def validate_observation(fields: Any) -> dict[str, Any] | None:
     """Return the normalized enum form, or None if anything strays off-vocabulary.
 
@@ -301,6 +315,35 @@ def validate_r18_observation(value: Any) -> dict[str, Any] | None:
     return {"events": events, "trajectory": trajectory}
 
 
+def sanitize_qwen_r18_observation(value: Any) -> dict[str, Any] | None:
+    """Drop Qwen-only vocabulary drift, then apply the unchanged strict validator."""
+    if not isinstance(value, dict) or not isinstance(value.get("events"), list):
+        return None
+    cleaned_events: list[Any] = []
+    for raw in value["events"][:12]:
+        if not isinstance(raw, dict):
+            return None
+        event = dict(raw)
+        candidates = event.get("candidates")
+        if isinstance(candidates, list):
+            event["candidates"] = [
+                item for item in candidates
+                if isinstance(item, dict) and item.get("label") in R18_EVENT_NAMES
+            ]
+        elif isinstance(candidates, dict):
+            event["candidates"] = {
+                name: score for name, score in candidates.items() if name in R18_EVENT_NAMES
+            }
+        perceptual = event.get("perceptual")
+        if isinstance(perceptual, list):
+            event["perceptual"] = [item for item in perceptual if item in R18_PERCEPTUAL]
+        cleaned_events.append(event)
+    trajectory = value.get("trajectory", [])
+    if isinstance(trajectory, list):
+        trajectory = [item for item in trajectory if item in R18_EVENT_NAMES]
+    return validate_r18_observation({"events": cleaned_events, "trajectory": trajectory})
+
+
 def render_voice_note(observed: dict[str, Any]) -> str:
     """Render the one-line note from a validated enum form, deterministically."""
     tokens: list[str] = []
@@ -372,21 +415,38 @@ def _r18_shape_trajectory(events: list[dict[str, Any]], *, has_speech: bool) -> 
     }
     steps = ["说话"] if has_speech else []
     previous_pitch: str | None = None
+    previous_primary: str | None = None
     for run in runs:
         first = run[0]
         primary = max(first["candidates"], key=first["candidates"].get)
         pitch = first.get("pitch_relative")
-        if previous_pitch is not None and pitch != previous_pitch:
+        voiced = {"moan", "sigh", "groan", "whimper", "nonlexical_vowel"}
+        if previous_pitch is not None and pitch != previous_pitch and primary in voiced and previous_primary in voiced:
             if pitch == "lower":
                 steps.append("音高下移")
             elif pitch in {"higher", "clearly_higher"}:
                 steps.append("音高抬升")
-        pitch_word = {"lower": "低位", "higher": "偏高", "clearly_higher": "明显偏高"}.get(pitch, "")
-        texture = "轻柔气声" if {"breathy", "soft"}.issubset(set(first.get("perceptual") or [])) else ""
-        count = f"{len(run)}段" if len(run) > 1 else ""
-        recurrence = "（间隔再现）" if len(run) > 1 else ""
-        steps.append(count + pitch_word + texture + label_zh.get(primary, primary) + recurrence)
+        perceptual = {item for event in run for item in event.get("perceptual") or []}
+        strong = any(event.get("intensity") == "strong" for event in run)
+        abrupt = any(event.get("attack") == "abrupt" for event in run)
+        sustained = any(event.get("release") == "sustained" for event in run)
+        if primary == "cough" and strong and ({"sharp", "clipped"} & perceptual or any(event.get("release") == "clipped" for event in run)):
+            phrase = "强而短促的咳嗽"
+        elif primary == "gasp" and abrupt:
+            phrase = "突然吸气"
+        elif primary in {"groan", "moan"} and pitch == "lower" and "drawn_out" in perceptual:
+            phrase = "低位拖长发声"
+        elif primary in {"pant", "exercise_breathing"} and "rapid_breathing" in perceptual and sustained:
+            phrase = "持续快速运动喘息"
+        else:
+            pitch_word = {"lower": "低位", "higher": "偏高", "clearly_higher": "明显偏高"}.get(pitch, "")
+            texture = "轻柔气声" if {"breathy", "soft"}.issubset(perceptual) else ""
+            count = f"{len(run)}段" if len(run) > 1 else ""
+            recurrence = "（间隔再现）" if len(run) > 1 else ""
+            phrase = count + pitch_word + texture + label_zh.get(primary, primary) + recurrence
+        steps.append(phrase)
         previous_pitch = run[-1].get("pitch_relative")
+        previous_primary = primary
     return " → ".join(item for item in steps if item)
 
 
@@ -397,7 +457,8 @@ def render_r18_note(
     segments: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the issue #39 surface: transcript timeline, ambiguity, trajectory."""
-    events = list(observed.get("events") or [])[:5]
+    all_events = list(observed.get("events") or [])[:12]
+    events = all_events[:5]
     if not events:
         return "<voice>\n整体：未检出明确非语言事件\n</voice>"
     timeline: list[tuple[int, int, str]] = []
@@ -415,7 +476,7 @@ def render_r18_note(
         previous = event
     timeline.sort(key=lambda item: (item[0], item[1]))
     lines = [" ".join(item[2] for item in timeline)]
-    shape = _r18_shape_trajectory(events, has_speech=bool(transcript.strip()))
+    shape = _r18_shape_trajectory(all_events, has_speech=bool(transcript.strip()))
     if shape:
         lines.append("声音形状: " + shape)
     return "<voice>\n" + "\n".join(lines) + "\n</voice>"
@@ -488,6 +549,7 @@ moan=持续有音高的非词汇元音；pant=连续快速重复吸呼循环；g
 只按 response schema 返回 JSON；不写解释、Markdown、原始 F0、breathiness 数值或任何情绪/性唤起判断。
 """
 _R18_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "gemini_r18_nvv.md"
+_QWEN_R18_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "qwen_r18_nvv.md"
 
 
 def _r18_prompt() -> str:
@@ -497,6 +559,66 @@ def _r18_prompt() -> str:
     except OSError:
         return _R18_PROMPT
     return prompt or _R18_PROMPT
+
+
+def _qwen_r18_prompt() -> str:
+    try:
+        prompt = _QWEN_R18_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return _R18_PROMPT
+    return prompt or _R18_PROMPT
+
+
+def observe_voice_qwen(audio_bytes: bytes, *, mime_type: str = "audio/mp3") -> dict[str, Any]:
+    """Fast R18 pass through Qwen Omni; all provider prose is discarded."""
+    from .transcribe import _load_cloud_credentials
+
+    key, host = _load_cloud_credentials()
+    if not key or not host:
+        return {"error": "not_configured"}
+    if len(audio_bytes) > MAX_OBSERVER_AUDIO_BYTES:
+        return {"error": "oversized"}
+    model = tg_r18_qwen_model()
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": [
+            {"type": "input_audio", "input_audio": {
+                "data": f"data:{mime_type};base64," + base64.b64encode(audio_bytes).decode("ascii")
+            }},
+            {"type": "text", "text": _qwen_r18_prompt()},
+        ]}],
+        "stream": True,
+        "modalities": ["text"],
+        "temperature": 0,
+    }
+    chunks: list[str] = []
+    try:
+        with httpx.stream(
+            "POST", f"https://{host}/compatible-mode/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload, timeout=TG_R18_QWEN_TIMEOUT_SECONDS,
+        ) as response:
+            if response.status_code >= 400:
+                return {"error": "unavailable", "detail": f"HTTP {response.status_code}"}
+            for line in response.iter_lines():
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                body = json.loads(line[6:])
+                for choice in body.get("choices") or []:
+                    chunks.append(str((choice.get("delta") or {}).get("content") or ""))
+    except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        return {"error": "unavailable", "detail": _redact(_short(exc), key)}
+    text = "".join(chunks).strip()
+    if text.startswith("```json"):
+        text = text[7:].removesuffix("```").strip()
+    try:
+        observed = sanitize_qwen_r18_observation(json.loads(text))
+    except (ValueError, json.JSONDecodeError):
+        observed = None
+    if observed is None:
+        return {"error": "invalid_response"}
+    note = render_r18_note(observed)
+    return {"nvv": {"note": note, **observed}, "model": model}
 
 
 def observe_voice(

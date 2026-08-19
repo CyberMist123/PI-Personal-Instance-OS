@@ -157,6 +157,8 @@ loopback cyberboss → POST /files/transcribe(file, nvv=1)
 
 Gemini R18 指令由主程序直接读取 `mcp/prompts/gemini_r18_nvv.md`，便于 Owner 后续独立调整；文件缺失或不可读时回退到代码内置版本，不阻断转写。
 
+开发分支新增 Qwen Omni 快速主路：`qwen3.5-omni-plus` 的指令独立放在 `mcp/prompts/qwen_r18_nvv.md`，返回先经过白名单清洗（例如丢弃误放在 candidates 的 `heavy_breathing`）再进入同一个确定性 renderer；空事件或无效 JSON 自动回退 Gemini。声音形状组合规则覆盖强而短促的咳嗽、突然吸气、低位拖长发声和持续快速运动喘息。该变更当前仅在本地工作分支，尚未部署。
+
 ### AI / MCP（已实现读链路）
 
 AI 作为正式 Mastodon 居民账号，通过每居民独立 Token 行动：

@@ -26,10 +26,12 @@ from cmx_mcp.voice_observer import (
     ENUM_FIELDS,
     R18_EVENT_NAMES,
     observe_voice,
+    observe_voice_qwen,
     render_r18_note,
     render_voice_note,
     validate_r18_observation,
     validate_observation,
+    sanitize_qwen_r18_observation,
 )
 
 
@@ -272,6 +274,65 @@ def test_r18_note_preserves_repeated_pulses_and_shape_changes():
     assert "声音形状: 说话 → 3段轻柔气声呻吟（间隔再现） → 音高下移 → 2段低位轻柔气声叹息（间隔再现）" in note
 
 
+def test_qwen_sanitizer_drops_feature_used_as_candidate():
+    raw = _r18_observation()
+    raw["events"][0]["candidates"] = [
+        {"label": "pant", "confidence": .9},
+        {"label": "heavy_breathing", "confidence": .8},
+    ]
+    observed = sanitize_qwen_r18_observation(raw)
+    assert observed is not None
+    assert observed["events"][0]["candidates"] == {"pant": .9}
+
+
+def test_shape_renderer_combines_strength_timing_and_motion():
+    def event(label, start, *, perceptual=(), pitch="similar", intensity="medium", attack="gradual", release="fading"):
+        return {
+            "start_ms": start, "end_ms": start + 800,
+            "candidates": {label: .9}, "perceptual": list(perceptual),
+            "pitch_relative": pitch, "intensity": intensity,
+            "attack": attack, "release": release,
+        }
+    observed = {"events": [
+        event("laugh", 0, perceptual=("breathy",), pitch="higher", attack="abrupt"),
+        event("cough", 2000, perceptual=("sharp", "strained"), intensity="strong", attack="abrupt", release="clipped"),
+        event("gasp", 4000, perceptual=("breathy",), pitch="higher", attack="abrupt"),
+        event("groan", 6000, perceptual=("breathy", "drawn_out"), pitch="lower"),
+        event("pant", 8000, perceptual=("rapid_breathing", "breathy"), attack="abrupt", release="sustained"),
+    ], "trajectory": ["laugh", "cough", "gasp", "groan", "pant"]}
+    note = render_r18_note(validate_r18_observation(observed))
+    assert "声音形状: 偏高笑声 → 强而短促的咳嗽 → 突然吸气 → 低位拖长发声 → 持续快速运动喘息" in note
+
+
+def test_qwen_observer_loads_external_prompt_and_returns_sanitized_json(monkeypatch):
+    from cmx_mcp import transcribe as transcribe_module
+
+    monkeypatch.setattr(transcribe_module, "_load_cloud_credentials", lambda: ("secret", "qwen.example"))
+    sent = {}
+    fields = _r18_observation()
+    fields["events"][0]["candidates"] = [
+        {"label": "moan", "confidence": .9},
+        {"label": "heavy_breathing", "confidence": .7},
+    ]
+    line = "data: " + json.dumps({"choices": [{"delta": {"content": json.dumps(fields)}}]})
+
+    class Stream:
+        status_code = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def iter_lines(self): return [line, "data: [DONE]"]
+
+    def fake_stream(*args, **kwargs):
+        sent["payload"] = kwargs["json"]
+        return Stream()
+
+    monkeypatch.setattr(observer_module.httpx, "stream", fake_stream)
+    outcome = observe_voice_qwen(b"mp3")
+    assert outcome["model"] == "qwen3.5-omni-plus"
+    assert outcome["nvv"]["events"][0]["candidates"] == {"moan": .9}
+    assert sent["payload"]["messages"][0]["content"][1]["text"] == observer_module._QWEN_R18_PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+
 # --- baseline storage --------------------------------------------------------
 
 
@@ -330,6 +391,7 @@ def _app(tmp_path, monkeypatch):
         "CMX_WHISPER_MAX_SECONDS",
         "CMX_WORKER_MAX_AUDIO_BYTES",
         "CMX_VOICE_OBSERVER",
+        "CMX_CLOUD_ASR_KEY_FILE",
     ):
         monkeypatch.delenv(name, raising=False)
     model_dir = tmp_path / "model"
@@ -428,6 +490,61 @@ def test_loopback_explicit_nvv_returns_compact_result_and_reuses_cache(
     )
     assert row is not None and row["nvv_note"] == expected["note"]
     assert list((paths.runtime / "voice-tmp").glob("*")) == []
+
+
+def test_nvv_prefers_qwen_and_records_its_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    monkeypatch.setenv("CMX_VOICE_NVV", "1")
+    app, _paths, database = _app(tmp_path, monkeypatch)
+    _fake_remux(monkeypatch)
+    observed = validate_r18_observation(_r18_observation())
+    monkeypatch.setattr(remote_module, "qwen_r18_configured", lambda: True)
+    monkeypatch.setattr(remote_module, "gemini_key_configured", lambda p: True)
+    monkeypatch.setattr(
+        remote_module, "observe_voice_qwen",
+        lambda audio: {"nvv": observed, "model": "qwen3.5-omni-plus"},
+    )
+    monkeypatch.setattr(
+        remote_module, "observe_voice",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Gemini should not run")),
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/transcribe", headers={"Host": "127.0.0.1:8766"},
+            files={"file": ("voice.webm", io.BytesIO(b"qwen-audio"), "audio/webm")},
+            data={"nvv": "1"},
+        )
+    assert response.status_code == 200
+    assert response.json()["nvv"]["events"]
+    row = database.get_voice_nvv_observation(__import__("hashlib").sha256(b"qwen-audio").hexdigest())
+    assert row is not None and row["model"] == "qwen3.5-omni-plus"
+
+
+def test_empty_qwen_result_falls_back_to_gemini(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    monkeypatch.setenv("CMX_VOICE_NVV", "1")
+    app, _paths, _database = _app(tmp_path, monkeypatch)
+    _fake_remux(monkeypatch)
+    monkeypatch.setattr(remote_module, "qwen_r18_configured", lambda: True)
+    monkeypatch.setattr(remote_module, "gemini_key_configured", lambda p: True)
+    monkeypatch.setattr(
+        remote_module, "observe_voice_qwen",
+        lambda audio: {"nvv": {"events": [], "trajectory": []}, "model": "qwen3.5-omni-plus"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        remote_module, "observe_voice",
+        lambda *a, **k: calls.append("gemini") or {"nvv": validate_r18_observation(_r18_observation())},
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = client.post(
+            "/files/transcribe", headers={"Host": "127.0.0.1:8766"},
+            files={"file": ("voice.webm", io.BytesIO(b"fallback-audio"), "audio/webm")},
+            data={"nvv": "1"},
+        )
+    assert response.status_code == 200
+    assert calls == ["gemini"]
+    assert response.json()["nvv"]["events"][0]["candidates"]["moan"] == .68
 
 
 def test_without_a_gemini_key_the_response_is_exactly_the_old_one(tmp_path, monkeypatch):
