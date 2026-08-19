@@ -52,6 +52,9 @@ from .voice_observer import (
     observe_voice,
     observer_enabled,
     observer_model,
+    render_r18_note,
+    tg_r18_enabled,
+    tg_r18_model,
 )
 from .voice_widget import VOICE_WIDGET_JS, VOICE_WIDGET_VERSION
 from .search_widget import SEARCH_WIDGET_JS, SEARCH_WIDGET_VERSION
@@ -566,6 +569,61 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         )
         return str(outcome["voice_note"])
 
+    async def _analyze_nvv_clip(
+        source_path: Path,
+        *,
+        transcript: str,
+        segments: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        """TG-only R18 pass: Gemini structured observation, no local acoustics."""
+        if not tg_r18_enabled() or not observer_enabled() or not gemini_key_configured(paths):
+            return None
+        try:
+            audio_bytes = source_path.read_bytes()
+        except OSError:
+            return None
+        audio_sha256 = hashlib.sha256(audio_bytes).hexdigest()
+        cached = database.get_voice_nvv_observation(audio_sha256)
+        if cached is not None:
+            try:
+                restored = json.loads(str(cached["nvv_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                restored = None
+            if isinstance(restored, dict):
+                restored["note"] = render_r18_note(
+                    restored, transcript=transcript, segments=segments
+                )
+                restored.pop("detected_events", None)
+                return restored
+
+        mp3_path = source_path.with_suffix(".nvv.mp3")
+        try:
+            await run_in_threadpool(
+                to_mp3, source_path, mp3_path, max_seconds=MAX_OBSERVER_AUDIO_SECONDS
+            )
+            mp3_bytes = mp3_path.read_bytes()
+        except (VoiceMediaError, OSError) as exc:
+            _LOGGER.info("TG R18 observer remux failed: %s", str(exc)[:120])
+            return None
+        finally:
+            try:
+                mp3_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not database.claim_gemini_daily_attempt(instance_settings.gemini_daily_limit):
+            return None
+        outcome = await run_in_threadpool(observe_voice, mp3_bytes, paths=paths, mode="tg_r18")
+        nvv = outcome.get("nvv") if isinstance(outcome, dict) else None
+        if not isinstance(nvv, dict):
+            _LOGGER.info("TG R18 observer skipped: %s", str(outcome.get("error") if isinstance(outcome, dict) else "invalid")[:120])
+            return None
+        note = render_r18_note(nvv, transcript=transcript, segments=segments)
+        nvv["note"] = note
+        database.record_voice_nvv_observation(
+            audio_sha256, nvv=nvv, nvv_note=note, model=tg_r18_model()
+        )
+        return nvv
+
     async def voice_transcribe(request: Request) -> Response:
         # Called by the injected widget after it publishes the voice status. The
         # transcript is then edited into that same status. The
@@ -574,9 +632,10 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # A same-machine caller (e.g. cyberboss on 127.0.0.1) may skip that
         # bearer entirely when CMX_LOCAL_TRUSTED_MEDIA is on; see
         # _local_trusted_media_enabled.
-        if _is_loopback_host(
+        local_trusted = _is_loopback_host(
             request.headers.get("host", ""), settings.port
-        ) and _local_trusted_media_enabled():
+        ) and _local_trusted_media_enabled()
+        if local_trusted:
             verified = True
         else:
             bearer = _BEARER_RE.fullmatch(request.headers.get("authorization", "").strip())
@@ -589,6 +648,14 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
             )
 
         form = await request.form()
+        # R18 is a private TG/chat side-channel, never a web-widget feature.
+        # A public/authenticated caller may send the field, but only the
+        # explicitly trusted loopback path is allowed to activate it.
+        nvv_active = (
+            local_trusted
+            and str(form.get("nvv") or "").strip() == "1"
+            and tg_r18_enabled()
+        )
         upload = form.get("file")
         if upload is None or not hasattr(upload, "filename"):
             return JSONResponse(
@@ -663,6 +730,7 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 beam_size=config.beam_size,
                 max_audio_seconds=float(config.max_audio_seconds),
                 engine=engine,
+                include_segments=nvv_active,
             )
             _LOGGER.info(
                 "/files/transcribe requested=%s served=%s",
@@ -670,7 +738,14 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 result.get("engine", "unknown"),
             )
             voice_note: str | None = None
-            if not result.get("error"):
+            nvv_result: dict[str, Any] | None = None
+            if nvv_active:
+                nvv_result = await _analyze_nvv_clip(
+                    temp_path,
+                    transcript=str(result.get("text") or ""),
+                    segments=result.get("segments") if isinstance(result.get("segments"), list) else None,
+                )
+            if not result.get("error") and not nvv_active:
                 # While the temp file is still on disk: the observer reads the
                 # same clip the transcriber just did, and never re-persists it.
                 # Independent of the ASR engine above — local or cloud, the
@@ -683,8 +758,11 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
                 pass
         if result.get("error"):
             if result["error"] == "no_speech":
+                no_speech_payload: dict[str, Any] = {"error": "no_speech", "text": ""}
+                if nvv_result:
+                    no_speech_payload["nvv"] = nvv_result
                 return JSONResponse(
-                    {"error": "no_speech", "text": ""},
+                    no_speech_payload,
                     headers={"Cache-Control": "no-store"},
                 )
             return JSONResponse(
@@ -711,6 +789,8 @@ background:#111827;color:#f9fafb}}button{{background:#22c55e;color:#052e16;borde
         # when the pass was disabled, unconfigured, or found nothing.
         if voice_note:
             payload["voice_note"] = voice_note
+        if nvv_result:
+            payload["nvv"] = nvv_result
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     async def image_recognize(request: Request) -> Response:

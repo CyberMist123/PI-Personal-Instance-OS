@@ -24,8 +24,11 @@ from cmx_mcp.remote import create_remote_app
 from cmx_mcp.voice_observer import (
     BOOL_FIELDS,
     ENUM_FIELDS,
+    R18_EVENT_NAMES,
     observe_voice,
+    render_r18_note,
     render_voice_note,
+    validate_r18_observation,
     validate_observation,
 )
 
@@ -190,6 +193,58 @@ def test_missing_key_and_quota_use_the_shared_error_buckets(tmp_path, monkeypatc
     assert observe_voice(b"x", paths=_fake_paths(tmp_path)) == {"error": "quota_exhausted"}
 
 
+def _r18_observation():
+    candidates = {name: 0.0 for name in R18_EVENT_NAMES}
+    candidates.update({"moan": 0.68, "sigh": 0.21, "nonlexical_vowel": 0.11})
+    return {
+        "events": [{
+            "start_ms": 1400, "end_ms": 2900, "candidates": candidates,
+            "perceptual": ["breathy", "soft", "wavering", "drawn_out", "fading"],
+            "pitch_relative": "higher", "intensity": "soft", "attack": "gradual", "release": "fading",
+        }],
+        "trajectory": ["moan", "sigh", "moan"],
+    }
+
+
+def test_tg_r18_returns_multicandidate_events_and_compact_voice_note(tmp_path, monkeypatch):
+    monkeypatch.setattr(observer_module, "load_gemini_key", lambda paths: "test-key")
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent["schema"] = json["generationConfig"]["responseSchema"]
+        return _gemini_reply(_r18_observation())
+
+    monkeypatch.setattr(observer_module, "httpx", SimpleNamespace(post=fake_post, HTTPError=httpx.HTTPError))
+    outcome = observe_voice(b"mp3-bytes", paths=_fake_paths(tmp_path), mode="tg_r18")
+
+    assert outcome["nvv"]["events"][0]["candidates"]["moan"] == 0.68
+    assert outcome["nvv"]["events"][0]["pitch_relative"] == "higher"
+    assert outcome["nvv"]["note"] == (
+        "<voice>\n[moan: 气声柔 · 起伏不稳 · 拖长 · 渐弱 · 比平时音高偏高 · 起音渐入"
+        " | 偏moan，或为叹息]\n走向: 有声呼气\n</voice>"
+    )
+    candidate_schema = sent["schema"]["properties"]["events"]["items"]["properties"]["candidates"]
+    assert candidate_schema["maxItems"] == 3
+    assert set(candidate_schema["items"]["properties"]["label"]["enum"]) == set(R18_EVENT_NAMES)
+    assert render_r18_note(validate_r18_observation(_r18_observation())) == outcome["nvv"]["note"]
+
+
+def test_r18_note_inlines_timed_transcript_and_keeps_candidate_ambiguity():
+    observed = validate_r18_observation(_r18_observation())
+    note = render_r18_note(
+        observed,
+        transcript="你听我说 嗯",
+        segments=[
+            {"start_ms": 0, "end_ms": 1200, "text": "你听我说"},
+            {"start_ms": 3000, "end_ms": 3600, "text": "嗯"},
+        ],
+    )
+    assert note == (
+        "<voice>\n“你听我说” [moan: 气声柔 · 起伏不稳 · 拖长 · 渐弱 · 比平时音高偏高 · 起音渐入"
+        " | 偏moan，或为叹息] “嗯”\n走向: 说话 → 有声呼气\n</voice>"
+    )
+
+
 # --- baseline storage --------------------------------------------------------
 
 
@@ -280,6 +335,72 @@ def _fake_remux(monkeypatch, captured=None):
         return {}
 
     monkeypatch.setattr(remote_module, "to_mp3", fake_to_mp3)
+
+
+def _fake_nvv_result():
+    return {
+        "events": [],
+        "trajectory": "speech",
+        "baseline_delta": {},
+        "version": 1,
+        "baseline_update": None,
+    }
+
+
+def test_nvv_requires_all_three_gates_and_non_loopback_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMX_VOICE_NVV", "1")
+    app, _paths_, _db = _app(tmp_path, monkeypatch)
+    called = []
+    monkeypatch.setattr(remote_module, "observe_voice", lambda *a, **k: called.append("nvv") or {})
+    with TestClient(app, base_url="https://pi.example") as client:
+        response = _post_audio(client)
+        explicit_but_public = client.post(
+            "/files/transcribe",
+            headers={"Authorization": "Bearer web"},
+            files={"file": ("voice.webm", io.BytesIO(b"fake-audio"), "audio/webm")},
+            data={"nvv": "1"},
+        )
+    assert response.json() == {"text": "没事", "engine": "local"}
+    assert explicit_but_public.json() == {"text": "没事", "engine": "local"}
+    assert called == []
+
+
+def test_loopback_explicit_nvv_returns_compact_result_and_reuses_cache(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CMX_LOCAL_TRUSTED_MEDIA", "1")
+    monkeypatch.setenv("CMX_VOICE_NVV", "1")
+    app, paths, database = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_module, "gemini_key_configured", lambda p: True)
+    _fake_remux(monkeypatch)
+    observed_calls = []
+    expected = {"events": [], "trajectory": [], "note": "<voice>\n整体：未检出明确非语言事件\n</voice>"}
+    monkeypatch.setattr(
+        remote_module,
+        "observe_voice",
+        lambda *a, **k: observed_calls.append(1) or {"nvv": expected},
+    )
+    with TestClient(app, base_url="https://pi.example") as client:
+        first = client.post(
+            "/files/transcribe",
+            headers={"Host": "127.0.0.1:8766"},
+            files={"file": ("voice.webm", io.BytesIO(b"fake-audio"), "audio/webm")},
+            data={"nvv": "1"},
+        )
+        second = client.post(
+            "/files/transcribe",
+            headers={"Host": "127.0.0.1:8766"},
+            files={"file": ("voice.webm", io.BytesIO(b"fake-audio"), "audio/webm")},
+            data={"nvv": "1"},
+        )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["nvv"] == second.json()["nvv"] == expected
+    assert observed_calls == [1]
+    row = database.get_voice_nvv_observation(
+        __import__("hashlib").sha256(b"fake-audio").hexdigest()
+    )
+    assert row is not None and row["nvv_note"] == expected["note"]
+    assert list((paths.runtime / "voice-tmp").glob("*")) == []
 
 
 def test_without_a_gemini_key_the_response_is_exactly_the_old_one(tmp_path, monkeypatch):

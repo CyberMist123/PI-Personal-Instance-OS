@@ -107,6 +107,7 @@ def transcribe_file(
     max_audio_seconds: float = 1800.0,
     max_output_chars: int = 8000,
     engine: str = "local",
+    include_segments: bool = False,
 ) -> dict[str, Any]:
     """Transcribe locally with the resident Qwen service, then Whisper as fallback.
 
@@ -123,6 +124,8 @@ def transcribe_file(
         cloud_result = transcribe_cloud(path, language=language)
         if not cloud_result.get("error"):
             cloud_result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+            if include_segments:
+                cloud_result["segments"] = _whole_clip_segment(cloud_result)
             _LOGGER.info(
                 "ASR engine=%s elapsed_ms=%s path=%s",
                 cloud_result.get("engine"),
@@ -143,6 +146,7 @@ def transcribe_file(
             beam_size=beam_size,
             max_audio_seconds=max_audio_seconds,
             max_output_chars=max_output_chars,
+            include_segments=include_segments,
         )
         local_result["cloud_error"] = cloud_error
         return local_result
@@ -156,6 +160,8 @@ def transcribe_file(
     )
     if qwen_result is not None:
         qwen_result["text"] = _normalize_chinese(str(qwen_result.get("text") or ""))
+        if include_segments:
+            qwen_result["segments"] = _whole_clip_segment(qwen_result)
         qwen_result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
         qwen_result["engine"] = "qwen3-asr"
         _LOGGER.info("ASR engine=qwen3-asr elapsed_ms=%s path=%s", qwen_result["elapsed_ms"], path)
@@ -181,6 +187,7 @@ def transcribe_file(
         return {"error": "transcription_failed", "detail": _short(exc)}
 
     parts: list[str] = []
+    timed_parts: list[dict[str, Any]] = []
     total_chars = 0
     try:
         # A single-owner service gains more from predictable memory use than
@@ -205,6 +212,15 @@ def transcribe_file(
                 if total_chars > max_output_chars:
                     return {"error": "output_limit", "detail": str(total_chars)}
                 parts.append(text)
+                if include_segments:
+                    start = float(getattr(segment, "start", 0.0) or 0.0)
+                    timed_parts.append(
+                        {
+                            "start_ms": max(0, int(round(start * 1000))),
+                            "end_ms": max(0, int(round(end * 1000))),
+                            "text": _normalize_chinese(text),
+                        }
+                    )
     except Exception as exc:
         return {"error": "transcription_failed", "detail": _short(exc)}
 
@@ -213,8 +229,22 @@ def transcribe_file(
         "elapsed_ms": int((time.monotonic() - started) * 1000),
         "engine": "faster-whisper",
     }
+    if include_segments:
+        result["segments"] = timed_parts
     _LOGGER.info("ASR engine=faster-whisper elapsed_ms=%s path=%s", result["elapsed_ms"], path)
     return result
+
+
+def _whole_clip_segment(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Represent a no-timestamp ASR result at whole-clip granularity."""
+    text = str(result.get("text") or "")
+    if not text:
+        return []
+    try:
+        end_ms = max(0, int(round(float(result.get("duration") or 0.0) * 1000)))
+    except (TypeError, ValueError):
+        end_ms = 0
+    return [{"start_ms": 0, "end_ms": end_ms, "text": text}]
 
 
 def cloud_asr_configured() -> bool:

@@ -144,6 +144,17 @@ POST /api/v1/statuses 成功 → 后台 POST /files/recognize
 
 发布不等识图；失败保留 outbox 后续重试。页 bearer 只在当次同源请求中临时使用，不入 SQLite。识别结果按图片 SHA-256 共享缓存；Gemini 尝试按 UTC 日计数，超限仅降级本机 OCR。原生 App 不加载该脚本。
 
+R18 NVV 是与网页增量隔离的私人聊天侧信道：
+
+```text
+loopback cyberboss → POST /files/transcribe(file, nvv=1)
+→ existing ASR + Gemini 3.6 Flash tg_r18 structured observation (max 30 s)
+→ validated event candidates/perceptual labels/trajectory
+→ deterministic compact nvv.note/events/trajectory → SQLite content cache
+```
+
+它仅在 `CMX_LOCAL_TRUSTED_MEDIA=1`、loopback caller、显式 `nvv=1` 且默认关闭的 `CMX_VOICE_NVV=1` 同时成立时运行；网页 voice widget、`workers.py`、Nginx 注入与旧 observer 默认模式不变。Gemini schema 使用最多三项 `{label, confidence}` 候选以控制复杂度，服务端结果再归一为候选字典；渲染器按毫秒顺序交错 ASR segments 与事件，保留次候选并压缩重复事件。失败不阻塞转写。SQLite 只保存 compact JSON/note，不保存原始音频。当前最终 TG 路径没有本地声学/baseline fusion；Qwen Omni 与已停用的 Hume Expression Measurement 均不在直出路径。
+
 ### AI / MCP（已实现读链路）
 
 AI 作为正式 Mastodon 居民账号，通过每居民独立 Token 行动：

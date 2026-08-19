@@ -64,6 +64,10 @@ DEFAULT_VOICE_OBSERVER_MODEL = "gemini-3.1-flash-lite"
 
 VOICE_OBSERVER_ENV = "CMX_VOICE_OBSERVER"
 VOICE_OBSERVER_MODEL_ENV = "CMX_VOICE_OBSERVER_MODEL"
+TG_R18_ENV = "CMX_VOICE_NVV"
+TG_R18_MODEL_ENV = "CMX_TG_R18_MODEL"
+DEFAULT_TG_R18_MODEL = "gemini-3.6-flash"
+TG_R18_TIMEOUT_SECONDS = 180.0
 
 # Same ceiling and rationale as vision_cloud.MAX_IMAGE_BYTES: inline base64
 # must stay under Gemini's per-request limit with headroom. Voice clips are
@@ -98,6 +102,40 @@ BOOL_FIELDS: tuple[str, ...] = (
     "restart",
     "self_correction",
 )
+
+# R18 is deliberately separate from the legacy one-line observer above.  It
+# is only selected by the trusted Telegram bridge's explicit nvv=1 request;
+# browser uploads continue to use the frozen legacy schema.
+R18_EVENT_NAMES: tuple[str, ...] = (
+    "moan", "gasp", "pant", "breath", "sigh", "whimper", "groan",
+    "nonlexical_vowel", "laugh", "cough", "throat_clear", "yawn",
+    "exercise_breathing", "noise", "speech",
+)
+R18_PERCEPTUAL: tuple[str, ...] = (
+    "breathy", "airy", "soft", "sharp", "husky", "rough", "trembling",
+    "shaky", "strained", "suppressed", "muffled", "drawn_out", "abrupt",
+    "wavering", "rising_tail", "falling_tail", "fading", "clipped",
+    "heavy_breathing", "rapid_breathing", "broken_breath",
+)
+R18_PITCH = ("lower", "similar", "higher", "clearly_higher")
+R18_INTENSITY = ("soft", "medium", "strong")
+R18_ATTACK = ("gradual", "abrupt", "none")
+R18_RELEASE = ("fading", "clipped", "sustained", "none")
+_R18_LABEL_ZH = {
+    "moan": "呻吟", "gasp": "吸气", "pant": "喘息", "breath": "呼吸",
+    "sigh": "叹息", "whimper": "呜咽", "groan": "低吟",
+    "nonlexical_vowel": "非词汇元音", "laugh": "笑声", "cough": "咳嗽",
+    "throat_clear": "清嗓", "yawn": "哈欠", "exercise_breathing": "运动喘气",
+    "noise": "噪声", "speech": "说话",
+}
+_R18_FEATURE_ZH = {
+    "breathy": "气声", "airy": "轻空气感", "soft": "柔", "sharp": "尖锐",
+    "husky": "沙哑", "rough": "粗糙", "trembling": "发颤", "shaky": "发抖",
+    "strained": "发紧", "suppressed": "压着", "muffled": "闷", "drawn_out": "拖长",
+    "abrupt": "短促", "wavering": "起伏不稳", "rising_tail": "尾部上扬",
+    "falling_tail": "尾部下落", "fading": "渐弱", "clipped": "收束很快",
+    "heavy_breathing": "呼吸较重", "rapid_breathing": "呼吸较快", "broken_breath": "断续呼吸",
+}
 
 # What each enum value renders as. An absent key renders as nothing: "medium
 # speed", "few pauses" and their like stay silent so a typical line keeps to
@@ -163,6 +201,15 @@ def observer_model() -> str:
     return os.getenv(VOICE_OBSERVER_MODEL_ENV, "").strip() or DEFAULT_VOICE_OBSERVER_MODEL
 
 
+def tg_r18_enabled() -> bool:
+    """R18 is off until the owner enables the TG-only caller explicitly."""
+    return os.getenv(TG_R18_ENV, "").strip().lower() in {"1", "on", "true", "yes"}
+
+
+def tg_r18_model() -> str:
+    return os.getenv(TG_R18_MODEL_ENV, "").strip() or DEFAULT_TG_R18_MODEL
+
+
 def validate_observation(fields: Any) -> dict[str, Any] | None:
     """Return the normalized enum form, or None if anything strays off-vocabulary.
 
@@ -184,6 +231,73 @@ def validate_observation(fields: Any) -> dict[str, Any] | None:
             return None
         observed[name] = value
     return observed
+
+
+def validate_r18_observation(value: Any) -> dict[str, Any] | None:
+    """Validate perceptual labels only; no free prose or fake measurements."""
+    if not isinstance(value, dict) or not isinstance(value.get("events"), list):
+        return None
+    events: list[dict[str, Any]] = []
+    for raw in value["events"][:12]:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            start_ms = max(0, int(raw["start_ms"]))
+            end_ms = max(start_ms, int(raw["end_ms"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        candidates_raw = raw.get("candidates")
+        if isinstance(candidates_raw, list):
+            candidate_items = []
+            for item in candidates_raw:
+                if not isinstance(item, dict):
+                    return None
+                candidate_items.append((item.get("label"), item.get("confidence")))
+        elif isinstance(candidates_raw, dict):
+            # Backward compatibility for already-cached rows and old tests.
+            candidate_items = list(candidates_raw.items())
+        else:
+            return None
+        candidates: dict[str, float] = {}
+        for name, score in candidate_items:
+            if name not in R18_EVENT_NAMES or isinstance(score, bool):
+                return None
+            try:
+                number = float(score)
+            except (TypeError, ValueError):
+                return None
+            if not 0 <= number <= 1:
+                return None
+            if number > 0:
+                candidates[name] = round(number, 3)
+        if not candidates:
+            continue
+        perceptual_raw = raw.get("perceptual")
+        if not isinstance(perceptual_raw, list) or any(item not in R18_PERCEPTUAL for item in perceptual_raw):
+            return None
+        pitch = raw.get("pitch_relative")
+        intensity = raw.get("intensity")
+        attack = raw.get("attack")
+        release = raw.get("release")
+        if pitch not in R18_PITCH or intensity not in R18_INTENSITY or attack not in R18_ATTACK or release not in R18_RELEASE:
+            return None
+        events.append({
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "candidates": dict(sorted(candidates.items(), key=lambda item: (-item[1], item[0]))[:3]),
+            "perceptual": list(dict.fromkeys(perceptual_raw))[:6],
+            "pitch_relative": pitch,
+            "intensity": intensity,
+            "attack": attack,
+            "release": release,
+        })
+    trajectory_raw = value.get("trajectory", [])
+    if not isinstance(trajectory_raw, list) or any(item not in R18_EVENT_NAMES for item in trajectory_raw):
+        return None
+    trajectory = [str(item) for item in trajectory_raw[:8]]
+    if not trajectory:
+        trajectory = [max(event["candidates"], key=event["candidates"].get) for event in events]
+    return {"events": events, "trajectory": trajectory}
 
 
 def render_voice_note(observed: dict[str, Any]) -> str:
@@ -209,6 +323,106 @@ def _response_schema() -> dict[str, Any]:
         "type": "OBJECT",
         "properties": properties,
         "required": [*ENUM_FIELDS, *BOOL_FIELDS],
+    }
+
+
+def _r18_event_note(event: dict[str, Any], *, compact: bool = False) -> str:
+    ranked = sorted(event["candidates"].items(), key=lambda item: (-float(item[1]), item[0]))
+    primary = ranked[0][0]
+    if compact:
+        return f"[{primary}]"
+    perceptual = list(event.get("perceptual") or [])
+    features: list[str] = []
+    if "breathy" in perceptual and "soft" in perceptual:
+        features.append("气声柔")
+        perceptual = [item for item in perceptual if item not in {"breathy", "soft"}]
+    features.extend(_R18_FEATURE_ZH[item] for item in perceptual if item in _R18_FEATURE_ZH)
+    pitch = event.get("pitch_relative")
+    if pitch != "similar":
+        features.append({"lower": "比平时音高偏低", "higher": "比平时音高偏高", "clearly_higher": "比平时音高明显偏高"}.get(pitch, ""))
+    if event.get("attack") == "gradual":
+        features.append("起音渐入")
+    if event.get("release") == "fading":
+        features.append("渐弱")
+    details = " · ".join(item for item in dict.fromkeys(features) if item) or "质感较平"
+    ambiguity = ""
+    if len(ranked) > 1 and float(ranked[1][1]) >= 0.10:
+        ambiguity = f" | 偏{primary}，或为{_R18_LABEL_ZH[ranked[1][0]]}"
+    return f"[{primary}: {details}{ambiguity}]"
+
+
+def render_r18_note(
+    observed: dict[str, Any],
+    *,
+    transcript: str = "",
+    segments: list[dict[str, Any]] | None = None,
+) -> str:
+    """Render the issue #39 surface: transcript timeline, ambiguity, trajectory."""
+    events = list(observed.get("events") or [])[:5]
+    if not events:
+        return "<voice>\n整体：未检出明确非语言事件\n</voice>"
+    timeline: list[tuple[int, int, str]] = []
+    for segment in segments or []:
+        text = str(segment.get("text") or "").strip()
+        if text:
+            timeline.append((int(segment.get("start_ms") or 0), 0, f"“{text}”"))
+    if not timeline and transcript.strip():
+        timeline.append((0, 0, f"“{transcript.strip()}”"))
+    expanded: set[str] = set()
+    for event in events:
+        primary = max(event["candidates"], key=event["candidates"].get)
+        timeline.append(
+            (int(event.get("start_ms") or 0), 1, _r18_event_note(event, compact=primary in expanded))
+        )
+        expanded.add(primary)
+    timeline.sort(key=lambda item: (item[0], item[1]))
+    lines = [" ".join(item[2] for item in timeline)]
+    trajectory = observed.get("trajectory") or [max(event["candidates"], key=event["candidates"].get) for event in events]
+    family_tokens = {
+        "moan": "有声呼气", "sigh": "有声呼气", "groan": "非词汇发声",
+        "whimper": "非词汇发声", "nonlexical_vowel": "非词汇发声",
+        "gasp": "吸气", "pant": "呼吸", "breath": "呼吸",
+        "exercise_breathing": "呼吸", "laugh": "笑声", "cough": "咳嗽",
+        "throat_clear": "清嗓", "yawn": "哈欠", "noise": "噪声", "speech": "说话",
+    }
+    steps = ["说话"] if transcript.strip() else []
+    steps.extend(family_tokens[item] for item in trajectory[:8] if item in family_tokens)
+    steps = [item for index, item in enumerate(steps) if index == 0 or item != steps[index - 1]]
+    if steps:
+        lines.append("走向: " + " → ".join(steps))
+    return "<voice>\n" + "\n".join(lines) + "\n</voice>"
+
+
+def _r18_response_schema() -> dict[str, Any]:
+    candidate = {
+        "type": "OBJECT",
+        "properties": {
+            "label": {"type": "STRING", "enum": list(R18_EVENT_NAMES)},
+            "confidence": {"type": "NUMBER", "minimum": 0, "maximum": 1},
+        },
+        "required": ["label", "confidence"],
+    }
+    event = {
+        "type": "OBJECT",
+        "properties": {
+            "start_ms": {"type": "INTEGER"},
+            "end_ms": {"type": "INTEGER"},
+            "candidates": {"type": "ARRAY", "items": candidate, "minItems": 1, "maxItems": 3},
+            "perceptual": {"type": "ARRAY", "items": {"type": "STRING", "enum": list(R18_PERCEPTUAL)}},
+            "pitch_relative": {"type": "STRING", "enum": list(R18_PITCH)},
+            "intensity": {"type": "STRING", "enum": list(R18_INTENSITY)},
+            "attack": {"type": "STRING", "enum": list(R18_ATTACK)},
+            "release": {"type": "STRING", "enum": list(R18_RELEASE)},
+        },
+        "required": ["start_ms", "end_ms", "candidates", "perceptual", "pitch_relative", "intensity", "attack", "release"],
+    }
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "events": {"type": "ARRAY", "items": event},
+            "trajectory": {"type": "ARRAY", "items": {"type": "STRING", "enum": list(R18_EVENT_NAMES)}},
+        },
+        "required": ["events", "trajectory"],
     }
 
 
@@ -239,12 +453,20 @@ outdoor=明显户外环境声，wind=明显风声或风噪，music=音乐或电�
 - self_correction：是否有说到一半改口换说法。
 """
 
+_R18_PROMPT = """\
+你是私人 TG 语音的 R18 非语言声音观察器。只根据可直接听见的声音标注，不推断情绪、动机、关系、成人语义或性唤起；不输出物理测量值。
+每个事件填时间范围、多个候选与 0–1 置信度、受控感知特征、离散相对音高、强弱、attack/release。候选必须同时比较：moan、gasp、pant、breath、sigh、whimper、groan、nonlexical_vowel，以及 laugh、cough、throat_clear、yawn、exercise_breathing、noise、speech。它们完全平级。
+moan=持续有音高的非词汇元音；pant=连续快速重复吸呼循环；gasp=单次突然短促强吸气；sigh=较长呼气释放。不要把咳嗽标为 gasp，不要把连续喘气统称 breath，不要把有音高的呻吟统称 sigh。时间相对整条音频，以毫秒表示。没有明确事件时 events 为空。
+只按 response schema 返回 JSON；不写解释、Markdown、原始 F0、breathiness 数值或任何情绪/性唤起判断。
+"""
+
 
 def observe_voice(
     audio_bytes: bytes,
     *,
     paths: Paths,
     mime_type: str = "audio/mp3",
+    mode: str = "default",
 ) -> dict[str, Any]:
     """Run one closed-vocabulary observation pass over *audio_bytes*.
 
@@ -262,6 +484,8 @@ def observe_voice(
     The API key never appears in a returned "detail" string, by the same
     two-line defense as recognize_image.
     """
+    if mode not in {"default", "tg_r18"}:
+        return {"error": "invalid_mode"}
     key = load_gemini_key(paths)
     if not key:
         return {"error": "not_configured"}
@@ -277,7 +501,7 @@ def observe_voice(
             {
                 "role": "user",
                 "parts": [
-                    {"text": _PROMPT},
+                    {"text": _R18_PROMPT if mode == "tg_r18" else _PROMPT},
                     {
                         "inlineData": {
                             "mimeType": mime_type,
@@ -289,18 +513,23 @@ def observe_voice(
         ],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "responseSchema": _response_schema(),
-            "thinkingConfig": GEMINI_THINKING_CONFIG,
+            "responseSchema": _r18_response_schema() if mode == "tg_r18" else _response_schema(),
+            "thinkingConfig": (
+                {"thinkingLevel": "minimal"}
+                if mode == "tg_r18"
+                else GEMINI_THINKING_CONFIG
+            ),
         },
     }
 
-    url = f"{GEMINI_API_BASE}/models/{observer_model()}:generateContent"
+    model = tg_r18_model() if mode == "tg_r18" else observer_model()
+    url = f"{GEMINI_API_BASE}/models/{model}:generateContent"
     try:
         response = httpx.post(
             url,
             headers={"x-goog-api-key": key, "Content-Type": "application/json"},
             json=body,
-            timeout=GEMINI_TIMEOUT_SECONDS,
+            timeout=TG_R18_TIMEOUT_SECONDS if mode == "tg_r18" else GEMINI_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError as exc:
         return {"error": "unavailable", "detail": _redact(_short(exc), key)}
@@ -326,8 +555,11 @@ def observe_voice(
     except Exception as exc:  # candidates/parts shape and inner JSON are both untrusted
         return {"error": "invalid_response", "detail": _short(exc)}
 
-    observed = validate_observation(fields)
+    observed = validate_r18_observation(fields) if mode == "tg_r18" else validate_observation(fields)
     if observed is None:
         return {"error": "invalid_response", "detail": "reply strayed outside the closed vocabulary"}
 
+    if mode == "tg_r18":
+        note = render_r18_note(observed)
+        return {"observed": observed, "voice_note": note, "nvv": {"note": note, **observed}}
     return {"observed": observed, "voice_note": render_voice_note(observed)}

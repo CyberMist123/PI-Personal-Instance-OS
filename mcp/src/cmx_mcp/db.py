@@ -104,7 +104,7 @@ class Database:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             version_row = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if version_row and version_row[0] is not None and int(version_row[0]) > 8:
+            if version_row and version_row[0] is not None and int(version_row[0]) > 9:
                 raise RuntimeError(f"Unsupported future database schema version: {version_row[0]}")
             self._migrate_legacy_cache(db)
             db.executescript(
@@ -263,6 +263,28 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_voice_observations_created
                     ON voice_observations(created_at DESC);
+
+                -- R18 NVV results are a separate side-channel from the older
+                -- closed-vocabulary voice observer. Content addressing makes
+                -- retries reuse the first completed observation.
+                CREATE TABLE IF NOT EXISTS voice_nvv_observations (
+                    audio_sha256 TEXT PRIMARY KEY,
+                    nvv_json TEXT NOT NULL,
+                    nvv_note TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_nvv_observations_created
+                    ON voice_nvv_observations(created_at DESC);
+
+                -- V1 is an Owner-only, single-speaker system, so one mutable
+                -- long-term baseline is sufficient. Its sample counts and
+                -- feature summaries travel together in baseline_json.
+                CREATE TABLE IF NOT EXISTS voice_nvv_baseline (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    baseline_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             for name, definition in (
@@ -275,7 +297,7 @@ class Database:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {name} {definition}")
             self._migrate_dedup(db)
             db.execute("DELETE FROM schema_version")
-            db.execute("INSERT INTO schema_version(version) VALUES(8)")
+            db.execute("INSERT INTO schema_version(version) VALUES(9)")
 
     def get_browse_watermark(self, bot_id: str, feed: str = "timeline") -> str | None:
         with self.connect() as db:
@@ -951,6 +973,57 @@ class Database:
                 "SELECT * FROM voice_observations WHERE audio_sha256=?", (audio_sha256,)
             ).fetchone()
         return dict(row) if row else None
+
+    def record_voice_nvv_observation(
+        self,
+        audio_sha256: str,
+        *,
+        nvv: dict[str, Any],
+        nvv_note: str,
+        model: str,
+    ) -> None:
+        """Store one NVV result by audio content; a retry cannot replace it."""
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO voice_nvv_observations"
+                "(audio_sha256,nvv_json,nvv_note,model,created_at) VALUES(?,?,?,?,?)",
+                (
+                    audio_sha256,
+                    json.dumps(nvv, ensure_ascii=False),
+                    nvv_note,
+                    model,
+                    int(time.time()),
+                ),
+            )
+
+    def get_voice_nvv_observation(self, audio_sha256: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM voice_nvv_observations WHERE audio_sha256=?",
+                (audio_sha256,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_voice_nvv_baseline(self) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT baseline_json FROM voice_nvv_baseline WHERE singleton=1"
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_voice_nvv_baseline(self, baseline: dict[str, Any]) -> None:
+        encoded = json.dumps(baseline, ensure_ascii=False)
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO voice_nvv_baseline(singleton,baseline_json,updated_at)
+                VALUES(1,?,?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                    baseline_json=excluded.baseline_json,
+                    updated_at=excluded.updated_at
+                """,
+                (encoded, int(time.time())),
+            )
 
     def list_pending_image_recognition(self, limit: int = 100) -> list[dict[str, Any]]:
         """Rows still waiting on (or stuck without) a cloud pass. Posting never waits on these."""
