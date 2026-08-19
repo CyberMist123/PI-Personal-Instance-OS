@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -486,6 +487,16 @@ _R18_PROMPT = """\
 moan=持续有音高的非词汇元音；pant=连续快速重复吸呼循环；gasp=单次突然短促强吸气；sigh=较长呼气释放。不要把咳嗽标为 gasp，不要把连续喘气统称 breath，不要把有音高的呻吟统称 sigh。时间相对整条音频，以毫秒表示。没有明确事件时 events 为空。
 只按 response schema 返回 JSON；不写解释、Markdown、原始 F0、breathiness 数值或任何情绪/性唤起判断。
 """
+_R18_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "gemini_r18_nvv.md"
+
+
+def _r18_prompt() -> str:
+    """Load the owner-editable prompt, retaining a fail-open packaged fallback."""
+    try:
+        prompt = _R18_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return _R18_PROMPT
+    return prompt or _R18_PROMPT
 
 
 def observe_voice(
@@ -528,7 +539,7 @@ def observe_voice(
             {
                 "role": "user",
                 "parts": [
-                    {"text": _R18_PROMPT if mode == "tg_r18" else _PROMPT},
+                    {"text": _r18_prompt() if mode == "tg_r18" else _PROMPT},
                     {
                         "inlineData": {
                             "mimeType": mime_type,

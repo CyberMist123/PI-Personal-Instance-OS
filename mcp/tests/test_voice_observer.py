@@ -212,6 +212,7 @@ def test_tg_r18_returns_multicandidate_events_and_compact_voice_note(tmp_path, m
 
     def fake_post(url, headers=None, json=None, timeout=None):
         sent["schema"] = json["generationConfig"]["responseSchema"]
+        sent["prompt"] = json["contents"][0]["parts"][0]["text"]
         return _gemini_reply(_r18_observation())
 
     monkeypatch.setattr(observer_module, "httpx", SimpleNamespace(post=fake_post, HTTPError=httpx.HTTPError))
@@ -226,6 +227,7 @@ def test_tg_r18_returns_multicandidate_events_and_compact_voice_note(tmp_path, m
     candidate_schema = sent["schema"]["properties"]["events"]["items"]["properties"]["candidates"]
     assert candidate_schema["maxItems"] == 3
     assert set(candidate_schema["items"]["properties"]["label"]["enum"]) == set(R18_EVENT_NAMES)
+    assert sent["prompt"] == observer_module._R18_PROMPT_PATH.read_text(encoding="utf-8").strip()
     assert render_r18_note(validate_r18_observation(_r18_observation())) == outcome["nvv"]["note"]
 
 

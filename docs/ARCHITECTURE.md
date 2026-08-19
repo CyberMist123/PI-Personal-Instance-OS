@@ -155,6 +155,8 @@ loopback cyberboss → POST /files/transcribe(file, nvv=1)
 
 它仅在 `CMX_LOCAL_TRUSTED_MEDIA=1`、loopback caller、显式 `nvv=1` 且默认关闭的 `CMX_VOICE_NVV=1` 同时成立时运行；网页 voice widget、`workers.py`、Nginx 注入与旧 observer 默认模式不变。Gemini schema 使用最多三项 `{label, confidence}` 候选以控制复杂度，服务端结果再归一为候选字典；渲染器按毫秒顺序交错 ASR segments 与事件，保留次候选和每段质感，用续接/转类及末行「声音形状」表达重复脉冲、音高移动和类别转换。失败不阻塞转写。SQLite 只保存 compact JSON/note，不保存原始音频。当前最终 TG 路径没有本地声学/baseline fusion；Qwen Omni 与已停用的 Hume Expression Measurement 均不在直出路径。
 
+Gemini R18 指令由主程序直接读取 `mcp/prompts/gemini_r18_nvv.md`，便于 Owner 后续独立调整；文件缺失或不可读时回退到代码内置版本，不阻断转写。
+
 ### AI / MCP（已实现读链路）
 
 AI 作为正式 Mastodon 居民账号，通过每居民独立 Token 行动：
