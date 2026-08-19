@@ -221,7 +221,7 @@ def test_tg_r18_returns_multicandidate_events_and_compact_voice_note(tmp_path, m
     assert outcome["nvv"]["events"][0]["pitch_relative"] == "higher"
     assert outcome["nvv"]["note"] == (
         "<voice>\n[moan: 气声柔 · 起伏不稳 · 拖长 · 渐弱 · 比平时音高偏高 · 起音渐入"
-        " | 偏moan，或为叹息]\n走向: 有声呼气\n</voice>"
+        " | 偏moan，或为叹息]\n声音形状: 偏高轻柔气声呻吟\n</voice>"
     )
     candidate_schema = sent["schema"]["properties"]["events"]["items"]["properties"]["candidates"]
     assert candidate_schema["maxItems"] == 3
@@ -241,8 +241,33 @@ def test_r18_note_inlines_timed_transcript_and_keeps_candidate_ambiguity():
     )
     assert note == (
         "<voice>\n“你听我说” [moan: 气声柔 · 起伏不稳 · 拖长 · 渐弱 · 比平时音高偏高 · 起音渐入"
-        " | 偏moan，或为叹息] “嗯”\n走向: 说话 → 有声呼气\n</voice>"
+        " | 偏moan，或为叹息] “嗯”\n声音形状: 说话 → 偏高轻柔气声呻吟\n</voice>"
     )
+
+
+def test_r18_note_preserves_repeated_pulses_and_shape_changes():
+    base = _r18_observation()["events"][0]
+    events = []
+    for start, label, alternative, pitch in [
+        (1100, "moan", "sigh", "similar"),
+        (3200, "moan", "nonlexical_vowel", "similar"),
+        (5200, "moan", "sigh", "similar"),
+        (6800, "sigh", "breath", "lower"),
+        (8600, "sigh", "moan", "lower"),
+    ]:
+        event = dict(base)
+        event.update({
+            "start_ms": start, "end_ms": start + 1000,
+            "candidates": {label: .8, alternative: .2},
+            "pitch_relative": pitch,
+        })
+        events.append(event)
+    note = render_r18_note(validate_r18_observation({"events": events, "trajectory": []}), transcript="嗯嗯嗯嗯。")
+    assert "[moan续:" in note
+    assert "[转为sigh:" in note
+    assert "[sigh续:" in note
+    assert "[moan]" not in note
+    assert "声音形状: 说话 → 3段轻柔气声呻吟（间隔再现） → 音高下移 → 2段低位轻柔气声叹息（间隔再现）" in note
 
 
 # --- baseline storage --------------------------------------------------------

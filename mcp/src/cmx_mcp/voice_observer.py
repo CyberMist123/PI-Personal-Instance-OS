@@ -326,11 +326,10 @@ def _response_schema() -> dict[str, Any]:
     }
 
 
-def _r18_event_note(event: dict[str, Any], *, compact: bool = False) -> str:
+def _r18_event_note(event: dict[str, Any], *, previous: dict[str, Any] | None = None) -> str:
     ranked = sorted(event["candidates"].items(), key=lambda item: (-float(item[1]), item[0]))
     primary = ranked[0][0]
-    if compact:
-        return f"[{primary}]"
+    prefix = primary if previous is None else (f"{primary}续" if primary == max(previous["candidates"], key=previous["candidates"].get) else f"转为{primary}")
     perceptual = list(event.get("perceptual") or [])
     features: list[str] = []
     if "breathy" in perceptual and "soft" in perceptual:
@@ -338,8 +337,11 @@ def _r18_event_note(event: dict[str, Any], *, compact: bool = False) -> str:
         perceptual = [item for item in perceptual if item not in {"breathy", "soft"}]
     features.extend(_R18_FEATURE_ZH[item] for item in perceptual if item in _R18_FEATURE_ZH)
     pitch = event.get("pitch_relative")
-    if pitch != "similar":
-        features.append({"lower": "比平时音高偏低", "higher": "比平时音高偏高", "clearly_higher": "比平时音高明显偏高"}.get(pitch, ""))
+    previous_pitch = previous.get("pitch_relative") if previous else None
+    if previous is not None and pitch != previous_pitch:
+        features.append({"lower": "音高下移", "similar": "音高回到近常态", "higher": "音高抬升", "clearly_higher": "音高明显抬升"}.get(pitch, ""))
+    elif pitch != "similar":
+        features.append({"lower": "维持低位音高" if previous else "比平时音高偏低", "higher": "比平时音高偏高", "clearly_higher": "比平时音高明显偏高"}.get(pitch, ""))
     if event.get("attack") == "gradual":
         features.append("起音渐入")
     if event.get("release") == "fading":
@@ -348,7 +350,43 @@ def _r18_event_note(event: dict[str, Any], *, compact: bool = False) -> str:
     ambiguity = ""
     if len(ranked) > 1 and float(ranked[1][1]) >= 0.10:
         ambiguity = f" | 偏{primary}，或为{_R18_LABEL_ZH[ranked[1][0]]}"
-    return f"[{primary}: {details}{ambiguity}]"
+    return f"[{prefix}: {details}{ambiguity}]"
+
+
+def _r18_shape_trajectory(events: list[dict[str, Any]], *, has_speech: bool) -> str:
+    """Summarize temporal shape; repeated labels remain meaningful pulses, not bare tags."""
+    runs: list[list[dict[str, Any]]] = []
+    for event in events:
+        primary = max(event["candidates"], key=event["candidates"].get)
+        if runs and primary == max(runs[-1][-1]["candidates"], key=runs[-1][-1]["candidates"].get):
+            runs[-1].append(event)
+        else:
+            runs.append([event])
+    label_zh = {
+        "moan": "呻吟", "sigh": "叹息", "groan": "低吟", "whimper": "呜咽",
+        "nonlexical_vowel": "非词汇元音", "gasp": "倒吸气", "pant": "喘息",
+        "breath": "呼吸", "exercise_breathing": "运动喘息", "laugh": "笑声",
+        "cough": "咳嗽", "throat_clear": "清嗓", "yawn": "哈欠", "noise": "噪声",
+        "speech": "说话",
+    }
+    steps = ["说话"] if has_speech else []
+    previous_pitch: str | None = None
+    for run in runs:
+        first = run[0]
+        primary = max(first["candidates"], key=first["candidates"].get)
+        pitch = first.get("pitch_relative")
+        if previous_pitch is not None and pitch != previous_pitch:
+            if pitch == "lower":
+                steps.append("音高下移")
+            elif pitch in {"higher", "clearly_higher"}:
+                steps.append("音高抬升")
+        pitch_word = {"lower": "低位", "higher": "偏高", "clearly_higher": "明显偏高"}.get(pitch, "")
+        texture = "轻柔气声" if {"breathy", "soft"}.issubset(set(first.get("perceptual") or [])) else ""
+        count = f"{len(run)}段" if len(run) > 1 else ""
+        recurrence = "（间隔再现）" if len(run) > 1 else ""
+        steps.append(count + pitch_word + texture + label_zh.get(primary, primary) + recurrence)
+        previous_pitch = run[-1].get("pitch_relative")
+    return " → ".join(item for item in steps if item)
 
 
 def render_r18_note(
@@ -368,28 +406,17 @@ def render_r18_note(
             timeline.append((int(segment.get("start_ms") or 0), 0, f"“{text}”"))
     if not timeline and transcript.strip():
         timeline.append((0, 0, f"“{transcript.strip()}”"))
-    expanded: set[str] = set()
+    previous: dict[str, Any] | None = None
     for event in events:
-        primary = max(event["candidates"], key=event["candidates"].get)
         timeline.append(
-            (int(event.get("start_ms") or 0), 1, _r18_event_note(event, compact=primary in expanded))
+            (int(event.get("start_ms") or 0), 1, _r18_event_note(event, previous=previous))
         )
-        expanded.add(primary)
+        previous = event
     timeline.sort(key=lambda item: (item[0], item[1]))
     lines = [" ".join(item[2] for item in timeline)]
-    trajectory = observed.get("trajectory") or [max(event["candidates"], key=event["candidates"].get) for event in events]
-    family_tokens = {
-        "moan": "有声呼气", "sigh": "有声呼气", "groan": "非词汇发声",
-        "whimper": "非词汇发声", "nonlexical_vowel": "非词汇发声",
-        "gasp": "吸气", "pant": "呼吸", "breath": "呼吸",
-        "exercise_breathing": "呼吸", "laugh": "笑声", "cough": "咳嗽",
-        "throat_clear": "清嗓", "yawn": "哈欠", "noise": "噪声", "speech": "说话",
-    }
-    steps = ["说话"] if transcript.strip() else []
-    steps.extend(family_tokens[item] for item in trajectory[:8] if item in family_tokens)
-    steps = [item for index, item in enumerate(steps) if index == 0 or item != steps[index - 1]]
-    if steps:
-        lines.append("走向: " + " → ".join(steps))
+    shape = _r18_shape_trajectory(events, has_speech=bool(transcript.strip()))
+    if shape:
+        lines.append("声音形状: " + shape)
     return "<voice>\n" + "\n".join(lines) + "\n</voice>"
 
 
