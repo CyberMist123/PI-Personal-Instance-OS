@@ -32,7 +32,7 @@ logs/
 
 # Docker / local overrides
 docker-compose.override.yml
-compose.override.yml
+# compose.override.yml 刻意不忽略：它是本机资源调优层，需要进版本控制以便 git revert 回滚（其中不含任何密钥）
 
 # Editors and OS
 .vscode/

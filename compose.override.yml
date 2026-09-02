@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# 本地资源调优层（单人实例）
+#
+# 为什么用 override 而不是直接改 compose.yml：
+#   compose.yml 保持贴近上游 Mastodon 的标准写法，以后加功能 / 升版本时不会
+#   和本地调优纠缠。所有"只适用于我这台机器"的资源设定都收在本文件里。
+#
+# 为什么不用改 start.ps1：
+#   start.ps1 用的是不带 -f 的 `docker compose up -d`，Compose 会自动把
+#   compose.override.yml 合并到 compose.yml 之上。零启动脚本改动。
+#
+# ⚠️ 不要往这里写密钥。
+#   本文件已在 .gitignore 里开了例外、纳入版本控制。密钥一律留在
+#   .env.production（那个文件仍然被忽略）。
+#
+# 回滚（三选一，从轻到重）：
+#   1. 临时停用：  mv compose.override.yml compose.override.yml.off
+#                  docker compose up -d
+#   2. 回到上一版：git revert <本次提交的 SHA>
+#                  docker compose up -d
+#   3. 彻底删除：  rm compose.override.yml && docker compose up -d
+#   任意一种之后服务都会回到 compose.yml 的原始默认值。
+# ---------------------------------------------------------------------------
+
+services:
+  web:
+    environment:
+      # Mastodon 默认起 2 个 Puma worker，每个是一整个独立 Ruby 进程（~300MB）。
+      # 单人实例 1 个足够 —— 这是本次省内存的大头。
+      WEB_CONCURRENCY: 1
+      # MAX_THREADS（单 worker 内线程数）经评估后保持默认 5，故不在此写出：
+      # 线程很便宜（不是独立进程），砍它省不到多少内存，却会直接影响刷 thread
+      # 的响应，不值得动。DB_POOL 默认跟随 MAX_THREADS，同样无需另设。
+
+# 关于 sidekiq：本文件曾包含 `command: bundle exec sidekiq -c 5` + DB_POOL=5，
+# 已于 2026-09-02 移除，因为那是**空操作**：
+#   实测容器内进程标题为 `sidekiq 8.1.6 mastodon [0 of 5 busy]` ——
+#   Sidekiq 8 的默认并发本来就是 5（不是旧 Mastodon 文档里的 25），
+#   Mastodon 的 DB_POOL 默认也跟随该并发数。写上去只是把默认值抄一遍。
+#
+# 若将来真要从 sidekiq 省内存，方向是往下调（-c 2 或 3）而不是 5，
+# 但收益有限（其内存主要是 Ruby 进程基线，不是线程），且会拖慢联邦投递，
+# 届时 DB_POOL 需同步下调。
